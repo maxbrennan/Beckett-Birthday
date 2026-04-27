@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline'">
+  <title>Beckett Birthday</title>
+  <style>
+    body { margin: 0; background: #000; color: #eee; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="elm.js"></script>
+  <script>
+    const app = Elm.Main.init({ node: document.getElementById('app') })
+    window.electronAPI.onDevices((data) => {
+      app.ports.receiveDevices.send(data)
+    })
+
+    // Jeopardy theme via Web Audio API
+    ;(function () {
+      const ctx = new AudioContext()
+
+      const BPM = 100
+      const q = 60 / BPM
+
+      // [frequency Hz, beats]  (0 = rest)
+      const notes = [
+        [392.00, 1],   [261.63, 0.5], [349.23, 0.5], [261.63, 0.5], [392.00, 0.5], [523.25, 1], [392.00, 2],
+        [523.25, 0.5], [466.16, 0.5], [523.25, 0.5], [392.00, 0.5], [622.25, 3],
+        [587.33, 0.5], [523.25, 0.5], [466.16, 0.5], [523.25, 0.5], [392.00, 3],
+        [392.00, 1],   [261.63, 0.5], [349.23, 0.5], [261.63, 0.5], [392.00, 0.5], [523.25, 1], [392.00, 2],
+        [523.25, 0.5], [466.16, 0.5], [523.25, 0.5], [392.00, 0.5], [622.25, 0.5], [587.33, 0.5], [523.25, 1],
+        [392.00, 0.5], [349.23, 0.5], [392.00, 0.5], [523.25, 0.5], [392.00, 3],
+      ]
+
+      const loopDuration = notes.reduce((s, [, d]) => s + d * q, 0)
+
+      function playNote(freq, start, dur) {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.type = 'sine'
+        osc.frequency.value = freq
+        gain.gain.setValueAtTime(0.10, start)
+        gain.gain.exponentialRampToValueAtTime(0.001, start + dur * 0.88)
+        osc.start(start)
+        osc.stop(start + dur)
+      }
+
+      function scheduleLoop(startTime) {
+        let t = startTime
+        for (const [freq, beats] of notes) {
+          const dur = beats * q
+          if (freq > 0) playNote(freq, t, dur)
+          t += dur
+        }
+        setTimeout(() => scheduleLoop(startTime + loopDuration), (loopDuration - 1) * 1000)
+      }
+
+      ctx.resume().then(() => scheduleLoop(ctx.currentTime + 0.1))
+    })()
+  </script>
+</body>
+</html>
