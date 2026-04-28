@@ -1,0 +1,24 @@
+const { app, BrowserWindow } = require('electron')
+
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 900,
+    height: 600,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  })
+
+  win.loadFile('index.html')
+}
+
+app.whenReady().then(() => {
+  createWindow()
+})
+
+app.on('window-all-closed', () => {
+  app.quit()
+})

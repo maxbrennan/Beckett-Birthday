@@ -5167,22 +5167,73 @@ var $elm$core$Task$perform = F2(
 				A2($elm$core$Task$map, toMessage, task)));
 	});
 var $elm$browser$Browser$element = _Browser_element;
-var $elm$core$Platform$Cmd$batch = _Platform_batch;
-var $elm$core$Platform$Cmd$none = $elm$core$Platform$Cmd$batch(_List_Nil);
+var $author$project$Main$ConnectScreen = {$: 'ConnectScreen'};
+var $elm$json$Json$Encode$string = _Json_wrap;
+var $author$project$Main$playMusic = _Platform_outgoingPort('playMusic', $elm$json$Json$Encode$string);
 var $author$project$Main$init = function (_v0) {
 	return _Utils_Tuple2(
-		{begun: false, connected: false},
-		$elm$core$Platform$Cmd$none);
+		{connected: false, screen: $author$project$Main$ConnectScreen, trackInfo: $elm$core$Maybe$Nothing},
+		$author$project$Main$playMusic('jeopardy-theme.mp3'));
 };
 var $author$project$Main$DevicesReceived = function (a) {
 	return {$: 'DevicesReceived', a: a};
 };
-var $elm$json$Json$Decode$string = _Json_decodeString;
-var $author$project$Main$receiveDevices = _Platform_incomingPort('receiveDevices', $elm$json$Json$Decode$string);
-var $author$project$Main$subscriptions = function (_v0) {
-	return $author$project$Main$receiveDevices($author$project$Main$DevicesReceived);
+var $author$project$Main$MusicError = function (a) {
+	return {$: 'MusicError', a: a};
 };
-var $elm$core$Basics$not = _Basics_not;
+var $author$project$Main$TrackEnded = function (a) {
+	return {$: 'TrackEnded', a: a};
+};
+var $author$project$Main$TrackInfoReceived = function (a) {
+	return {$: 'TrackInfoReceived', a: a};
+};
+var $elm$core$Platform$Sub$batch = _Platform_batch;
+var $elm$json$Json$Decode$string = _Json_decodeString;
+var $author$project$Main$musicError = _Platform_incomingPort('musicError', $elm$json$Json$Decode$string);
+var $author$project$Main$receiveDevices = _Platform_incomingPort('receiveDevices', $elm$json$Json$Decode$string);
+var $elm$json$Json$Decode$andThen = _Json_andThen;
+var $elm$json$Json$Decode$field = _Json_decodeField;
+var $elm$json$Json$Decode$float = _Json_decodeFloat;
+var $author$project$Main$receiveTrackInfo = _Platform_incomingPort(
+	'receiveTrackInfo',
+	A2(
+		$elm$json$Json$Decode$andThen,
+		function (name) {
+			return A2(
+				$elm$json$Json$Decode$andThen,
+				function (duration) {
+					return A2(
+						$elm$json$Json$Decode$andThen,
+						function (currentTime) {
+							return $elm$json$Json$Decode$succeed(
+								{currentTime: currentTime, duration: duration, name: name});
+						},
+						A2($elm$json$Json$Decode$field, 'currentTime', $elm$json$Json$Decode$float));
+				},
+				A2($elm$json$Json$Decode$field, 'duration', $elm$json$Json$Decode$float));
+		},
+		A2($elm$json$Json$Decode$field, 'name', $elm$json$Json$Decode$string)));
+var $author$project$Main$trackEnded = _Platform_incomingPort('trackEnded', $elm$json$Json$Decode$string);
+var $author$project$Main$subscriptions = function (_v0) {
+	return $elm$core$Platform$Sub$batch(
+		_List_fromArray(
+			[
+				$author$project$Main$receiveDevices($author$project$Main$DevicesReceived),
+				$author$project$Main$receiveTrackInfo($author$project$Main$TrackInfoReceived),
+				$author$project$Main$trackEnded($author$project$Main$TrackEnded),
+				$author$project$Main$musicError($author$project$Main$MusicError)
+			]));
+};
+var $author$project$Main$BeginScreen = {$: 'BeginScreen'};
+var $author$project$Main$BlankScreen = {$: 'BlankScreen'};
+var $author$project$Main$QuestionScreen = function (a) {
+	return {$: 'QuestionScreen', a: a};
+};
+var $author$project$Main$ShowQuestion = {$: 'ShowQuestion'};
+var $author$project$Main$StartGolden = {$: 'StartGolden'};
+var $elm$core$Platform$Cmd$batch = _Platform_batch;
+var $author$project$Main$debug = true;
+var $elm$core$Platform$Cmd$none = $elm$core$Platform$Cmd$batch(_List_Nil);
 var $elm$json$Json$Decode$decodeString = _Json_runOnString;
 var $elm$core$List$filter = F2(
 	function (isGood, list) {
@@ -5196,7 +5247,6 @@ var $elm$core$List$filter = F2(
 			list);
 	});
 var $elm$json$Json$Decode$bool = _Json_decodeBool;
-var $elm$json$Json$Decode$field = _Json_decodeField;
 var $elm$json$Json$Decode$map4 = _Json_map4;
 var $author$project$Main$isMatchDecoder = A5(
 	$elm$json$Json$Decode$map4,
@@ -5227,38 +5277,152 @@ var $author$project$Main$parseDevices = function (json) {
 		return false;
 	}
 };
-var $elm$json$Json$Encode$null = _Json_encodeNull;
-var $author$project$Main$restartMusic = _Platform_outgoingPort(
-	'restartMusic',
-	function ($) {
-		return $elm$json$Json$Encode$null;
+var $elm$core$Process$sleep = _Process_sleep;
+var $author$project$Main$sleep = F2(
+	function (ms, msg) {
+		return A2(
+			$elm$core$Task$perform,
+			function (_v0) {
+				return msg;
+			},
+			$elm$core$Process$sleep(ms));
 	});
-var $author$project$Main$stopMusic = _Platform_outgoingPort(
-	'stopMusic',
-	function ($) {
-		return $elm$json$Json$Encode$null;
-	});
+var $author$project$Main$stopMusic = _Platform_outgoingPort('stopMusic', $elm$json$Json$Encode$string);
 var $author$project$Main$update = F2(
 	function (msg, model) {
-		if (msg.$ === 'DevicesReceived') {
-			var json = msg.a;
-			var connected = $author$project$Main$parseDevices(json);
-			var cmd = ((!connected) && model.begun) ? $author$project$Main$restartMusic(_Utils_Tuple0) : $elm$core$Platform$Cmd$none;
-			return _Utils_Tuple2(
-				{begun: model.begun && connected, connected: connected},
-				cmd);
-		} else {
-			return _Utils_Tuple2(
-				_Utils_update(
-					model,
-					{begun: true}),
-				$author$project$Main$stopMusic(_Utils_Tuple0));
+		switch (msg.$) {
+			case 'DevicesReceived':
+				var json = msg.a;
+				var connected = $author$project$Main$parseDevices(json) || $author$project$Main$debug;
+				if (connected) {
+					var newScreen = function () {
+						var _v1 = model.screen;
+						if (_v1.$ === 'ConnectScreen') {
+							return $author$project$Main$BeginScreen;
+						} else {
+							var other = _v1;
+							return other;
+						}
+					}();
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{connected: true, screen: newScreen}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					var cmd = function () {
+						var _v2 = model.screen;
+						switch (_v2.$) {
+							case 'BlankScreen':
+								return $author$project$Main$playMusic('jeopardy-theme.mp3');
+							case 'QuestionScreen':
+								return $author$project$Main$playMusic('jeopardy-theme.mp3');
+							default:
+								return $elm$core$Platform$Cmd$none;
+						}
+					}();
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{connected: false, screen: $author$project$Main$ConnectScreen}),
+						cmd);
+				}
+			case 'BeginPressed':
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{screen: $author$project$Main$BlankScreen}),
+					$elm$core$Platform$Cmd$batch(
+						_List_fromArray(
+							[
+								$author$project$Main$stopMusic('jeopardy-theme.mp3'),
+								A2($author$project$Main$sleep, 1000, $author$project$Main$StartGolden)
+							])));
+			case 'StartGolden':
+				var _v3 = model.screen;
+				if (_v3.$ === 'BlankScreen') {
+					return _Utils_Tuple2(
+						model,
+						$author$project$Main$playMusic('golden.mp3'));
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'TrackEnded':
+				var name = msg.a;
+				if (name === 'golden.mp3') {
+					var _v4 = model.screen;
+					if (_v4.$ === 'BlankScreen') {
+						return _Utils_Tuple2(
+							model,
+							A2($author$project$Main$sleep, 1000, $author$project$Main$ShowQuestion));
+					} else {
+						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+					}
+				} else {
+					if (name === 'jeopardy-theme.mp3') {
+						var _v5 = model.screen;
+						switch (_v5.$) {
+							case 'ConnectScreen':
+								return _Utils_Tuple2(
+									model,
+									$author$project$Main$playMusic('jeopardy-theme.mp3'));
+							case 'BeginScreen':
+								return _Utils_Tuple2(
+									model,
+									$author$project$Main$playMusic('jeopardy-theme.mp3'));
+							default:
+								return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+						}
+					} else {
+						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+					}
+				}
+			case 'ShowQuestion':
+				var _v6 = model.screen;
+				if (_v6.$ === 'BlankScreen') {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								screen: $author$project$Main$QuestionScreen('')
+							}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'TrackInfoReceived':
+				var info = msg.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							trackInfo: $elm$core$Maybe$Just(info)
+						}),
+					$elm$core$Platform$Cmd$none);
+			case 'MusicError':
+				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+			default:
+				var text = msg.a;
+				var _v7 = model.screen;
+				if (_v7.$ === 'QuestionScreen') {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								screen: $author$project$Main$QuestionScreen(text)
+							}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
 		}
 	});
+var $author$project$Main$AnswerChanged = function (a) {
+	return {$: 'AnswerChanged', a: a};
+};
 var $author$project$Main$BeginPressed = {$: 'BeginPressed'};
 var $elm$html$Html$button = _VirtualDom_node('button');
 var $elm$html$Html$img = _VirtualDom_node('img');
-var $elm$json$Json$Encode$string = _Json_wrap;
 var $elm$html$Html$Attributes$stringProperty = F2(
 	function (key, string) {
 		return A2(
@@ -5282,6 +5446,7 @@ var $author$project$Main$headphones = A2(
 			A2($elm$html$Html$Attributes$style, 'width', '340px')
 		]),
 	_List_Nil);
+var $elm$html$Html$input = _VirtualDom_node('input');
 var $elm$virtual_dom$VirtualDom$Normal = function (a) {
 	return {$: 'Normal', a: a};
 };
@@ -5299,7 +5464,39 @@ var $elm$html$Html$Events$onClick = function (msg) {
 		'click',
 		$elm$json$Json$Decode$succeed(msg));
 };
+var $elm$html$Html$Events$alwaysStop = function (x) {
+	return _Utils_Tuple2(x, true);
+};
+var $elm$virtual_dom$VirtualDom$MayStopPropagation = function (a) {
+	return {$: 'MayStopPropagation', a: a};
+};
+var $elm$html$Html$Events$stopPropagationOn = F2(
+	function (event, decoder) {
+		return A2(
+			$elm$virtual_dom$VirtualDom$on,
+			event,
+			$elm$virtual_dom$VirtualDom$MayStopPropagation(decoder));
+	});
+var $elm$json$Json$Decode$at = F2(
+	function (fields, decoder) {
+		return A3($elm$core$List$foldr, $elm$json$Json$Decode$field, decoder, fields);
+	});
+var $elm$html$Html$Events$targetValue = A2(
+	$elm$json$Json$Decode$at,
+	_List_fromArray(
+		['target', 'value']),
+	$elm$json$Json$Decode$string);
+var $elm$html$Html$Events$onInput = function (tagger) {
+	return A2(
+		$elm$html$Html$Events$stopPropagationOn,
+		'input',
+		A2(
+			$elm$json$Json$Decode$map,
+			$elm$html$Html$Events$alwaysStop,
+			A2($elm$json$Json$Decode$map, tagger, $elm$html$Html$Events$targetValue)));
+};
 var $elm$html$Html$p = _VirtualDom_node('p');
+var $elm$html$Html$Attributes$placeholder = $elm$html$Html$Attributes$stringProperty('placeholder');
 var $elm$html$Html$div = _VirtualDom_node('div');
 var $author$project$Main$screen = function (children) {
 	return A2(
@@ -5318,64 +5515,112 @@ var $author$project$Main$screen = function (children) {
 };
 var $elm$virtual_dom$VirtualDom$text = _VirtualDom_text;
 var $elm$html$Html$text = $elm$virtual_dom$VirtualDom$text;
+var $elm$html$Html$Attributes$type_ = $elm$html$Html$Attributes$stringProperty('type');
+var $elm$html$Html$Attributes$value = $elm$html$Html$Attributes$stringProperty('value');
 var $author$project$Main$view = function (model) {
-	return (!model.connected) ? $author$project$Main$screen(
-		_List_fromArray(
-			[
-				$author$project$Main$headphones,
-				A2(
-				$elm$html$Html$p,
+	var _v0 = model.screen;
+	switch (_v0.$) {
+		case 'ConnectScreen':
+			return $author$project$Main$screen(
 				_List_fromArray(
 					[
-						A2($elm$html$Html$Attributes$style, 'font-size', '26px'),
-						A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
-						A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
-						A2($elm$html$Html$Attributes$style, 'margin', '0'),
-						A2($elm$html$Html$Attributes$style, 'max-width', '480px'),
-						A2($elm$html$Html$Attributes$style, 'line-height', '1.5')
-					]),
+						$author$project$Main$headphones,
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '26px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0'),
+								A2($elm$html$Html$Attributes$style, 'max-width', '480px'),
+								A2($elm$html$Html$Attributes$style, 'line-height', '1.5')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Connect your AirPods Max 2 and turn up the volume.')
+							]))
+					]));
+		case 'BeginScreen':
+			return $author$project$Main$screen(
 				_List_fromArray(
 					[
-						$elm$html$Html$text('Connect your AirPods Max 2 and turn up the volume.')
-					]))
-			])) : ((!model.begun) ? $author$project$Main$screen(
-		_List_fromArray(
-			[
-				$author$project$Main$headphones,
-				A2(
-				$elm$html$Html$p,
+						$author$project$Main$headphones,
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '26px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0'),
+								A2($elm$html$Html$Attributes$style, 'max-width', '480px'),
+								A2($elm$html$Html$Attributes$style, 'line-height', '1.5')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Press Begin once you can hear the music.')
+							])),
+						A2(
+						$elm$html$Html$button,
+						_List_fromArray(
+							[
+								$elm$html$Html$Events$onClick($author$project$Main$BeginPressed),
+								A2($elm$html$Html$Attributes$style, 'padding', '20px 64px'),
+								A2($elm$html$Html$Attributes$style, 'font-size', '24px'),
+								A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+								A2($elm$html$Html$Attributes$style, 'border-radius', '12px'),
+								A2($elm$html$Html$Attributes$style, 'border', 'none'),
+								A2($elm$html$Html$Attributes$style, 'background-color', '#4a9eca'),
+								A2($elm$html$Html$Attributes$style, 'color', 'white'),
+								A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Begin')
+							]))
+					]));
+		case 'BlankScreen':
+			return $author$project$Main$screen(_List_Nil);
+		default:
+			var answer = _v0.a;
+			return $author$project$Main$screen(
 				_List_fromArray(
 					[
-						A2($elm$html$Html$Attributes$style, 'font-size', '26px'),
-						A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
-						A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
-						A2($elm$html$Html$Attributes$style, 'margin', '0'),
-						A2($elm$html$Html$Attributes$style, 'max-width', '480px'),
-						A2($elm$html$Html$Attributes$style, 'line-height', '1.5')
-					]),
-				_List_fromArray(
-					[
-						$elm$html$Html$text('Press Begin once you can hear the music.')
-					])),
-				A2(
-				$elm$html$Html$button,
-				_List_fromArray(
-					[
-						$elm$html$Html$Events$onClick($author$project$Main$BeginPressed),
-						A2($elm$html$Html$Attributes$style, 'padding', '20px 64px'),
-						A2($elm$html$Html$Attributes$style, 'font-size', '24px'),
-						A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
-						A2($elm$html$Html$Attributes$style, 'border-radius', '12px'),
-						A2($elm$html$Html$Attributes$style, 'border', 'none'),
-						A2($elm$html$Html$Attributes$style, 'background-color', '#4a9eca'),
-						A2($elm$html$Html$Attributes$style, 'color', 'white'),
-						A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
-					]),
-				_List_fromArray(
-					[
-						$elm$html$Html$text('Begin')
-					]))
-			])) : $author$project$Main$screen(_List_Nil));
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '26px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0'),
+								A2($elm$html$Html$Attributes$style, 'max-width', '560px'),
+								A2($elm$html$Html$Attributes$style, 'line-height', '1.5')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Let\'s start with an easy one. What song just played?')
+							])),
+						A2(
+						$elm$html$Html$input,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$type_('text'),
+								$elm$html$Html$Attributes$value(answer),
+								$elm$html$Html$Events$onInput($author$project$Main$AnswerChanged),
+								$elm$html$Html$Attributes$placeholder('Type your answer...'),
+								A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
+								A2($elm$html$Html$Attributes$style, 'padding', '12px 20px'),
+								A2($elm$html$Html$Attributes$style, 'border-radius', '8px'),
+								A2($elm$html$Html$Attributes$style, 'border', '1px solid #4a9eca'),
+								A2($elm$html$Html$Attributes$style, 'outline', 'none'),
+								A2($elm$html$Html$Attributes$style, 'width', '400px'),
+								A2($elm$html$Html$Attributes$style, 'box-sizing', 'border-box')
+							]),
+						_List_Nil)
+					]));
+	}
 };
 var $author$project$Main$main = $elm$browser$Browser$element(
 	{init: $author$project$Main$init, subscriptions: $author$project$Main$subscriptions, update: $author$project$Main$update, view: $author$project$Main$view});
