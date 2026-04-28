@@ -218,7 +218,7 @@ int main(void) {
                                  kAudioObjectPropertyScopeGlobal, &running);
         printf("    \"is_running\": ");
         if (has_run) printf("%s", running ? "true" : "false"); else printf("null");
-        printf(",\n");
+        printf("\n");
 
         printf("  }");
     }
