@@ -5170,7 +5170,9 @@ var $elm$browser$Browser$element = _Browser_element;
 var $elm$core$Platform$Cmd$batch = _Platform_batch;
 var $elm$core$Platform$Cmd$none = $elm$core$Platform$Cmd$batch(_List_Nil);
 var $author$project$Main$init = function (_v0) {
-	return _Utils_Tuple2(false, $elm$core$Platform$Cmd$none);
+	return _Utils_Tuple2(
+		{begun: false, connected: false},
+		$elm$core$Platform$Cmd$none);
 };
 var $author$project$Main$DevicesReceived = function (a) {
 	return {$: 'DevicesReceived', a: a};
@@ -5180,6 +5182,7 @@ var $author$project$Main$receiveDevices = _Platform_incomingPort('receiveDevices
 var $author$project$Main$subscriptions = function (_v0) {
 	return $author$project$Main$receiveDevices($author$project$Main$DevicesReceived);
 };
+var $elm$core$Basics$not = _Basics_not;
 var $elm$json$Json$Decode$decodeString = _Json_runOnString;
 var $elm$core$List$filter = F2(
 	function (isGood, list) {
@@ -5224,18 +5227,155 @@ var $author$project$Main$parseDevices = function (json) {
 		return false;
 	}
 };
-var $author$project$Main$update = F2(
-	function (_v0, _v1) {
-		var json = _v0.a;
-		return _Utils_Tuple2(
-			$author$project$Main$parseDevices(json),
-			$elm$core$Platform$Cmd$none);
+var $elm$json$Json$Encode$null = _Json_encodeNull;
+var $author$project$Main$restartMusic = _Platform_outgoingPort(
+	'restartMusic',
+	function ($) {
+		return $elm$json$Json$Encode$null;
 	});
+var $author$project$Main$stopMusic = _Platform_outgoingPort(
+	'stopMusic',
+	function ($) {
+		return $elm$json$Json$Encode$null;
+	});
+var $author$project$Main$update = F2(
+	function (msg, model) {
+		if (msg.$ === 'DevicesReceived') {
+			var json = msg.a;
+			var connected = $author$project$Main$parseDevices(json);
+			var cmd = ((!connected) && model.begun) ? $author$project$Main$restartMusic(_Utils_Tuple0) : $elm$core$Platform$Cmd$none;
+			return _Utils_Tuple2(
+				{begun: model.begun && connected, connected: connected},
+				cmd);
+		} else {
+			return _Utils_Tuple2(
+				_Utils_update(
+					model,
+					{begun: true}),
+				$author$project$Main$stopMusic(_Utils_Tuple0));
+		}
+	});
+var $author$project$Main$BeginPressed = {$: 'BeginPressed'};
+var $elm$html$Html$button = _VirtualDom_node('button');
+var $elm$html$Html$img = _VirtualDom_node('img');
+var $elm$json$Json$Encode$string = _Json_wrap;
+var $elm$html$Html$Attributes$stringProperty = F2(
+	function (key, string) {
+		return A2(
+			_VirtualDom_property,
+			key,
+			$elm$json$Json$Encode$string(string));
+	});
+var $elm$html$Html$Attributes$src = function (url) {
+	return A2(
+		$elm$html$Html$Attributes$stringProperty,
+		'src',
+		_VirtualDom_noJavaScriptOrHtmlUri(url));
+};
+var $elm$virtual_dom$VirtualDom$style = _VirtualDom_style;
+var $elm$html$Html$Attributes$style = $elm$virtual_dom$VirtualDom$style;
+var $author$project$Main$headphones = A2(
+	$elm$html$Html$img,
+	_List_fromArray(
+		[
+			$elm$html$Html$Attributes$src('assets/airpods.png'),
+			A2($elm$html$Html$Attributes$style, 'width', '340px')
+		]),
+	_List_Nil);
+var $elm$virtual_dom$VirtualDom$Normal = function (a) {
+	return {$: 'Normal', a: a};
+};
+var $elm$virtual_dom$VirtualDom$on = _VirtualDom_on;
+var $elm$html$Html$Events$on = F2(
+	function (event, decoder) {
+		return A2(
+			$elm$virtual_dom$VirtualDom$on,
+			event,
+			$elm$virtual_dom$VirtualDom$Normal(decoder));
+	});
+var $elm$html$Html$Events$onClick = function (msg) {
+	return A2(
+		$elm$html$Html$Events$on,
+		'click',
+		$elm$json$Json$Decode$succeed(msg));
+};
+var $elm$html$Html$p = _VirtualDom_node('p');
+var $elm$html$Html$div = _VirtualDom_node('div');
+var $author$project$Main$screen = function (children) {
+	return A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				A2($elm$html$Html$Attributes$style, 'height', '100vh'),
+				A2($elm$html$Html$Attributes$style, 'background-color', '#a8c8e0'),
+				A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+				A2($elm$html$Html$Attributes$style, 'flex-direction', 'column'),
+				A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+				A2($elm$html$Html$Attributes$style, 'justify-content', 'center'),
+				A2($elm$html$Html$Attributes$style, 'gap', '36px')
+			]),
+		children);
+};
 var $elm$virtual_dom$VirtualDom$text = _VirtualDom_text;
 var $elm$html$Html$text = $elm$virtual_dom$VirtualDom$text;
 var $author$project$Main$view = function (model) {
-	return $elm$html$Html$text(
-		model ? 'true' : 'false');
+	return (!model.connected) ? $author$project$Main$screen(
+		_List_fromArray(
+			[
+				$author$project$Main$headphones,
+				A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'font-size', '26px'),
+						A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+						A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+						A2($elm$html$Html$Attributes$style, 'margin', '0'),
+						A2($elm$html$Html$Attributes$style, 'max-width', '480px'),
+						A2($elm$html$Html$Attributes$style, 'line-height', '1.5')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Connect your AirPods Max 2 and turn up the volume.')
+					]))
+			])) : ((!model.begun) ? $author$project$Main$screen(
+		_List_fromArray(
+			[
+				$author$project$Main$headphones,
+				A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						A2($elm$html$Html$Attributes$style, 'font-size', '26px'),
+						A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+						A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+						A2($elm$html$Html$Attributes$style, 'margin', '0'),
+						A2($elm$html$Html$Attributes$style, 'max-width', '480px'),
+						A2($elm$html$Html$Attributes$style, 'line-height', '1.5')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Press Begin once you can hear the music.')
+					])),
+				A2(
+				$elm$html$Html$button,
+				_List_fromArray(
+					[
+						$elm$html$Html$Events$onClick($author$project$Main$BeginPressed),
+						A2($elm$html$Html$Attributes$style, 'padding', '20px 64px'),
+						A2($elm$html$Html$Attributes$style, 'font-size', '24px'),
+						A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+						A2($elm$html$Html$Attributes$style, 'border-radius', '12px'),
+						A2($elm$html$Html$Attributes$style, 'border', 'none'),
+						A2($elm$html$Html$Attributes$style, 'background-color', '#4a9eca'),
+						A2($elm$html$Html$Attributes$style, 'color', 'white'),
+						A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Begin')
+					]))
+			])) : $author$project$Main$screen(_List_Nil));
 };
 var $author$project$Main$main = $elm$browser$Browser$element(
 	{init: $author$project$Main$init, subscriptions: $author$project$Main$subscriptions, update: $author$project$Main$update, view: $author$project$Main$view});
