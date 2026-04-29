@@ -38,7 +38,7 @@ debug =
 
 iqQuestionCount : Int
 iqQuestionCount =
-    10
+    100
 
 
 iqFlashDuration : Float
@@ -137,13 +137,59 @@ type alias TrackInfo =
     }
 
 
+type alias DingSchedule =
+    { delay : Float, nextRandom : Bool }
+
+
+type alias IQTestInit =
+    { delay : Float, nextRandom : Bool, fakeFlashPoint : Int }
+
+
+type alias IQTestScreenState =
+    { questionIdx : Int
+    , totalDings : Int
+    , fakeFlashUsed : Bool
+    , in50PercentPhase : Bool
+    }
+
+
 type alias IQTestState =
     { questionIdx : Int
     , dingCount : Int
+    , totalDings : Int
     , isFlashing : Bool
     , dingActive : Bool
+    , fakeFlashActive : Bool
     , loudWarningShown : Bool
     , loudPlaying : Bool
+    , fakeFlashUsed : Bool
+    , fakeFlashPoint : Int
+    , nextRandom : Bool
+    , in50PercentPhase : Bool
+    }
+
+
+type FakeFlashPhase
+    = FfDelay
+    | FfText1In
+    | FfText1Hold
+    | FfText1Out
+    | FfText2In
+    | FfText2Hold
+    | FfText2Out
+    | FfCounterIn
+    | FfTickNumerator
+    | FfTickDelay
+    | FfTickDenominator
+    | FfCounterOut
+
+
+type alias FakeFlashCaughtState =
+    { questionIdx : Int
+    , originalTotal : Int
+    , displayNumerator : Int
+    , displayDenominator : Int
+    , phase : FakeFlashPhase
     }
 
 
@@ -153,8 +199,9 @@ type Screen
     | BlankScreen Int
     | QuestionScreen Int String
     | WrongAnswerScreen Int
-    | IQTestScreen Int
+    | IQTestScreen IQTestScreenState
     | IQTestActiveScreen IQTestState
+    | FakeFlashCaughtScreen FakeFlashCaughtState
     | WinScreen
 
 
@@ -178,12 +225,16 @@ type Msg
     | AnswerSubmitted
     | ContinuePressed
     | IQTestBeginPressed
+    | IQTestStarted IQTestInit
     | DingOccurred
     | DingFlashEnd
     | DingWindowExpired
     | SpaceBarPressed
-    | ScheduleNextDing Float
+    | ScheduleNextDing DingSchedule
     | StartLoudMusic
+    | FakeFlashNextPhase
+    | FakeFlashCounterTick
+    | FakeFlashWindowExpired
 
 
 init : () -> ( Model, Cmd Msg )
@@ -198,9 +249,36 @@ sleep ms msg =
     Task.perform (\_ -> msg) (Process.sleep ms)
 
 
+dingScheduleGen : Random.Generator DingSchedule
+dingScheduleGen =
+    Random.map2 (\d r -> { delay = d, nextRandom = r })
+        (Random.float 2000 15000)
+        (Random.map (\n -> n < 0.5) (Random.float 0 1))
+
+
+iqTestInitGen : Int -> Random.Generator IQTestInit
+iqTestInitGen total =
+    let
+        lo =
+            Basics.max 0 (floor (0.85 * toFloat total))
+
+        hi =
+            Basics.max lo (Basics.min (total - 1) (floor (0.95 * toFloat total)))
+    in
+    Random.map3 (\d r fp -> { delay = d, nextRandom = r, fakeFlashPoint = fp })
+        (Random.float 2000 15000)
+        (Random.map (\n -> n < 0.5) (Random.float 0 1))
+        (Random.int lo hi)
+
+
 iqFail : IQTestState -> ( Screen, Cmd Msg )
 iqFail state =
-    ( IQTestScreen state.questionIdx
+    ( IQTestScreen
+        { questionIdx = state.questionIdx
+        , totalDings = state.totalDings
+        , fakeFlashUsed = state.fakeFlashUsed
+        , in50PercentPhase = state.in50PercentPhase
+        }
     , if state.loudPlaying then stopMusic "loud.mp4" else Cmd.none
     )
 
@@ -248,6 +326,9 @@ update msg model =
                                 True
 
                             IQTestActiveScreen _ ->
+                                True
+
+                            FakeFlashCaughtScreen _ ->
                                 True
 
                             _ ->
@@ -384,35 +465,63 @@ update msg model =
         ContinuePressed ->
             case model.screen of
                 WrongAnswerScreen idx ->
-                    ( { model | screen = IQTestScreen idx }, Cmd.none )
+                    ( { model
+                        | screen =
+                            IQTestScreen
+                                { questionIdx = idx
+                                , totalDings = iqQuestionCount
+                                , fakeFlashUsed = False
+                                , in50PercentPhase = False
+                                }
+                      }
+                    , Cmd.none
+                    )
 
                 _ ->
                     ( model, Cmd.none )
 
         IQTestBeginPressed ->
             case model.screen of
-                IQTestScreen questionIdx ->
-                    ( { model
-                        | screen =
-                            IQTestActiveScreen
-                                { questionIdx = questionIdx
-                                , dingCount = 0
-                                , isFlashing = False
-                                , dingActive = False
-                                , loudWarningShown = False
-                                , loudPlaying = False
-                                }
-                      }
-                    , Random.generate ScheduleNextDing (Random.float 2000 15000)
+                IQTestScreen iqScreen ->
+                    ( model
+                    , Random.generate IQTestStarted (iqTestInitGen iqScreen.totalDings)
                     )
 
                 _ ->
                     ( model, Cmd.none )
 
-        ScheduleNextDing delay ->
+        IQTestStarted { delay, nextRandom, fakeFlashPoint } ->
             case model.screen of
-                IQTestActiveScreen _ ->
-                    ( model, sleep delay DingOccurred )
+                IQTestScreen iqScreen ->
+                    ( { model
+                        | screen =
+                            IQTestActiveScreen
+                                { questionIdx = iqScreen.questionIdx
+                                , dingCount = 0
+                                , totalDings = iqScreen.totalDings
+                                , isFlashing = False
+                                , dingActive = False
+                                , fakeFlashActive = False
+                                , loudWarningShown = False
+                                , loudPlaying = False
+                                , fakeFlashUsed = iqScreen.fakeFlashUsed
+                                , fakeFlashPoint = fakeFlashPoint
+                                , nextRandom = nextRandom
+                                , in50PercentPhase = iqScreen.in50PercentPhase
+                                }
+                      }
+                    , sleep delay DingOccurred
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        ScheduleNextDing { delay, nextRandom } ->
+            case model.screen of
+                IQTestActiveScreen state ->
+                    ( { model | screen = IQTestActiveScreen { state | nextRandom = nextRandom } }
+                    , sleep delay DingOccurred
+                    )
 
                 _ ->
                     ( model, Cmd.none )
@@ -420,14 +529,33 @@ update msg model =
         DingOccurred ->
             case model.screen of
                 IQTestActiveScreen state ->
-                    ( { model | screen = IQTestActiveScreen { state | isFlashing = True, dingActive = True } }
-                    , Cmd.batch
-                        [ sleep iqFlashDuration DingFlashEnd
-                        , sleep iqWindowDuration DingWindowExpired
-                        , playDing iqDingVolume
-                        , showFlash True
-                        ]
-                    )
+                    let
+                        isFakeFlashPoint =
+                            not state.fakeFlashUsed
+                                && not state.in50PercentPhase
+                                && state.dingCount == state.fakeFlashPoint
+
+                        isFake =
+                            isFakeFlashPoint || (state.in50PercentPhase && state.nextRandom)
+                    in
+                    if isFake then
+                        ( { model | screen = IQTestActiveScreen { state | isFlashing = True, fakeFlashActive = True } }
+                        , Cmd.batch
+                            [ sleep iqFlashDuration DingFlashEnd
+                            , sleep iqWindowDuration FakeFlashWindowExpired
+                            , showFlash True
+                            ]
+                        )
+
+                    else
+                        ( { model | screen = IQTestActiveScreen { state | isFlashing = True, dingActive = True } }
+                        , Cmd.batch
+                            [ sleep iqFlashDuration DingFlashEnd
+                            , sleep iqWindowDuration DingWindowExpired
+                            , playDing iqDingVolume
+                            , showFlash True
+                            ]
+                        )
 
                 _ ->
                     ( model, Cmd.none )
@@ -435,7 +563,11 @@ update msg model =
         DingFlashEnd ->
             case model.screen of
                 IQTestActiveScreen state ->
-                    ( { model | screen = IQTestActiveScreen { state | isFlashing = False } }, showFlash False )
+                    if state.fakeFlashActive then
+                        ( { model | screen = IQTestActiveScreen { state | isFlashing = False } }, showFlash False )
+
+                    else
+                        ( { model | screen = IQTestActiveScreen { state | isFlashing = False } }, showFlash False )
 
                 _ ->
                     ( model, Cmd.none )
@@ -456,19 +588,68 @@ update msg model =
                 _ ->
                     ( model, Cmd.none )
 
+        FakeFlashWindowExpired ->
+            case model.screen of
+                IQTestActiveScreen state ->
+                    if state.fakeFlashActive then
+                        ( { model | screen = IQTestActiveScreen { state | fakeFlashActive = False, fakeFlashUsed = True } }
+                        , Random.generate ScheduleNextDing dingScheduleGen
+                        )
+
+                    else
+                        ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
+
         SpaceBarPressed ->
             case model.screen of
                 IQTestActiveScreen state ->
-                    if state.dingActive then
-                        let
-                            newCount =
-                                state.dingCount + 1
+                    if state.fakeFlashActive then
+                        if not state.fakeFlashUsed then
+                            ( { model
+                                | screen =
+                                    FakeFlashCaughtScreen
+                                        { questionIdx = state.questionIdx
+                                        , originalTotal = state.totalDings
+                                        , displayNumerator = state.dingCount
+                                        , displayDenominator = state.totalDings
+                                        , phase = FfDelay
+                                        }
+                              }
+                            , Cmd.batch
+                                [ sleep 1000 FakeFlashNextPhase
+                                , if state.loudPlaying then stopMusic "loud.mp4" else Cmd.none
+                                , showFlash False
+                                ]
+                            )
 
-                            showLoudWarning =
-                                newCount == 4
+                        else
+                            let
+                                ( newScreen, cmd ) =
+                                    iqFail state
+                            in
+                            ( { model | screen = newScreen }, Cmd.batch [ cmd, showFlash False ] )
+
+                    else if state.dingActive then
+                        let
+                            stillPunished =
+                                state.totalDings > iqQuestionCount
+
+                            newDingCount =
+                                if stillPunished then state.dingCount else state.dingCount + 1
+
+                            newTotalDings =
+                                if stillPunished then state.totalDings - 1 else state.totalDings
+
+                            newIn50Percent =
+                                state.in50PercentPhase || (stillPunished && newTotalDings == iqQuestionCount)
 
                             completed =
-                                newCount >= iqQuestionCount
+                                not stillPunished && newDingCount >= state.totalDings
+
+                            showLoudWarning =
+                                not stillPunished && not state.loudWarningShown && newDingCount == 4
 
                             nextIdx =
                                 state.questionIdx + 1
@@ -485,14 +666,16 @@ update msg model =
                             let
                                 newState =
                                     { state
-                                        | dingCount = newCount
+                                        | dingCount = newDingCount
+                                        , totalDings = newTotalDings
                                         , dingActive = False
                                         , loudWarningShown = state.loudWarningShown || showLoudWarning
+                                        , in50PercentPhase = newIn50Percent
                                     }
                             in
                             ( { model | screen = IQTestActiveScreen newState }
                             , Cmd.batch
-                                [ Random.generate ScheduleNextDing (Random.float 2000 15000)
+                                [ Random.generate ScheduleNextDing dingScheduleGen
                                 , if showLoudWarning then sleep 3000 StartLoudMusic else Cmd.none
                                 ]
                             )
@@ -513,6 +696,102 @@ update msg model =
                     ( { model | screen = IQTestActiveScreen { state | loudPlaying = True } }
                     , playVideo { filename = "loud.mp4", loop = True }
                     )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        FakeFlashNextPhase ->
+            case model.screen of
+                FakeFlashCaughtScreen state ->
+                    let
+                        advance newPhase delay =
+                            ( { model | screen = FakeFlashCaughtScreen { state | phase = newPhase } }
+                            , sleep delay FakeFlashNextPhase
+                            )
+                    in
+                    case state.phase of
+                        FfDelay ->
+                            advance FfText1In 1000
+
+                        FfText1In ->
+                            advance FfText1Hold 2500
+
+                        FfText1Hold ->
+                            advance FfText1Out 1000
+
+                        FfText1Out ->
+                            advance FfText2In 800
+
+                        FfText2In ->
+                            advance FfText2Hold 2500
+
+                        FfText2Hold ->
+                            advance FfText2Out 1000
+
+                        FfText2Out ->
+                            advance FfCounterIn 700
+
+                        FfCounterIn ->
+                            ( { model | screen = FakeFlashCaughtScreen { state | phase = FfTickNumerator } }
+                            , sleep 80 FakeFlashCounterTick
+                            )
+
+                        FfTickDelay ->
+                            ( { model | screen = FakeFlashCaughtScreen { state | phase = FfTickDenominator } }
+                            , sleep 80 FakeFlashCounterTick
+                            )
+
+                        FfCounterOut ->
+                            ( { model
+                                | screen =
+                                    IQTestScreen
+                                        { questionIdx = state.questionIdx
+                                        , totalDings = state.originalTotal * 2
+                                        , fakeFlashUsed = True
+                                        , in50PercentPhase = False
+                                        }
+                              }
+                            , Cmd.none
+                            )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        FakeFlashCounterTick ->
+            case model.screen of
+                FakeFlashCaughtScreen state ->
+                    case state.phase of
+                        FfTickNumerator ->
+                            if state.displayNumerator > 0 then
+                                ( { model | screen = FakeFlashCaughtScreen { state | displayNumerator = state.displayNumerator - 1 } }
+                                , Cmd.batch [ sleep 80 FakeFlashCounterTick, playDing 0.15 ]
+                                )
+
+                            else
+                                ( { model | screen = FakeFlashCaughtScreen { state | phase = FfTickDelay } }
+                                , sleep 500 FakeFlashNextPhase
+                                )
+
+                        FfTickDenominator ->
+                            let
+                                target =
+                                    state.originalTotal * 2
+                            in
+                            if state.displayDenominator < target then
+                                ( { model | screen = FakeFlashCaughtScreen { state | displayDenominator = state.displayDenominator + 1 } }
+                                , Cmd.batch [ sleep 80 FakeFlashCounterTick, playDing 0.3 ]
+                                )
+
+                            else
+                                ( { model | screen = FakeFlashCaughtScreen { state | phase = FfCounterOut } }
+                                , sleep 1500 FakeFlashNextPhase
+                                )
+
+                        _ ->
+                            ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
@@ -544,6 +823,28 @@ headphones =
         , style "width" "340px"
         ]
         []
+
+
+isCounterBig : FakeFlashPhase -> Bool
+isCounterBig phase =
+    case phase of
+        FfCounterIn ->
+            True
+
+        FfTickNumerator ->
+            True
+
+        FfTickDelay ->
+            True
+
+        FfTickDenominator ->
+            True
+
+        FfCounterOut ->
+            True
+
+        _ ->
+            False
 
 
 view : Model -> Html Msg
@@ -762,7 +1063,7 @@ view model =
                         "#a8c8e0"
 
                 counter =
-                    String.fromInt state.dingCount ++ " / " ++ String.fromInt iqQuestionCount
+                    String.fromInt state.dingCount ++ " / " ++ String.fromInt state.totalDings
             in
             div []
                 [ p
@@ -794,6 +1095,97 @@ view model =
                      else
                         []
                     )
+                ]
+
+        FakeFlashCaughtScreen state ->
+            let
+                big =
+                    isCounterBig state.phase
+
+                counterTop =
+                    if big then "50%" else "20px"
+
+                counterTransform =
+                    if big then "translate(-50%, -50%)" else "translate(-50%, 0)"
+
+                counterFontSize =
+                    if big then "96px" else "20px"
+
+                counterOpacity =
+                    if state.phase == FfCounterOut then "0" else "1"
+
+                text1Opacity =
+                    case state.phase of
+                        FfText1In ->
+                            "1"
+
+                        FfText1Hold ->
+                            "1"
+
+                        _ ->
+                            "0"
+
+                text2Opacity =
+                    case state.phase of
+                        FfText2In ->
+                            "1"
+
+                        FfText2Hold ->
+                            "1"
+
+                        _ ->
+                            "0"
+
+                counterText =
+                    String.fromInt state.displayNumerator ++ " / " ++ String.fromInt state.displayDenominator
+            in
+            div [ style "height" "100vh", style "background-color" "#a8c8e0" ]
+                [ p
+                    [ style "position" "fixed"
+                    , style "top" counterTop
+                    , style "left" "50%"
+                    , style "transform" counterTransform
+                    , style "font-size" counterFontSize
+                    , style "color" "#2c4a5a"
+                    , style "margin" "0"
+                    , style "font-weight" "bold"
+                    , style "text-align" "center"
+                    , style "white-space" "nowrap"
+                    , style "opacity" counterOpacity
+                    , style "transition" "top 0.6s ease, font-size 0.6s ease, opacity 0.8s ease, transform 0.6s ease"
+                    , style "z-index" "10"
+                    ]
+                    [ text counterText ]
+                , p
+                    [ style "position" "fixed"
+                    , style "top" "50%"
+                    , style "left" "50%"
+                    , style "transform" "translate(-50%, -50%)"
+                    , style "font-size" "28px"
+                    , style "color" "#2c4a5a"
+                    , style "margin" "0"
+                    , style "text-align" "center"
+                    , style "max-width" "600px"
+                    , style "line-height" "1.5"
+                    , style "opacity" text1Opacity
+                    , style "transition" "opacity 0.8s ease"
+                    ]
+                    [ text "You pressed the space bar because you saw a green flash." ]
+                , p
+                    [ style "position" "fixed"
+                    , style "top" "50%"
+                    , style "left" "50%"
+                    , style "transform" "translate(-50%, -50%)"
+                    , style "font-size" "28px"
+                    , style "color" "#2c4a5a"
+                    , style "margin" "0"
+                    , style "text-align" "center"
+                    , style "max-width" "600px"
+                    , style "line-height" "1.5"
+                    , style "opacity" text2Opacity
+                    , style "transition" "opacity 0.8s ease"
+                    ]
+                    [ text "But there was no ding..." ]
                 ]
 
         WinScreen ->
