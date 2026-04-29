@@ -5309,7 +5309,7 @@ var $elm$time$Time$posixToMillis = function (_v0) {
 };
 var $author$project$Main$init = function (_v0) {
 	return _Utils_Tuple2(
-		{connected: false, ignoreDisconnect: false, jeopardyId: $elm$core$Maybe$Nothing, jeopardyPlaying: true, now: 0, pending: _List_Nil, screen: $author$project$Main$ConnectScreen, trackInfo: _List_Nil},
+		{activeSongId: $elm$core$Maybe$Nothing, connected: false, ignoreDisconnect: false, jeopardyId: $elm$core$Maybe$Nothing, jeopardyPlaying: true, now: 0, pending: _List_Nil, savedState: $elm$core$Maybe$Nothing, screen: $author$project$Main$ConnectScreen, trackInfo: _List_Nil},
 		$elm$core$Platform$Cmd$batch(
 			_List_fromArray(
 				[
@@ -6039,6 +6039,15 @@ var $author$project$Main$WinScreen = {$: 'WinScreen'};
 var $author$project$Main$WrongAnswerScreen = function (a) {
 	return {$: 'WrongAnswerScreen', a: a};
 };
+var $elm$core$Maybe$andThen = F2(
+	function (callback, maybeValue) {
+		if (maybeValue.$ === 'Just') {
+			var value = maybeValue.a;
+			return callback(value);
+		} else {
+			return $elm$core$Maybe$Nothing;
+		}
+	});
 var $elm$core$List$any = F2(
 	function (isOkay, list) {
 		any:
@@ -6173,6 +6182,17 @@ var $author$project$Main$dingScheduleGen = A3(
 			return n < 0.5;
 		},
 		A2($elm$random$Random$float, 0, 1)));
+var $elm$core$List$filter = F2(
+	function (isGood, list) {
+		return A3(
+			$elm$core$List$foldr,
+			F2(
+				function (x, xs) {
+					return isGood(x) ? A2($elm$core$List$cons, x, xs) : xs;
+				}),
+			_List_Nil,
+			list);
+	});
 var $elm$browser$Browser$Dom$focus = _Browser_call('focus');
 var $elm$core$Basics$ge = _Utils_ge;
 var $elm$random$Random$Generate = function (a) {
@@ -6431,6 +6451,16 @@ var $author$project$Main$isVideo = function (filename) {
 	return A2($elm$core$String$endsWith, '.mp4', filename);
 };
 var $author$project$Main$logToFile = _Platform_outgoingPort('logToFile', $elm$json$Json$Encode$string);
+var $elm$core$Maybe$map = F2(
+	function (f, maybe) {
+		if (maybe.$ === 'Just') {
+			var value = maybe.a;
+			return $elm$core$Maybe$Just(
+				f(value));
+		} else {
+			return $elm$core$Maybe$Nothing;
+		}
+	});
 var $elm$core$String$filter = _String_filter;
 var $elm$core$String$toLower = _String_toLower;
 var $elm$core$String$words = _String_words;
@@ -6449,17 +6479,6 @@ var $author$project$Main$normalize = function (s) {
 				$elm$core$String$toLower(s))));
 };
 var $elm$json$Json$Decode$decodeString = _Json_runOnString;
-var $elm$core$List$filter = F2(
-	function (isGood, list) {
-		return A3(
-			$elm$core$List$foldr,
-			F2(
-				function (x, xs) {
-					return isGood(x) ? A2($elm$core$List$cons, x, xs) : xs;
-				}),
-			_List_Nil,
-			list);
-	});
 var $elm$json$Json$Decode$map4 = _Json_map4;
 var $author$project$Main$isMatchDecoder = A5(
 	$elm$json$Json$Decode$map4,
@@ -6518,8 +6537,18 @@ var $author$project$Main$schedule = F3(
 					model.pending)
 			});
 	});
+var $author$project$Main$seekVideo = _Platform_outgoingPort('seekVideo', $elm$json$Json$Encode$float);
 var $author$project$Main$stopMusic = _Platform_outgoingPort('stopMusic', $elm$json$Json$Encode$string);
 var $elm$core$Debug$toString = _Debug_toString;
+var $elm$core$Maybe$withDefault = F2(
+	function (_default, maybe) {
+		if (maybe.$ === 'Just') {
+			var value = maybe.a;
+			return value;
+		} else {
+			return _default;
+		}
+	});
 var $author$project$Main$update = F2(
 	function (msg, model) {
 		var shouldLog = function () {
@@ -6539,9 +6568,9 @@ var $author$project$Main$update = F2(
 					return true;
 			}
 		}();
-		var _v34 = A2($author$project$Main$updateImpl, msg, model);
-		var newModel = _v34.a;
-		var cmd = _v34.b;
+		var _v42 = A2($author$project$Main$updateImpl, msg, model);
+		var newModel = _v42.a;
+		var cmd = _v42.b;
 		var entry = '=== ' + ($elm$core$Debug$toString(msg) + (' ===\n' + ('BEFORE: ' + ($elm$core$Debug$toString(model) + ('\n' + ('AFTER:  ' + ($elm$core$Debug$toString(newModel) + '\n')))))));
 		return shouldLog ? _Utils_Tuple2(
 			newModel,
@@ -6597,26 +6626,115 @@ var $author$project$Main$updateImpl = F2(
 				var json = msg.a;
 				var connected = $author$project$Main$parseDevices(json);
 				if (connected || model.ignoreDisconnect) {
-					var newScreen = function () {
-						var _v4 = model.screen;
-						if (_v4.$ === 'ConnectScreen') {
-							return $author$project$Main$BeginScreen;
+					var _v4 = model.savedState;
+					if (_v4.$ === 'Just') {
+						var saved = _v4.a;
+						var stopJeopardyCmd = function () {
+							var _v10 = model.jeopardyId;
+							if (_v10.$ === 'Just') {
+								var jid = _v10.a;
+								return $author$project$Main$stopMusic(jid);
+							} else {
+								return $elm$core$Platform$Cmd$none;
+							}
+						}();
+						var restoredScreen = function () {
+							var _v9 = saved.screen;
+							if (_v9.$ === 'IQTestActiveScreen') {
+								var state = _v9.a;
+								return $author$project$Main$IQTestActiveScreen(
+									_Utils_update(
+										state,
+										{dingActive: false, fakeFlashActive: false, isFlashing: false}));
+							} else {
+								var other = _v9;
+								return other;
+							}
+						}();
+						var videoCmd = function () {
+							var _v7 = saved.videoResumeTime;
+							if (_v7.$ === 'Just') {
+								var t = _v7.a;
+								switch (restoredScreen.$) {
+									case 'VideoScreen':
+										return $author$project$Main$seekVideo(t);
+									case 'IQTestActiveScreen':
+										var state = restoredScreen.a;
+										return state.loudPlaying ? $author$project$Main$seekVideo(t) : $elm$core$Platform$Cmd$none;
+									default:
+										return $elm$core$Platform$Cmd$none;
+								}
+							} else {
+								return $elm$core$Platform$Cmd$none;
+							}
+						}();
+						var rebasedPending = A2(
+							$elm$core$List$map,
+							function (e) {
+								return _Utils_update(
+									e,
+									{
+										fireAt: model.now + A2($elm$core$Basics$max, 500, e.fireAt - saved.savedAt)
+									});
+							},
+							saved.pending);
+						var audioCmd = function () {
+							if (restoredScreen.$ === 'BlankScreen') {
+								var idx = restoredScreen.a;
+								var _v6 = $author$project$Main$getQuestion(idx);
+								if (_v6.$ === 'Just') {
+									var q = _v6.a;
+									return (!$author$project$Main$isVideo(q.song)) ? $author$project$Main$playMusic(
+										{
+											filename: q.song,
+											startTime: A2($elm$core$Maybe$withDefault, 0, saved.songResumeTime),
+											volume: 1.0
+										}) : $elm$core$Platform$Cmd$none;
+								} else {
+									return $elm$core$Platform$Cmd$none;
+								}
+							} else {
+								return $elm$core$Platform$Cmd$none;
+							}
+						}();
+						return _Utils_Tuple2(
+							_Utils_update(
+								model,
+								{connected: true, jeopardyId: $elm$core$Maybe$Nothing, jeopardyPlaying: false, pending: rebasedPending, savedState: $elm$core$Maybe$Nothing, screen: restoredScreen}),
+							$elm$core$Platform$Cmd$batch(
+								_List_fromArray(
+									[stopJeopardyCmd, audioCmd, videoCmd])));
+					} else {
+						var newScreen = function () {
+							var _v11 = model.screen;
+							if (_v11.$ === 'ConnectScreen') {
+								return $author$project$Main$BeginScreen;
+							} else {
+								var other = _v11;
+								return other;
+							}
+						}();
+						var shouldStart = (!model.jeopardyPlaying) && (_Utils_eq(newScreen, $author$project$Main$ConnectScreen) || _Utils_eq(newScreen, $author$project$Main$BeginScreen));
+						return _Utils_Tuple2(
+							_Utils_update(
+								model,
+								{connected: true, jeopardyPlaying: model.jeopardyPlaying || shouldStart, screen: newScreen}),
+							shouldStart ? $author$project$Main$playMusic(
+								{filename: 'jeopardy-theme.mp3', startTime: 0, volume: 1.0}) : $elm$core$Platform$Cmd$none);
+					}
+				} else {
+					var stopSongCmd = function () {
+						var _v13 = model.activeSongId;
+						if (_v13.$ === 'Just') {
+							var sid = _v13.a;
+							return $author$project$Main$stopMusic(sid);
 						} else {
-							var other = _v4;
-							return other;
+							return $elm$core$Platform$Cmd$none;
 						}
 					}();
-					var shouldStart = (!model.jeopardyPlaying) && (_Utils_eq(newScreen, $author$project$Main$ConnectScreen) || _Utils_eq(newScreen, $author$project$Main$BeginScreen));
-					return _Utils_Tuple2(
-						_Utils_update(
-							model,
-							{connected: true, jeopardyPlaying: model.jeopardyPlaying || shouldStart, screen: newScreen}),
-						shouldStart ? $author$project$Main$playMusic(
-							{filename: 'jeopardy-theme.mp3', startTime: 0, volume: 1.0}) : $elm$core$Platform$Cmd$none);
-				} else {
 					var needsJeopardy = function () {
-						var _v5 = model.screen;
-						switch (_v5.$) {
+						var _v12 = model.screen;
+						switch (_v12.$) {
 							case 'BlankScreen':
 								return true;
 							case 'QuestionScreen':
@@ -6637,13 +6755,55 @@ var $author$project$Main$updateImpl = F2(
 								return false;
 						}
 					}();
+					var newSavedState = function () {
+						if (needsJeopardy) {
+							var videoResumeTime = A2(
+								$elm$core$Maybe$map,
+								function ($) {
+									return $.currentTime;
+								},
+								$elm$core$List$head(
+									A2(
+										$elm$core$List$filter,
+										function (t) {
+											return t.id === 'video';
+										},
+										model.trackInfo)));
+							var songResumeTime = A2(
+								$elm$core$Maybe$map,
+								function ($) {
+									return $.currentTime;
+								},
+								A2(
+									$elm$core$Maybe$andThen,
+									function (sid) {
+										return $elm$core$List$head(
+											A2(
+												$elm$core$List$filter,
+												function (t) {
+													return _Utils_eq(t.id, sid);
+												},
+												model.trackInfo));
+									},
+									model.activeSongId));
+							return $elm$core$Maybe$Just(
+								{pending: model.pending, savedAt: model.now, screen: model.screen, songResumeTime: songResumeTime, videoResumeTime: videoResumeTime});
+						} else {
+							return model.savedState;
+						}
+					}();
 					return _Utils_Tuple2(
 						$author$project$Main$clearPending(
 							_Utils_update(
 								model,
-								{connected: false, jeopardyPlaying: model.jeopardyPlaying || needsJeopardy, screen: $author$project$Main$ConnectScreen})),
-						needsJeopardy ? $author$project$Main$playMusic(
-							{filename: 'jeopardy-theme.mp3', startTime: 0, volume: 1.0}) : $elm$core$Platform$Cmd$none);
+								{activeSongId: $elm$core$Maybe$Nothing, connected: false, jeopardyPlaying: model.jeopardyPlaying || needsJeopardy, savedState: newSavedState, screen: $author$project$Main$ConnectScreen})),
+						$elm$core$Platform$Cmd$batch(
+							_List_fromArray(
+								[
+									stopSongCmd,
+									needsJeopardy ? $author$project$Main$playMusic(
+									{filename: 'jeopardy-theme.mp3', startTime: 0, volume: 1.0}) : $elm$core$Platform$Cmd$none
+								])));
 				}
 			case 'BeginPressed':
 				return _Utils_Tuple2(
@@ -6655,14 +6815,16 @@ var $author$project$Main$updateImpl = F2(
 							_Utils_update(
 								model,
 								{
+									activeSongId: $elm$core$Maybe$Nothing,
 									jeopardyId: $elm$core$Maybe$Nothing,
 									jeopardyPlaying: false,
+									savedState: $elm$core$Maybe$Nothing,
 									screen: $author$project$Main$BlankScreen(0)
 								}))),
 					function () {
-						var _v6 = model.jeopardyId;
-						if (_v6.$ === 'Just') {
-							var jid = _v6.a;
+						var _v14 = model.jeopardyId;
+						if (_v14.$ === 'Just') {
+							var jid = _v14.a;
 							return $author$project$Main$stopMusic(jid);
 						} else {
 							return $elm$core$Platform$Cmd$none;
@@ -6670,13 +6832,13 @@ var $author$project$Main$updateImpl = F2(
 					}());
 			case 'PlaySong':
 				var idx = msg.a;
-				var _v7 = model.screen;
-				if (_v7.$ === 'BlankScreen') {
-					var blankIdx = _v7.a;
+				var _v15 = model.screen;
+				if (_v15.$ === 'BlankScreen') {
+					var blankIdx = _v15.a;
 					if (_Utils_eq(blankIdx, idx)) {
-						var _v8 = $author$project$Main$getQuestion(idx);
-						if (_v8.$ === 'Just') {
-							var q = _v8.a;
+						var _v16 = $author$project$Main$getQuestion(idx);
+						if (_v16.$ === 'Just') {
+							var q = _v16.a;
 							return $author$project$Main$isVideo(q.song) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
@@ -6699,8 +6861,8 @@ var $author$project$Main$updateImpl = F2(
 			case 'TrackEnded':
 				var name = msg.a;
 				if (name === 'jeopardy-theme.mp3') {
-					var _v9 = model.screen;
-					switch (_v9.$) {
+					var _v17 = model.screen;
+					switch (_v17.$) {
 						case 'ConnectScreen':
 							return _Utils_Tuple2(
 								_Utils_update(
@@ -6723,45 +6885,48 @@ var $author$project$Main$updateImpl = F2(
 								$elm$core$Platform$Cmd$none);
 					}
 				} else {
-					var _v10 = model.screen;
-					switch (_v10.$) {
+					var baseModel = _Utils_update(
+						model,
+						{activeSongId: $elm$core$Maybe$Nothing});
+					var _v18 = model.screen;
+					switch (_v18.$) {
 						case 'BlankScreen':
-							var idx = _v10.a;
-							var _v11 = $author$project$Main$getQuestion(idx);
-							if (_v11.$ === 'Just') {
-								var q = _v11.a;
+							var idx = _v18.a;
+							var _v19 = $author$project$Main$getQuestion(idx);
+							if (_v19.$ === 'Just') {
+								var q = _v19.a;
 								return _Utils_eq(q.song, name) ? _Utils_Tuple2(
 									A3(
 										$author$project$Main$schedule,
 										1000,
 										$author$project$Main$ShowQuestion(idx),
-										model),
-									$elm$core$Platform$Cmd$none) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+										baseModel),
+									$elm$core$Platform$Cmd$none) : _Utils_Tuple2(baseModel, $elm$core$Platform$Cmd$none);
 							} else {
-								return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+								return _Utils_Tuple2(baseModel, $elm$core$Platform$Cmd$none);
 							}
 						case 'VideoScreen':
-							var idx = _v10.a;
+							var idx = _v18.a;
 							return _Utils_Tuple2(
 								A3(
 									$author$project$Main$schedule,
 									1000,
 									$author$project$Main$ShowQuestion(idx),
 									_Utils_update(
-										model,
+										baseModel,
 										{
 											screen: $author$project$Main$BlankScreen(idx)
 										})),
 								$elm$core$Platform$Cmd$none);
 						default:
-							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+							return _Utils_Tuple2(baseModel, $elm$core$Platform$Cmd$none);
 					}
 				}
 			case 'ShowQuestion':
 				var idx = msg.a;
-				var _v12 = model.screen;
-				if (_v12.$ === 'BlankScreen') {
-					var blankIdx = _v12.a;
+				var _v20 = model.screen;
+				if (_v20.$ === 'BlankScreen') {
+					var blankIdx = _v20.a;
 					return _Utils_eq(blankIdx, idx) ? _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -6770,7 +6935,7 @@ var $author$project$Main$updateImpl = F2(
 							}),
 						A2(
 							$elm$core$Task$attempt,
-							function (_v13) {
+							function (_v21) {
 								return $author$project$Main$NoOp;
 							},
 							$elm$browser$Browser$Dom$focus('answer-input'))) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
@@ -6788,9 +6953,9 @@ var $author$project$Main$updateImpl = F2(
 				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			case 'AnswerChanged':
 				var typed = msg.a;
-				var _v14 = model.screen;
-				if (_v14.$ === 'QuestionScreen') {
-					var idx = _v14.a;
+				var _v22 = model.screen;
+				if (_v22.$ === 'QuestionScreen') {
+					var idx = _v22.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -6802,13 +6967,13 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'AnswerSubmitted':
-				var _v15 = model.screen;
-				if (_v15.$ === 'QuestionScreen') {
-					var idx = _v15.a;
-					var answer = _v15.b;
-					var _v16 = $author$project$Main$getQuestion(idx);
-					if (_v16.$ === 'Just') {
-						var q = _v16.a;
+				var _v23 = model.screen;
+				if (_v23.$ === 'QuestionScreen') {
+					var idx = _v23.a;
+					var answer = _v23.b;
+					var _v24 = $author$project$Main$getQuestion(idx);
+					if (_v24.$ === 'Just') {
+						var q = _v24.a;
 						if (A2(
 							$elm$core$List$any,
 							function (a) {
@@ -6818,8 +6983,8 @@ var $author$project$Main$updateImpl = F2(
 							},
 							q.answers)) {
 							var nextIdx = idx + 1;
-							var _v17 = $author$project$Main$getQuestion(nextIdx);
-							if (_v17.$ === 'Just') {
+							var _v25 = $author$project$Main$getQuestion(nextIdx);
+							if (_v25.$ === 'Just') {
 								return _Utils_Tuple2(
 									A3(
 										$author$project$Main$schedule,
@@ -6856,9 +7021,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'ContinuePressed':
-				var _v18 = model.screen;
-				if (_v18.$ === 'WrongAnswerScreen') {
-					var idx = _v18.a;
+				var _v26 = model.screen;
+				if (_v26.$ === 'WrongAnswerScreen') {
+					var idx = _v26.a;
 					return _Utils_Tuple2(
 						$author$project$Main$clearPending(
 							_Utils_update(
@@ -6872,9 +7037,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'IQTestBeginPressed':
-				var _v19 = model.screen;
-				if (_v19.$ === 'IQTestScreen') {
-					var iqScreen = _v19.a;
+				var _v27 = model.screen;
+				if (_v27.$ === 'IQTestScreen') {
+					var iqScreen = _v27.a;
 					return _Utils_Tuple2(
 						model,
 						A2(
@@ -6886,9 +7051,9 @@ var $author$project$Main$updateImpl = F2(
 				}
 			case 'IQTestStarted':
 				var initData = msg.a;
-				var _v20 = model.screen;
-				if (_v20.$ === 'IQTestScreen') {
-					var iqScreen = _v20.a;
+				var _v28 = model.screen;
+				if (_v28.$ === 'IQTestScreen') {
+					var iqScreen = _v28.a;
 					return _Utils_Tuple2(
 						A3(
 							$author$project$Main$schedule,
@@ -6905,9 +7070,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'CountdownTick':
-				var _v21 = model.screen;
-				if (_v21.$ === 'IQTestCountdownScreen') {
-					var state = _v21.a;
+				var _v29 = model.screen;
+				if (_v29.$ === 'IQTestCountdownScreen') {
+					var state = _v29.a;
 					if (state.countdown > 1) {
 						return _Utils_Tuple2(
 							A3(
@@ -6924,10 +7089,10 @@ var $author$project$Main$updateImpl = F2(
 									})),
 							$elm$core$Platform$Cmd$none);
 					} else {
-						var _v22 = state.initData;
-						var delay = _v22.delay;
-						var nextRandom = _v22.nextRandom;
-						var fakeFlashPoint = _v22.fakeFlashPoint;
+						var _v30 = state.initData;
+						var delay = _v30.delay;
+						var nextRandom = _v30.nextRandom;
+						var fakeFlashPoint = _v30.fakeFlashPoint;
 						return _Utils_Tuple2(
 							A3(
 								$author$project$Main$schedule,
@@ -6948,9 +7113,9 @@ var $author$project$Main$updateImpl = F2(
 			case 'ScheduleNextDing':
 				var delay = msg.a.delay;
 				var nextRandom = msg.a.nextRandom;
-				var _v23 = model.screen;
-				if (_v23.$ === 'IQTestActiveScreen') {
-					var state = _v23.a;
+				var _v31 = model.screen;
+				if (_v31.$ === 'IQTestActiveScreen') {
+					var state = _v31.a;
 					return _Utils_Tuple2(
 						A3(
 							$author$project$Main$schedule,
@@ -6969,9 +7134,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'DingOccurred':
-				var _v24 = model.screen;
-				if (_v24.$ === 'IQTestActiveScreen') {
-					var state = _v24.a;
+				var _v32 = model.screen;
+				if (_v32.$ === 'IQTestActiveScreen') {
+					var state = _v32.a;
 					var isFakeFlashPoint = (!state.fakeFlashUsed) && ((!state.in50PercentPhase) && _Utils_eq(state.dingCount, state.fakeFlashPoint));
 					var isFake = isFakeFlashPoint || (state.in50PercentPhase && state.nextRandom);
 					return isFake ? _Utils_Tuple2(
@@ -7014,9 +7179,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'DingFlashEnd':
-				var _v25 = model.screen;
-				if (_v25.$ === 'IQTestActiveScreen') {
-					var state = _v25.a;
+				var _v33 = model.screen;
+				if (_v33.$ === 'IQTestActiveScreen') {
+					var state = _v33.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -7031,17 +7196,17 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'DingWindowExpired':
-				var _v26 = model.screen;
-				if (_v26.$ === 'IQTestActiveScreen') {
-					var state = _v26.a;
+				var _v34 = model.screen;
+				if (_v34.$ === 'IQTestActiveScreen') {
+					var state = _v34.a;
 					return state.dingActive ? A2($author$project$Main$iqFail, model, state) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'FakeFlashWindowExpired':
-				var _v27 = model.screen;
-				if (_v27.$ === 'IQTestActiveScreen') {
-					var state = _v27.a;
+				var _v35 = model.screen;
+				if (_v35.$ === 'IQTestActiveScreen') {
+					var state = _v35.a;
 					return state.fakeFlashActive ? _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -7056,9 +7221,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'SpaceBarPressed':
-				var _v28 = model.screen;
-				if (_v28.$ === 'IQTestActiveScreen') {
-					var state = _v28.a;
+				var _v36 = model.screen;
+				if (_v36.$ === 'IQTestActiveScreen') {
+					var state = _v36.a;
 					if (state.fakeFlashActive) {
 						return (!state.fakeFlashUsed) ? _Utils_Tuple2(
 							A3(
@@ -7124,9 +7289,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'StartLoudMusic':
-				var _v29 = model.screen;
-				if (_v29.$ === 'IQTestActiveScreen') {
-					var state = _v29.a;
+				var _v37 = model.screen;
+				if (_v37.$ === 'IQTestActiveScreen') {
+					var state = _v37.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -7141,9 +7306,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'FakeFlashNextPhase':
-				var _v30 = model.screen;
-				if (_v30.$ === 'FakeFlashCaughtScreen') {
-					var state = _v30.a;
+				var _v38 = model.screen;
+				if (_v38.$ === 'FakeFlashCaughtScreen') {
+					var state = _v38.a;
 					var advance = F2(
 						function (newPhase, delay) {
 							return _Utils_Tuple2(
@@ -7161,8 +7326,8 @@ var $author$project$Main$updateImpl = F2(
 										})),
 								$elm$core$Platform$Cmd$none);
 						});
-					var _v31 = state.phase;
-					switch (_v31.$) {
+					var _v39 = state.phase;
+					switch (_v39.$) {
 						case 'FfDelay':
 							return A2(advance, $author$project$Main$FfText1In, 1000);
 						case 'FfText1In':
@@ -7237,15 +7402,21 @@ var $author$project$Main$updateImpl = F2(
 						{
 							jeopardyId: $elm$core$Maybe$Just(info.id)
 						}),
-					$elm$core$Platform$Cmd$none) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+					$elm$core$Platform$Cmd$none) : ((info.filename === 'ding.mp3') ? _Utils_Tuple2(model, $elm$core$Platform$Cmd$none) : _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							activeSongId: $elm$core$Maybe$Just(info.id)
+						}),
+					$elm$core$Platform$Cmd$none));
 			case 'NoOp':
 				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			default:
-				var _v32 = model.screen;
-				if (_v32.$ === 'FakeFlashCaughtScreen') {
-					var state = _v32.a;
-					var _v33 = state.phase;
-					switch (_v33.$) {
+				var _v40 = model.screen;
+				if (_v40.$ === 'FakeFlashCaughtScreen') {
+					var state = _v40.a;
+					var _v41 = state.phase;
+					switch (_v41.$) {
 						case 'FfTickNumerator':
 							return (state.displayNumerator > 0) ? _Utils_Tuple2(
 								A3(
@@ -7393,16 +7564,6 @@ var $author$project$Main$isCounterBig = function (phase) {
 	}
 };
 var $elm$html$Html$Attributes$loop = $elm$html$Html$Attributes$boolProperty('loop');
-var $elm$core$Maybe$map = F2(
-	function (f, maybe) {
-		if (maybe.$ === 'Just') {
-			var value = maybe.a;
-			return $elm$core$Maybe$Just(
-				f(value));
-		} else {
-			return $elm$core$Maybe$Nothing;
-		}
-	});
 var $elm$virtual_dom$VirtualDom$Normal = function (a) {
 	return {$: 'Normal', a: a};
 };
@@ -7471,15 +7632,6 @@ var $elm$html$Html$text = $elm$virtual_dom$VirtualDom$text;
 var $elm$html$Html$Attributes$type_ = $elm$html$Html$Attributes$stringProperty('type');
 var $elm$html$Html$Attributes$value = $elm$html$Html$Attributes$stringProperty('value');
 var $elm$html$Html$video = _VirtualDom_node('video');
-var $elm$core$Maybe$withDefault = F2(
-	function (_default, maybe) {
-		if (maybe.$ === 'Just') {
-			var value = maybe.a;
-			return value;
-		} else {
-			return _default;
-		}
-	});
 var $author$project$Main$view = function (model) {
 	var _v0 = model.screen;
 	switch (_v0.$) {
@@ -7574,6 +7726,7 @@ var $author$project$Main$view = function (model) {
 						$elm$html$Html$video,
 						_List_fromArray(
 							[
+								$elm$html$Html$Attributes$id('playing-video'),
 								$elm$html$Html$Attributes$src('assets/' + filename),
 								$elm$html$Html$Attributes$autoplay(true),
 								A2(
@@ -7855,6 +8008,7 @@ var $author$project$Main$view = function (model) {
 						$elm$html$Html$video,
 						_List_fromArray(
 							[
+								$elm$html$Html$Attributes$id('playing-video'),
 								$elm$html$Html$Attributes$src('assets/loud.mp4'),
 								$elm$html$Html$Attributes$autoplay(true),
 								$elm$html$Html$Attributes$loop(true),

@@ -29,6 +29,8 @@ port musicError : (String -> msg) -> Sub msg
 
 port logToFile : String -> Cmd msg
 
+port seekVideo : Float -> Cmd msg
+
 
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
 debug : Bool
@@ -204,6 +206,15 @@ type alias IQTestInit =
     { delay : Float, nextRandom : Bool, fakeFlashPoint : Int }
 
 
+type alias PausedState =
+    { screen : Screen
+    , pending : List PendingEvent
+    , savedAt : Float
+    , songResumeTime : Maybe Float
+    , videoResumeTime : Maybe Float
+    }
+
+
 type alias IQTestScreenState =
     { questionIdx : Int
     , totalDings : Int
@@ -292,6 +303,8 @@ type alias Model =
     , now : Float
     , pending : List PendingEvent
     , ignoreDisconnect : Bool
+    , activeSongId : Maybe String
+    , savedState : Maybe PausedState
     }
 
 
@@ -334,6 +347,8 @@ init _ =
       , now = 0
       , pending = []
       , ignoreDisconnect = False
+      , activeSongId = Nothing
+      , savedState = Nothing
       }
     , Cmd.batch
         [ playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 }
@@ -464,22 +479,104 @@ updateImpl msg model =
                     parseDevices json
             in
             if connected || model.ignoreDisconnect then
-                let
-                    newScreen =
-                        case model.screen of
-                            ConnectScreen ->
-                                BeginScreen
+                case model.savedState of
+                    Just saved ->
+                        let
+                            rebasedPending =
+                                List.map
+                                    (\e -> { e | fireAt = model.now + max 500 (e.fireAt - saved.savedAt) })
+                                    saved.pending
 
-                            other ->
-                                other
+                            restoredScreen =
+                                case saved.screen of
+                                    IQTestActiveScreen state ->
+                                        IQTestActiveScreen
+                                            { state
+                                                | dingActive = False
+                                                , fakeFlashActive = False
+                                                , isFlashing = False
+                                            }
 
-                    shouldStart =
-                        not model.jeopardyPlaying
-                            && (newScreen == ConnectScreen || newScreen == BeginScreen)
-                in
-                ( { model | connected = True, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
-                , if shouldStart then playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 } else Cmd.none
-                )
+                                    other ->
+                                        other
+
+                            audioCmd =
+                                case restoredScreen of
+                                    BlankScreen idx ->
+                                        case getQuestion idx of
+                                            Just q ->
+                                                if not (isVideo q.song) then
+                                                    playMusic
+                                                        { filename = q.song
+                                                        , volume = 1.0
+                                                        , startTime = Maybe.withDefault 0 saved.songResumeTime
+                                                        }
+
+                                                else
+                                                    Cmd.none
+
+                                            Nothing ->
+                                                Cmd.none
+
+                                    _ ->
+                                        Cmd.none
+
+                            videoCmd =
+                                case saved.videoResumeTime of
+                                    Just t ->
+                                        case restoredScreen of
+                                            VideoScreen _ _ ->
+                                                seekVideo t
+
+                                            IQTestActiveScreen state ->
+                                                if state.loudPlaying then
+                                                    seekVideo t
+
+                                                else
+                                                    Cmd.none
+
+                                            _ ->
+                                                Cmd.none
+
+                                    Nothing ->
+                                        Cmd.none
+
+                            stopJeopardyCmd =
+                                case model.jeopardyId of
+                                    Just jid ->
+                                        stopMusic jid
+
+                                    Nothing ->
+                                        Cmd.none
+                        in
+                        ( { model
+                            | connected = True
+                            , screen = restoredScreen
+                            , pending = rebasedPending
+                            , savedState = Nothing
+                            , jeopardyPlaying = False
+                            , jeopardyId = Nothing
+                          }
+                        , Cmd.batch [ stopJeopardyCmd, audioCmd, videoCmd ]
+                        )
+
+                    Nothing ->
+                        let
+                            newScreen =
+                                case model.screen of
+                                    ConnectScreen ->
+                                        BeginScreen
+
+                                    other ->
+                                        other
+
+                            shouldStart =
+                                not model.jeopardyPlaying
+                                    && (newScreen == ConnectScreen || newScreen == BeginScreen)
+                        in
+                        ( { model | connected = True, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
+                        , if shouldStart then playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 } else Cmd.none
+                        )
 
             else
                 let
@@ -512,13 +609,64 @@ updateImpl msg model =
                             _ ->
                                 False
 
+                    newSavedState =
+                        if needsJeopardy then
+                            let
+                                songResumeTime =
+                                    model.activeSongId
+                                        |> Maybe.andThen
+                                            (\sid ->
+                                                model.trackInfo
+                                                    |> List.filter (\t -> t.id == sid)
+                                                    |> List.head
+                                            )
+                                        |> Maybe.map .currentTime
+
+                                videoResumeTime =
+                                    model.trackInfo
+                                        |> List.filter (\t -> t.id == "video")
+                                        |> List.head
+                                        |> Maybe.map .currentTime
+                            in
+                            Just
+                                { screen = model.screen
+                                , pending = model.pending
+                                , savedAt = model.now
+                                , songResumeTime = songResumeTime
+                                , videoResumeTime = videoResumeTime
+                                }
+
+                        else
+                            model.savedState
+
+                    stopSongCmd =
+                        case model.activeSongId of
+                            Just sid ->
+                                stopMusic sid
+
+                            Nothing ->
+                                Cmd.none
                 in
-                ( clearPending { model | connected = False, screen = ConnectScreen, jeopardyPlaying = model.jeopardyPlaying || needsJeopardy }
-                , if needsJeopardy then playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 } else Cmd.none
+                ( clearPending
+                    { model
+                        | connected = False
+                        , screen = ConnectScreen
+                        , jeopardyPlaying = model.jeopardyPlaying || needsJeopardy
+                        , savedState = newSavedState
+                        , activeSongId = Nothing
+                    }
+                , Cmd.batch
+                    [ stopSongCmd
+                    , if needsJeopardy then
+                        playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 }
+
+                      else
+                        Cmd.none
+                    ]
                 )
 
         BeginPressed ->
-            ( { model | screen = BlankScreen 0, jeopardyPlaying = False, jeopardyId = Nothing }
+            ( { model | screen = BlankScreen 0, jeopardyPlaying = False, jeopardyId = Nothing, savedState = Nothing, activeSongId = Nothing }
                 |> clearPending
                 |> schedule 1000 (PlaySong 0)
             , case model.jeopardyId of
@@ -564,27 +712,31 @@ updateImpl msg model =
                         ( { model | jeopardyPlaying = False, jeopardyId = Nothing }, Cmd.none )
 
             else
+                let
+                    baseModel =
+                        { model | activeSongId = Nothing }
+                in
                 case model.screen of
                     BlankScreen idx ->
                         case getQuestion idx of
                             Just q ->
                                 if q.song == name then
-                                    ( schedule 1000 (ShowQuestion idx) model, Cmd.none )
+                                    ( schedule 1000 (ShowQuestion idx) baseModel, Cmd.none )
 
                                 else
-                                    ( model, Cmd.none )
+                                    ( baseModel, Cmd.none )
 
                             Nothing ->
-                                ( model, Cmd.none )
+                                ( baseModel, Cmd.none )
 
                     VideoScreen idx _ ->
-                        ( { model | screen = BlankScreen idx }
+                        ( { baseModel | screen = BlankScreen idx }
                             |> schedule 1000 (ShowQuestion idx)
                         , Cmd.none
                         )
 
                     _ ->
-                        ( model, Cmd.none )
+                        ( baseModel, Cmd.none )
 
         ShowQuestion idx ->
             case model.screen of
@@ -972,8 +1124,11 @@ updateImpl msg model =
             if info.filename == "jeopardy-theme.mp3" then
                 ( { model | jeopardyId = Just info.id }, Cmd.none )
 
-            else
+            else if info.filename == "ding.mp3" then
                 ( model, Cmd.none )
+
+            else
+                ( { model | activeSongId = Just info.id }, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )
@@ -1138,7 +1293,8 @@ view model =
                 , style "background-color" "#000000"
                 ]
                 [ video
-                    [ src ("assets/" ++ filename)
+                    [ id "playing-video"
+                    , src ("assets/" ++ filename)
                     , autoplay True
                     , on "ended" (Decode.succeed (TrackEnded filename))
                     , style "position" "absolute"
@@ -1359,7 +1515,8 @@ view model =
                     text ""
                 , if state.loudPlaying then
                     video
-                        [ src "assets/loud.mp4"
+                        [ id "playing-video"
+                        , src "assets/loud.mp4"
                         , autoplay True
                         , loop True
                         , style "position" "fixed"

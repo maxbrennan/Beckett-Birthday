@@ -30,6 +30,14 @@ setInterval(() => {
       duration: entry.element.duration || 0,
     })
   }
+  const videoEl = document.getElementById('playing-video')
+  if (videoEl) {
+    tracks.push({
+      id: 'video',
+      currentTime: videoEl.currentTime,
+      duration: videoEl.duration || 0,
+    })
+  }
   app.ports.receiveTrackInfo.send(tracks)
 }, 100)
 
@@ -73,6 +81,18 @@ app.ports.playMusic.subscribe(({ filename, volume, startTime }) => {
   }
 
   app.ports.musicStarted.send({ id, filename })
+})
+
+app.ports.seekVideo.subscribe((time) => {
+  const trySeek = (retriesLeft) => {
+    const videoEl = document.getElementById('playing-video')
+    if (videoEl && videoEl.readyState >= 1) {
+      videoEl.currentTime = time
+    } else if (retriesLeft > 0) {
+      setTimeout(() => trySeek(retriesLeft - 1), 50)
+    }
+  }
+  setTimeout(() => trySeek(20), 0)
 })
 
 app.ports.stopMusic.subscribe((id) => {
