@@ -307,7 +307,8 @@ type alias Model =
     , ignoreDisconnect : Bool
     , activeSongId : Maybe String
     , savedState : Maybe PausedState
-    , dingId : Maybe String
+    , dingIds : List String
+    , nextDingIdx : Int
     , pendingStartTime : Maybe Float
     }
 
@@ -353,14 +354,37 @@ init _ =
       , ignoreDisconnect = False
       , activeSongId = Nothing
       , savedState = Nothing
-      , dingId = Nothing
+      , dingIds = []
+      , nextDingIdx = 0
       , pendingStartTime = Nothing
       }
     , Cmd.batch
         [ loadMusic "jeopardy-theme.mp3"
         , loadMusic "ding.mp3"
+        , loadMusic "ding.mp3"
+        , loadMusic "ding.mp3"
+        , loadMusic "ding.mp3"
+        , loadMusic "ding.mp3"
+        , loadMusic "ding.mp3"
+        , loadMusic "ding.mp3"
+        , loadMusic "ding.mp3"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
+    )
+
+
+-- Round-robin through preloaded ding audio elements to avoid restart glitches.
+pickDing : Model -> ( Maybe String, Model )
+pickDing model =
+    let
+        n =
+            List.length model.dingIds
+
+        idx =
+            modBy (max 1 n) model.nextDingIdx
+    in
+    ( List.drop idx model.dingIds |> List.head
+    , { model | nextDingIdx = modBy (max 1 n) (model.nextDingIdx + 1) }
     )
 
 
@@ -487,82 +511,8 @@ updateImpl msg model =
             in
             if connected || model.ignoreDisconnect then
                 case model.savedState of
-                    Just saved ->
-                        let
-                            rebasedPending =
-                                List.map
-                                    (\e -> { e | fireAt = model.now + max 500 (e.fireAt - saved.savedAt) })
-                                    saved.pending
-
-                            restoredScreen =
-                                case saved.screen of
-                                    IQTestActiveScreen state ->
-                                        IQTestActiveScreen
-                                            { state
-                                                | dingActive = False
-                                                , fakeFlashActive = False
-                                                , isFlashing = False
-                                            }
-
-                                    other ->
-                                        other
-
-                            audioCmd =
-                                case restoredScreen of
-                                    BlankScreen idx ->
-                                        case getQuestion idx of
-                                            Just q ->
-                                                if not (isVideo q.song) then
-                                                    loadMusic q.song
-
-                                                else
-                                                    Cmd.none
-
-                                            Nothing ->
-                                                Cmd.none
-
-                                    _ ->
-                                        Cmd.none
-
-                            videoCmd =
-                                case saved.videoResumeTime of
-                                    Just t ->
-                                        case restoredScreen of
-                                            VideoScreen _ _ ->
-                                                seekVideo t
-
-                                            IQTestActiveScreen state ->
-                                                if state.loudPlaying then
-                                                    seekVideo t
-
-                                                else
-                                                    Cmd.none
-
-                                            _ ->
-                                                Cmd.none
-
-                                    Nothing ->
-                                        Cmd.none
-
-                            stopJeopardyCmd =
-                                case model.jeopardyId of
-                                    Just jid ->
-                                        stopMusic jid
-
-                                    Nothing ->
-                                        Cmd.none
-                        in
-                        ( { model
-                            | connected = True
-                            , screen = restoredScreen
-                            , pending = rebasedPending
-                            , savedState = Nothing
-                            , jeopardyPlaying = False
-                            , jeopardyId = Nothing
-                            , pendingStartTime = saved.songResumeTime
-                          }
-                        , Cmd.batch [ stopJeopardyCmd, audioCmd, videoCmd ]
-                        )
+                    Just _ ->
+                        ( { model | connected = True, screen = BeginScreen }, Cmd.none )
 
                     Nothing ->
                         let
@@ -670,13 +620,92 @@ updateImpl msg model =
                 )
 
         BeginPressed ->
-            ( { model | screen = BlankScreen 0, jeopardyPlaying = False, jeopardyId = Nothing, savedState = Nothing, activeSongId = Nothing }
-                |> clearPending
-                |> schedule 1000 (PlaySong 0)
-            , case model.jeopardyId of
-                Just jid -> stopMusic jid
-                Nothing -> Cmd.none
-            )
+            case model.savedState of
+                Just saved ->
+                    let
+                        rebasedPending =
+                            List.map
+                                (\e -> { e | fireAt = model.now + max 500 (e.fireAt - saved.savedAt) })
+                                saved.pending
+
+                        restoredScreen =
+                            case saved.screen of
+                                IQTestActiveScreen state ->
+                                    IQTestActiveScreen
+                                        { state
+                                            | dingActive = False
+                                            , fakeFlashActive = False
+                                            , isFlashing = False
+                                        }
+
+                                other ->
+                                    other
+
+                        audioCmd =
+                            case restoredScreen of
+                                BlankScreen idx ->
+                                    case getQuestion idx of
+                                        Just q ->
+                                            if not (isVideo q.song) then
+                                                loadMusic q.song
+
+                                            else
+                                                Cmd.none
+
+                                        Nothing ->
+                                            Cmd.none
+
+                                _ ->
+                                    Cmd.none
+
+                        videoCmd =
+                            case saved.videoResumeTime of
+                                Just t ->
+                                    case restoredScreen of
+                                        VideoScreen _ _ ->
+                                            seekVideo t
+
+                                        IQTestActiveScreen state ->
+                                            if state.loudPlaying then
+                                                seekVideo t
+
+                                            else
+                                                Cmd.none
+
+                                        _ ->
+                                            Cmd.none
+
+                                Nothing ->
+                                    Cmd.none
+
+                        stopJeopardyCmd =
+                            case model.jeopardyId of
+                                Just jid ->
+                                    stopMusic jid
+
+                                Nothing ->
+                                    Cmd.none
+                    in
+                    ( { model
+                        | screen = restoredScreen
+                        , pending = rebasedPending
+                        , savedState = Nothing
+                        , jeopardyPlaying = False
+                        , jeopardyId = Nothing
+                        , activeSongId = Nothing
+                        , pendingStartTime = saved.songResumeTime
+                      }
+                    , Cmd.batch [ stopJeopardyCmd, audioCmd, videoCmd ]
+                    )
+
+                Nothing ->
+                    ( { model | screen = BlankScreen 0, jeopardyPlaying = False, jeopardyId = Nothing, savedState = Nothing, activeSongId = Nothing }
+                        |> clearPending
+                        |> schedule 1000 (PlaySong 0)
+                    , case model.jeopardyId of
+                        Just jid -> stopMusic jid
+                        Nothing -> Cmd.none
+                    )
 
         PlaySong idx ->
             case model.screen of
@@ -919,10 +948,14 @@ updateImpl msg model =
                         )
 
                     else
-                        ( { model | screen = IQTestActiveScreen { state | isFlashing = True, dingActive = True } }
+                        let
+                            ( maybeDingId, modelAfterDing ) =
+                                pickDing model
+                        in
+                        ( { modelAfterDing | screen = IQTestActiveScreen { state | isFlashing = True, dingActive = True } }
                             |> schedule iqFlashDuration DingFlashEnd
                             |> schedule iqWindowDuration DingWindowExpired
-                        , case model.dingId of
+                        , case maybeDingId of
                             Just id ->
                                 playMusic { id = id, volume = iqDingVolume, startTime = 0 }
 
@@ -1136,7 +1169,7 @@ updateImpl msg model =
                 )
 
             else if info.filename == "ding.mp3" then
-                ( { model | dingId = Just info.id }, Cmd.none )
+                ( { model | dingIds = model.dingIds ++ [ info.id ] }, Cmd.none )
 
             else
                 ( { model | activeSongId = Just info.id, pendingStartTime = Nothing }
@@ -1152,9 +1185,13 @@ updateImpl msg model =
                     case state.phase of
                         FfTickNumerator ->
                             if state.displayNumerator > 0 then
-                                ( { model | screen = FakeFlashCaughtScreen { state | displayNumerator = state.displayNumerator - 1 } }
+                                let
+                                    ( maybeDingId, modelAfterDing ) =
+                                        pickDing model
+                                in
+                                ( { modelAfterDing | screen = FakeFlashCaughtScreen { state | displayNumerator = state.displayNumerator - 1 } }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , case model.dingId of
+                                , case maybeDingId of
                                     Just id ->
                                         playMusic { id = id, volume = 0.15, startTime = 0 }
 
@@ -1174,9 +1211,13 @@ updateImpl msg model =
                                     state.originalTotal * 2
                             in
                             if state.displayDenominator < target then
-                                ( { model | screen = FakeFlashCaughtScreen { state | displayDenominator = state.displayDenominator + 1 } }
+                                let
+                                    ( maybeDingId, modelAfterDing ) =
+                                        pickDing model
+                                in
+                                ( { modelAfterDing | screen = FakeFlashCaughtScreen { state | displayDenominator = state.displayDenominator + 1 } }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , case model.dingId of
+                                , case maybeDingId of
                                     Just id ->
                                         playMusic { id = id, volume = 0.3, startTime = 0 }
 
@@ -1611,6 +1652,14 @@ view model =
 
                 counterText =
                     String.fromInt state.displayNumerator ++ " / " ++ String.fromInt state.displayDenominator
+
+                text2Transition =
+                    case state.phase of
+                        FfDelay ->
+                            "none"
+
+                        _ ->
+                            "opacity 0.8s ease"
             in
             div [ style "height" "100vh", style "background-color" "#a8c8e0" ]
                 [ p
@@ -1656,7 +1705,7 @@ view model =
                     , style "max-width" "600px"
                     , style "line-height" "1.5"
                     , style "opacity" text2Opacity
-                    , style "transition" "opacity 0.8s ease"
+                    , style "transition" text2Transition
                     ]
                     [ text "But there was no ding..." ]
                 ]
