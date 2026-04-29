@@ -1,11 +1,12 @@
 port module Main exposing (main)
 
 import Browser
+import Browser.Dom
 import Browser.Events
 import Char
-import Html exposing (Html, button, div, img, input, p, text)
-import Html.Attributes exposing (placeholder, src, style, type_, value)
-import Html.Events exposing (onClick, onInput)
+import Html exposing (Html, button, div, img, input, p, text, video)
+import Html.Attributes exposing (autoplay, id, loop, placeholder, src, style, type_, value)
+import Html.Events exposing (on, onClick, onInput)
 import Json.Decode as Decode exposing (Decoder)
 import Random
 import Task
@@ -14,19 +15,15 @@ import Time
 
 port receiveDevices : (String -> msg) -> Sub msg
 
-port playMusic : String -> Cmd msg
-
-port playVideo : { filename : String, loop : Bool } -> Cmd msg
+port playMusic : { filename : String, volume : Float, startTime : Float } -> Cmd msg
 
 port stopMusic : String -> Cmd msg
 
-port receiveTrackInfo : ({ name : String, currentTime : Float, duration : Float } -> msg) -> Sub msg
+port receiveTrackInfo : (List { id : String, currentTime : Float, duration : Float } -> msg) -> Sub msg
 
 port trackEnded : (String -> msg) -> Sub msg
 
-port playDing : Float -> Cmd msg
-
-port showFlash : Bool -> Cmd msg
+port musicStarted : ({ id : String, filename : String } -> msg) -> Sub msg
 
 port musicError : (String -> msg) -> Sub msg
 
@@ -126,15 +123,15 @@ type alias Question =
 
 questions : List Question
 questions =
-    [ { song = "golden.mp3", answers = [ "golden" ] }
-    , { song = "im-just-ken.mp3", answers = [ "im just ken" ] }
-    , { song = "espresso.mp3", answers = [ "espresso" ] }
-    , { song = "revenge.mp4", answers = [ "revenge", "revenge parody", "revenge a minecraft parody" ] }
-    , { song = "chest-pain.mp3", answers = [ "chest pain", "i love", "chest pain i love" ] }
-    , { song = "i-saw-your-face.mp3", answers = [ "i saw your face" ] }
-    , { song = "dracula.mp3", answers = [ "dracula" ] }
-    , { song = "borderline.mp3", answers = [ "borderline" ] }
-    , { song = "cant-stop.mp3", answers = [ "cant stop" ] }
+    [ { song = "golden.mp3", answers = [ "Golden" ] }
+    , { song = "im-just-ken.mp3", answers = [ "I'm Just Ken" ] }
+    , { song = "espresso.mp3", answers = [ "Espresso" ] }
+    , { song = "revenge.mp4", answers = [ "Revenge", "Revenge Parody", "Revenge a Minecraft Parody" ] }
+    , { song = "chest-pain.mp3", answers = [ "Chest Pain", "I Love", "Chest Pain I Love" ] }
+    , { song = "i-saw-your-face.mp3", answers = [ "I Saw Your Face" ] }
+    , { song = "dracula.mp3", answers = [ "Dracula" ] }
+    , { song = "borderline.mp3", answers = [ "Borderline" ] }
+    , { song = "cant-stop.mp3", answers = [ "Can't Stop" ] }
     , { song = "korean.mp3", answers = [ "천 번 차이는 남자" ] }
     ]
 
@@ -193,7 +190,7 @@ parseDevices json =
 
 
 type alias TrackInfo =
-    { name : String
+    { id : String
     , currentTime : Float
     , duration : Float
     }
@@ -269,6 +266,7 @@ type Screen
     = ConnectScreen
     | BeginScreen
     | BlankScreen Int
+    | VideoScreen Int String
     | QuestionScreen Int String
     | WrongAnswerScreen Int
     | IQTestScreen IQTestScreenState
@@ -288,8 +286,9 @@ type alias PendingEvent =
 type alias Model =
     { connected : Bool
     , screen : Screen
-    , trackInfo : Maybe TrackInfo
+    , trackInfo : List TrackInfo
     , jeopardyPlaying : Bool
+    , jeopardyId : Maybe String
     , now : Float
     , pending : List PendingEvent
     , ignoreDisconnect : Bool
@@ -303,7 +302,7 @@ type Msg
     | PlaySong Int
     | TrackEnded String
     | ShowQuestion Int
-    | TrackInfoReceived TrackInfo
+    | TrackInfoReceived (List TrackInfo)
     | MusicError String
     | AnswerChanged String
     | AnswerSubmitted
@@ -321,20 +320,23 @@ type Msg
     | FakeFlashCounterTick
     | FakeFlashWindowExpired
     | ToggleIgnoreDisconnect
+    | MusicStarted { id : String, filename : String }
+    | NoOp
 
 
 init : () -> ( Model, Cmd Msg )
 init _ =
     ( { connected = False
       , screen = ConnectScreen
-      , trackInfo = Nothing
+      , trackInfo = []
       , jeopardyPlaying = True
+      , jeopardyId = Nothing
       , now = 0
       , pending = []
       , ignoreDisconnect = False
       }
     , Cmd.batch
-        [ playMusic "jeopardy-theme.mp3"
+        [ playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 }
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -386,7 +388,7 @@ iqFail model state =
                     , in50PercentPhase = state.in50PercentPhase
                     }
         }
-    , if state.loudPlaying then stopMusic "loud.mp4" else Cmd.none
+    , Cmd.none
     )
 
 
@@ -405,6 +407,12 @@ update msg model =
                     False
 
                 TrackInfoReceived _ ->
+                    False
+
+                MusicStarted info ->
+                    info.filename /= "ding.mp3"
+
+                NoOp ->
                     False
 
                 _ ->
@@ -470,7 +478,7 @@ updateImpl msg model =
                             && (newScreen == ConnectScreen || newScreen == BeginScreen)
                 in
                 ( { model | connected = True, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
-                , if shouldStart then playMusic "jeopardy-theme.mp3" else Cmd.none
+                , if shouldStart then playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 } else Cmd.none
                 )
 
             else
@@ -498,29 +506,24 @@ updateImpl msg model =
                             FakeFlashCaughtScreen _ ->
                                 True
 
-                            _ ->
-                                False
-
-                    stopLoop =
-                        case model.screen of
-                            IQTestActiveScreen state ->
-                                state.loudPlaying
+                            VideoScreen _ _ ->
+                                True
 
                             _ ->
                                 False
+
                 in
                 ( clearPending { model | connected = False, screen = ConnectScreen, jeopardyPlaying = model.jeopardyPlaying || needsJeopardy }
-                , Cmd.batch
-                    [ if needsJeopardy then playMusic "jeopardy-theme.mp3" else Cmd.none
-                    , if stopLoop then stopMusic "loud.mp4" else Cmd.none
-                    ]
+                , if needsJeopardy then playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 } else Cmd.none
                 )
 
         BeginPressed ->
-            ( { model | screen = BlankScreen 0, jeopardyPlaying = False }
+            ( { model | screen = BlankScreen 0, jeopardyPlaying = False, jeopardyId = Nothing }
                 |> clearPending
                 |> schedule 1000 (PlaySong 0)
-            , stopMusic "jeopardy-theme.mp3"
+            , case model.jeopardyId of
+                Just jid -> stopMusic jid
+                Nothing -> Cmd.none
             )
 
         PlaySong idx ->
@@ -529,13 +532,11 @@ updateImpl msg model =
                     if blankIdx == idx then
                         case getQuestion idx of
                             Just q ->
-                                ( model
-                                , if isVideo q.song then
-                                    playVideo { filename = q.song, loop = False }
+                                if isVideo q.song then
+                                    ( { model | screen = VideoScreen idx q.song }, Cmd.none )
 
-                                  else
-                                    playMusic q.song
-                                )
+                                else
+                                    ( model, playMusic { filename = q.song, volume = 1.0, startTime = 0 } )
 
                             Nothing ->
                                 ( model, Cmd.none )
@@ -550,13 +551,17 @@ updateImpl msg model =
             if name == "jeopardy-theme.mp3" then
                 case model.screen of
                     ConnectScreen ->
-                        ( { model | jeopardyPlaying = True }, playMusic "jeopardy-theme.mp3" )
+                        ( { model | jeopardyPlaying = True, jeopardyId = Nothing }
+                        , playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 }
+                        )
 
                     BeginScreen ->
-                        ( { model | jeopardyPlaying = True }, playMusic "jeopardy-theme.mp3" )
+                        ( { model | jeopardyPlaying = True, jeopardyId = Nothing }
+                        , playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 }
+                        )
 
                     _ ->
-                        ( { model | jeopardyPlaying = False }, Cmd.none )
+                        ( { model | jeopardyPlaying = False, jeopardyId = Nothing }, Cmd.none )
 
             else
                 case model.screen of
@@ -572,6 +577,12 @@ updateImpl msg model =
                             Nothing ->
                                 ( model, Cmd.none )
 
+                    VideoScreen idx _ ->
+                        ( { model | screen = BlankScreen idx }
+                            |> schedule 1000 (ShowQuestion idx)
+                        , Cmd.none
+                        )
+
                     _ ->
                         ( model, Cmd.none )
 
@@ -579,7 +590,9 @@ updateImpl msg model =
             case model.screen of
                 BlankScreen blankIdx ->
                     if blankIdx == idx then
-                        ( { model | screen = QuestionScreen idx "" }, Cmd.none )
+                        ( { model | screen = QuestionScreen idx "" }
+                        , Task.attempt (\_ -> NoOp) (Browser.Dom.focus "answer-input")
+                        )
 
                     else
                         ( model, Cmd.none )
@@ -587,8 +600,8 @@ updateImpl msg model =
                 _ ->
                     ( model, Cmd.none )
 
-        TrackInfoReceived info ->
-            ( { model | trackInfo = Just info }, Cmd.none )
+        TrackInfoReceived infos ->
+            ( { model | trackInfo = infos }, Cmd.none )
 
         MusicError _ ->
             ( model, Cmd.none )
@@ -746,14 +759,14 @@ updateImpl msg model =
                         ( { model | screen = IQTestActiveScreen { state | isFlashing = True, fakeFlashActive = True } }
                             |> schedule iqFlashDuration DingFlashEnd
                             |> schedule iqWindowDuration FakeFlashWindowExpired
-                        , showFlash True
+                        , Cmd.none
                         )
 
                     else
                         ( { model | screen = IQTestActiveScreen { state | isFlashing = True, dingActive = True } }
                             |> schedule iqFlashDuration DingFlashEnd
                             |> schedule iqWindowDuration DingWindowExpired
-                        , Cmd.batch [ playDing iqDingVolume, showFlash True ]
+                        , playMusic { filename = "ding.mp3", volume = iqDingVolume, startTime = 0 }
                         )
 
                 _ ->
@@ -762,7 +775,7 @@ updateImpl msg model =
         DingFlashEnd ->
             case model.screen of
                 IQTestActiveScreen state ->
-                    ( { model | screen = IQTestActiveScreen { state | isFlashing = False } }, showFlash False )
+                    ( { model | screen = IQTestActiveScreen { state | isFlashing = False } }, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
@@ -810,18 +823,11 @@ updateImpl msg model =
                                             }
                                 }
                                 |> schedule 1000 FakeFlashNextPhase
-                            , Cmd.batch
-                                [ if state.loudPlaying then stopMusic "loud.mp4" else Cmd.none
-                                , showFlash False
-                                ]
+                            , Cmd.none
                             )
 
                         else
-                            let
-                                ( newModel, cmd ) =
-                                    iqFail model state
-                            in
-                            ( newModel, Cmd.batch [ cmd, showFlash False ] )
+                            iqFail model state
 
                     else if state.dingActive then
                         let
@@ -850,7 +856,7 @@ updateImpl msg model =
                         if completed then
                             ( clearPending { model | screen = BlankScreen nextIdx }
                                 |> schedule 1000 (PlaySong nextIdx)
-                            , if state.loudPlaying then stopMusic "loud.mp4" else Cmd.none
+                            , Cmd.none
                             )
 
                         else
@@ -885,7 +891,7 @@ updateImpl msg model =
             case model.screen of
                 IQTestActiveScreen state ->
                     ( { model | screen = IQTestActiveScreen { state | loudPlaying = True } }
-                    , playVideo { filename = "loud.mp4", loop = True }
+                    , Cmd.none
                     )
 
                 _ ->
@@ -962,6 +968,16 @@ updateImpl msg model =
             else
                 ( model, Cmd.none )
 
+        MusicStarted info ->
+            if info.filename == "jeopardy-theme.mp3" then
+                ( { model | jeopardyId = Just info.id }, Cmd.none )
+
+            else
+                ( model, Cmd.none )
+
+        NoOp ->
+            ( model, Cmd.none )
+
         FakeFlashCounterTick ->
             case model.screen of
                 FakeFlashCaughtScreen state ->
@@ -970,7 +986,7 @@ updateImpl msg model =
                             if state.displayNumerator > 0 then
                                 ( { model | screen = FakeFlashCaughtScreen { state | displayNumerator = state.displayNumerator - 1 } }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , playDing 0.15
+                                , playMusic { filename = "ding.mp3", volume = 0.15, startTime = 0 }
                                 )
 
                             else
@@ -987,7 +1003,7 @@ updateImpl msg model =
                             if state.displayDenominator < target then
                                 ( { model | screen = FakeFlashCaughtScreen { state | displayDenominator = state.displayDenominator + 1 } }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , playDing 0.3
+                                , playMusic { filename = "ding.mp3", volume = 0.3, startTime = 0 }
                                 )
 
                             else
@@ -1112,6 +1128,30 @@ view model =
             in
             screenBg bg []
 
+        VideoScreen _ filename ->
+            div
+                [ style "position" "fixed"
+                , style "top" "0"
+                , style "left" "0"
+                , style "width" "100vw"
+                , style "height" "100vh"
+                , style "background-color" "#000000"
+                ]
+                [ video
+                    [ src ("assets/" ++ filename)
+                    , autoplay True
+                    , on "ended" (Decode.succeed (TrackEnded filename))
+                    , style "position" "absolute"
+                    , style "top" "50%"
+                    , style "left" "50%"
+                    , style "transform" "translate(-50%, -50%)"
+                    , style "width" "100%"
+                    , style "height" "100%"
+                    , style "object-fit" "contain"
+                    ]
+                    []
+                ]
+
         QuestionScreen idx answer ->
             let
                 prompt =
@@ -1150,9 +1190,21 @@ view model =
                         ]
                         [ text prompt ]
                     , input
-                        [ type_ "text"
+                        [ id "answer-input"
+                        , type_ "text"
                         , value answer
                         , onInput AnswerChanged
+                        , on "keydown"
+                            (Decode.field "key" Decode.string
+                                |> Decode.andThen
+                                    (\key ->
+                                        if key == "Enter" then
+                                            Decode.succeed AnswerSubmitted
+
+                                        else
+                                            Decode.fail "not enter"
+                                    )
+                            )
                         , placeholder "Type your answer..."
                         , style "font-size" "22px"
                         , style "padding" "12px 20px"
@@ -1280,11 +1332,8 @@ view model =
         IQTestActiveScreen state ->
             let
                 bg =
-                    if state.isFlashing then
-                        "#00cc44"
-
-                    else if state.loudPlaying then
-                        "transparent"
+                    if state.loudPlaying then
+                        "#000000"
 
                     else
                         "#a8c8e0"
@@ -1293,7 +1342,40 @@ view model =
                     String.fromInt state.dingCount ++ " / " ++ String.fromInt state.totalDings
             in
             div []
-                [ p
+                [ if state.isFlashing then
+                    div
+                        [ style "position" "fixed"
+                        , style "top" "0"
+                        , style "left" "0"
+                        , style "width" "100vw"
+                        , style "height" "100vh"
+                        , style "background-color" "#00cc44"
+                        , style "z-index" "9999"
+                        , style "pointer-events" "none"
+                        ]
+                        []
+
+                  else
+                    text ""
+                , if state.loudPlaying then
+                    video
+                        [ src "assets/loud.mp4"
+                        , autoplay True
+                        , loop True
+                        , style "position" "fixed"
+                        , style "top" "50%"
+                        , style "left" "50%"
+                        , style "transform" "translate(-50%, -50%)"
+                        , style "width" "100vw"
+                        , style "height" "100vh"
+                        , style "object-fit" "contain"
+                        , style "z-index" "0"
+                        ]
+                        []
+
+                  else
+                    text ""
+                , p
                     [ style "position" "fixed"
                     , style "top" "20px"
                     , style "left" "0"
@@ -1414,12 +1496,13 @@ view model =
 
 pKeyDecoder : Decoder Msg
 pKeyDecoder =
-    Decode.map2 Tuple.pair
+    Decode.map3 (\key repeat tagName -> ( key, repeat, tagName ))
         (Decode.field "key" Decode.string)
         (Decode.field "repeat" Decode.bool)
+        (Decode.at [ "target", "tagName" ] Decode.string)
         |> Decode.andThen
-            (\( key, repeat ) ->
-                if (key == "p" || key == "P") && not repeat then
+            (\( key, repeat, tagName ) ->
+                if (key == "p" || key == "P") && not repeat && tagName /= "INPUT" && tagName /= "TEXTAREA" then
                     Decode.succeed ToggleIgnoreDisconnect
 
                 else
@@ -1462,6 +1545,7 @@ subscriptions model =
         [ receiveDevices DevicesReceived
         , receiveTrackInfo TrackInfoReceived
         , trackEnded TrackEnded
+        , musicStarted MusicStarted
         , musicError MusicError
         , keyboardSub
         , debugToggleSub

@@ -1,36 +1,112 @@
-=== ToggleIgnoreDisconnect ===
-BEFORE: { connected = False, ignoreDisconnect = False, jeopardyPlaying = True, now = 1777480941205, pending = [], screen = ConnectScreen, trackInfo = Just { currentTime = 3.089365, duration = 30.72, name = "jeopardy-theme.mp3" } }
-AFTER:  { connected = False, ignoreDisconnect = True, jeopardyPlaying = True, now = 1777480941205, pending = [], screen = ConnectScreen, trackInfo = Just { currentTime = 3.089365, duration = 30.72, name = "jeopardy-theme.mp3" } }
+=== MusicStarted { filename = "jeopardy-theme.mp3", id = "0" } ===
+BEFORE: { connected = False, ignoreDisconnect = False, jeopardyId = Nothing, jeopardyPlaying = True, now = 1777502781281, pending = [], screen = ConnectScreen, trackInfo = [] }
+AFTER:  { connected = False, ignoreDisconnect = False, jeopardyId = Just "0", jeopardyPlaying = True, now = 1777502781281, pending = [], screen = ConnectScreen, trackInfo = [] }
 
 === ToggleIgnoreDisconnect ===
-BEFORE: { connected = True, ignoreDisconnect = True, jeopardyPlaying = True, now = 1777480942422, pending = [], screen = BeginScreen, trackInfo = Just { currentTime = 4.289058, duration = 30.72, name = "jeopardy-theme.mp3" } }
-AFTER:  { connected = True, ignoreDisconnect = False, jeopardyPlaying = True, now = 1777480942422, pending = [], screen = BeginScreen, trackInfo = Just { currentTime = 4.289058, duration = 30.72, name = "jeopardy-theme.mp3" } }
-
-=== ToggleIgnoreDisconnect ===
-BEFORE: { connected = False, ignoreDisconnect = False, jeopardyPlaying = True, now = 1777480942805, pending = [], screen = ConnectScreen, trackInfo = Just { currentTime = 4.689166, duration = 30.72, name = "jeopardy-theme.mp3" } }
-AFTER:  { connected = False, ignoreDisconnect = True, jeopardyPlaying = True, now = 1777480942805, pending = [], screen = ConnectScreen, trackInfo = Just { currentTime = 4.689166, duration = 30.72, name = "jeopardy-theme.mp3" } }
+BEFORE: { connected = False, ignoreDisconnect = False, jeopardyId = Just "0", jeopardyPlaying = True, now = 1777502784894, pending = [], screen = ConnectScreen, trackInfo = [{ currentTime = 3.359172, duration = 30.72, id = "0" }] }
+AFTER:  { connected = False, ignoreDisconnect = True, jeopardyId = Just "0", jeopardyPlaying = True, now = 1777502784894, pending = [], screen = ConnectScreen, trackInfo = [{ currentTime = 3.359172, duration = 30.72, id = "0" }] }
 
 === BeginPressed ===
-BEFORE: { connected = True, ignoreDisconnect = True, jeopardyPlaying = True, now = 1777480943838, pending = [], screen = BeginScreen, trackInfo = Just { currentTime = 5.689035, duration = 30.72, name = "jeopardy-theme.mp3" } }
-AFTER:  { connected = True, ignoreDisconnect = True, jeopardyPlaying = False, now = 1777480943838, pending = [{ fireAt = 1777480944838, msg = PlaySong 0 }], screen = BlankScreen 0, trackInfo = Just { currentTime = 5.689035, duration = 30.72, name = "jeopardy-theme.mp3" } }
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Just "0", jeopardyPlaying = True, now = 1777502786177, pending = [], screen = BeginScreen, trackInfo = [{ currentTime = 4.65921, duration = 30.72, id = "0" }] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502786177, pending = [{ fireAt = 1777502787177, msg = PlaySong 0 }], screen = BlankScreen 0, trackInfo = [{ currentTime = 4.65921, duration = 30.72, id = "0" }] }
 
 === PlaySong 0 ===
-BEFORE: { connected = True, ignoreDisconnect = True, jeopardyPlaying = False, now = 1777480944838, pending = [], screen = BlankScreen 0, trackInfo = Just { currentTime = 5.689035, duration = 30.72, name = "jeopardy-theme.mp3" } }
-AFTER:  { connected = True, ignoreDisconnect = True, jeopardyPlaying = False, now = 1777480944838, pending = [], screen = BlankScreen 0, trackInfo = Just { currentTime = 5.689035, duration = 30.72, name = "jeopardy-theme.mp3" } }
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502787177, pending = [], screen = BlankScreen 0, trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502787177, pending = [], screen = BlankScreen 0, trackInfo = [] }
+
+=== MusicStarted { filename = "golden.mp3", id = "1" } ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502787177, pending = [], screen = BlankScreen 0, trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502787177, pending = [], screen = BlankScreen 0, trackInfo = [] }
+
+=== TrackEnded "golden.mp3" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502795160, pending = [], screen = BlankScreen 0, trackInfo = [{ currentTime = 7.832577, duration = 7.915102, id = "1" }] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502795160, pending = [{ fireAt = 1777502796160, msg = ShowQuestion 0 }], screen = BlankScreen 0, trackInfo = [{ currentTime = 7.832577, duration = 7.915102, id = "1" }] }
+
+=== ShowQuestion 0 ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502796160, pending = [], screen = BlankScreen 0, trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502796160, pending = [], screen = QuestionScreen 0 "", trackInfo = [] }
+
+=== AnswerChanged "g" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502798060, pending = [], screen = QuestionScreen 0 "", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502798060, pending = [], screen = QuestionScreen 0 "g", trackInfo = [] }
+
+=== AnswerChanged "go" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502798410, pending = [], screen = QuestionScreen 0 "g", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502798410, pending = [], screen = QuestionScreen 0 "go", trackInfo = [] }
+
+=== AnswerChanged "gol" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502798593, pending = [], screen = QuestionScreen 0 "go", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502798593, pending = [], screen = QuestionScreen 0 "gol", trackInfo = [] }
+
+=== AnswerChanged "gold" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502798943, pending = [], screen = QuestionScreen 0 "gol", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502798943, pending = [], screen = QuestionScreen 0 "gold", trackInfo = [] }
+
+=== AnswerChanged "golde" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502799143, pending = [], screen = QuestionScreen 0 "gold", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502799143, pending = [], screen = QuestionScreen 0 "golde", trackInfo = [] }
+
+=== AnswerChanged "golden" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502799226, pending = [], screen = QuestionScreen 0 "golde", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502799226, pending = [], screen = QuestionScreen 0 "golden", trackInfo = [] }
+
+=== AnswerSubmitted ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502799560, pending = [], screen = QuestionScreen 0 "golden", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502799560, pending = [{ fireAt = 1777502800560, msg = PlaySong 1 }], screen = BlankScreen 1, trackInfo = [] }
+
+=== PlaySong 1 ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502800560, pending = [], screen = BlankScreen 1, trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502800560, pending = [], screen = BlankScreen 1, trackInfo = [] }
+
+=== MusicStarted { filename = "im-just-ken.mp3", id = "2" } ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502800560, pending = [], screen = BlankScreen 1, trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502800560, pending = [], screen = BlankScreen 1, trackInfo = [] }
+
+=== TrackEnded "im-just-ken.mp3" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502813809, pending = [], screen = BlankScreen 1, trackInfo = [{ currentTime = 13.146661, duration = 13.176001, id = "2" }] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502813809, pending = [{ fireAt = 1777502814809, msg = ShowQuestion 1 }], screen = BlankScreen 1, trackInfo = [{ currentTime = 13.146661, duration = 13.176001, id = "2" }] }
+
+=== ShowQuestion 1 ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502814826, pending = [], screen = BlankScreen 1, trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502814826, pending = [], screen = QuestionScreen 1 "", trackInfo = [] }
+
+=== AnswerChanged "p" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502815625, pending = [], screen = QuestionScreen 1 "", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502815625, pending = [], screen = QuestionScreen 1 "p", trackInfo = [] }
+
+=== AnswerChanged "" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502816642, pending = [], screen = QuestionScreen 1 "p", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502816642, pending = [], screen = QuestionScreen 1 "", trackInfo = [] }
 
 === ToggleIgnoreDisconnect ===
-BEFORE: { connected = True, ignoreDisconnect = True, jeopardyPlaying = False, now = 1777480947222, pending = [], screen = BlankScreen 0, trackInfo = Just { currentTime = 2.293982, duration = 7.895125, name = "golden.mp3" } }
-AFTER:  { connected = True, ignoreDisconnect = False, jeopardyPlaying = False, now = 1777480947222, pending = [], screen = BlankScreen 0, trackInfo = Just { currentTime = 2.293982, duration = 7.895125, name = "golden.mp3" } }
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502818642, pending = [], screen = QuestionScreen 1 "", trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = False, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502818642, pending = [], screen = QuestionScreen 1 "", trackInfo = [] }
+
+=== MusicStarted { filename = "jeopardy-theme.mp3", id = "3" } ===
+BEFORE: { connected = False, ignoreDisconnect = False, jeopardyId = Nothing, jeopardyPlaying = True, now = 1777502818725, pending = [], screen = ConnectScreen, trackInfo = [] }
+AFTER:  { connected = False, ignoreDisconnect = False, jeopardyId = Just "3", jeopardyPlaying = True, now = 1777502818725, pending = [], screen = ConnectScreen, trackInfo = [] }
 
 === ToggleIgnoreDisconnect ===
-BEFORE: { connected = False, ignoreDisconnect = False, jeopardyPlaying = True, now = 1777480948972, pending = [], screen = ConnectScreen, trackInfo = Just { currentTime = 1.573113, duration = 30.72, name = "jeopardy-theme.mp3" } }
-AFTER:  { connected = False, ignoreDisconnect = True, jeopardyPlaying = True, now = 1777480948972, pending = [], screen = ConnectScreen, trackInfo = Just { currentTime = 1.573113, duration = 30.72, name = "jeopardy-theme.mp3" } }
+BEFORE: { connected = False, ignoreDisconnect = False, jeopardyId = Just "3", jeopardyPlaying = True, now = 1777502820775, pending = [], screen = ConnectScreen, trackInfo = [{ currentTime = 1.97084, duration = 30.72, id = "3" }] }
+AFTER:  { connected = False, ignoreDisconnect = True, jeopardyId = Just "3", jeopardyPlaying = True, now = 1777502820775, pending = [], screen = ConnectScreen, trackInfo = [{ currentTime = 1.97084, duration = 30.72, id = "3" }] }
 
 === BeginPressed ===
-BEFORE: { connected = True, ignoreDisconnect = True, jeopardyPlaying = True, now = 1777480949938, pending = [], screen = BeginScreen, trackInfo = Just { currentTime = 2.57306, duration = 30.72, name = "jeopardy-theme.mp3" } }
-AFTER:  { connected = True, ignoreDisconnect = True, jeopardyPlaying = False, now = 1777480949938, pending = [{ fireAt = 1777480950938, msg = PlaySong 0 }], screen = BlankScreen 0, trackInfo = Just { currentTime = 2.57306, duration = 30.72, name = "jeopardy-theme.mp3" } }
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Just "3", jeopardyPlaying = True, now = 1777502822025, pending = [], screen = BeginScreen, trackInfo = [{ currentTime = 3.170861, duration = 30.72, id = "3" }] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502822025, pending = [{ fireAt = 1777502823025, msg = PlaySong 0 }], screen = BlankScreen 0, trackInfo = [{ currentTime = 3.170861, duration = 30.72, id = "3" }] }
 
 === PlaySong 0 ===
-BEFORE: { connected = True, ignoreDisconnect = True, jeopardyPlaying = False, now = 1777480950938, pending = [], screen = BlankScreen 0, trackInfo = Just { currentTime = 2.57306, duration = 30.72, name = "jeopardy-theme.mp3" } }
-AFTER:  { connected = True, ignoreDisconnect = True, jeopardyPlaying = False, now = 1777480950938, pending = [], screen = BlankScreen 0, trackInfo = Just { currentTime = 2.57306, duration = 30.72, name = "jeopardy-theme.mp3" } }
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502823042, pending = [], screen = BlankScreen 0, trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502823042, pending = [], screen = BlankScreen 0, trackInfo = [] }
+
+=== MusicStarted { filename = "golden.mp3", id = "4" } ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502823042, pending = [], screen = BlankScreen 0, trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502823042, pending = [], screen = BlankScreen 0, trackInfo = [] }
+
+=== TrackEnded "golden.mp3" ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502825658, pending = [], screen = BlankScreen 0, trackInfo = [{ currentTime = 7.86573, duration = 7.915102, id = "4" }] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502825658, pending = [{ fireAt = 1777502826658, msg = ShowQuestion 0 }], screen = BlankScreen 0, trackInfo = [{ currentTime = 7.86573, duration = 7.915102, id = "4" }] }
+
+=== ShowQuestion 0 ===
+BEFORE: { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502867526, pending = [], screen = BlankScreen 0, trackInfo = [] }
+AFTER:  { connected = True, ignoreDisconnect = True, jeopardyId = Nothing, jeopardyPlaying = False, now = 1777502867526, pending = [], screen = QuestionScreen 0 "", trackInfo = [] }
 
