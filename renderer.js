@@ -1,6 +1,9 @@
 const { execFile } = require('child_process')
-const { existsSync } = require('fs')
+const { existsSync, appendFileSync, writeFileSync } = require('fs')
 const path = require('path')
+
+const logPath = path.join(__dirname, 'debug.log')
+writeFileSync(logPath, '', 'utf8')
 
 const binary = path.join(__dirname, 'src', 'list_audio_devices')
 const app = Elm.Main.init({ node: document.getElementById('app') })
@@ -19,6 +22,10 @@ document.body.appendChild(flashOverlay)
 
 app.ports.showFlash.subscribe((on) => {
   flashOverlay.style.display = on ? 'block' : 'none'
+})
+
+app.ports.logToFile.subscribe((entry) => {
+  appendFileSync(logPath, entry + '\n', 'utf8')
 })
 let currentAudio = null
 let currentAudioName = ''

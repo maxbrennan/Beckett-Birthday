@@ -6051,8 +6051,8 @@ var $elm$random$Random$map2 = F3(
 					seed2);
 			});
 	});
-var $author$project$Main$maxDingDelay = $author$project$Main$debug ? 500 : 15000;
-var $author$project$Main$minDingDelay = $author$project$Main$debug ? 100 : 2000;
+var $author$project$Main$maxDingDelay = $author$project$Main$debug ? 5000 : 15000;
+var $author$project$Main$minDingDelay = $author$project$Main$debug ? 2000 : 2000;
 var $author$project$Main$dingScheduleGen = A3(
 	$elm$random$Random$map2,
 	F2(
@@ -6323,6 +6323,7 @@ var $elm$core$String$endsWith = _String_endsWith;
 var $author$project$Main$isVideo = function (filename) {
 	return A2($elm$core$String$endsWith, '.mp4', filename);
 };
+var $author$project$Main$logToFile = _Platform_outgoingPort('logToFile', $elm$json$Json$Encode$string);
 var $elm$core$String$filter = _String_filter;
 var $elm$core$String$toLower = _String_toLower;
 var $elm$core$String$words = _String_words;
@@ -6444,7 +6445,35 @@ var $author$project$Main$schedule = F3(
 			});
 	});
 var $author$project$Main$showFlash = _Platform_outgoingPort('showFlash', $elm$json$Json$Encode$bool);
+var $elm$core$Debug$toString = _Debug_toString;
 var $author$project$Main$update = F2(
+	function (msg, model) {
+		var shouldLog = function () {
+			switch (msg.$) {
+				case 'Tick':
+					return false;
+				case 'DevicesReceived':
+					return false;
+				case 'TrackInfoReceived':
+					return false;
+				default:
+					return true;
+			}
+		}();
+		var _v34 = A2($author$project$Main$updateImpl, msg, model);
+		var newModel = _v34.a;
+		var cmd = _v34.b;
+		var entry = '=== ' + ($elm$core$Debug$toString(msg) + (' ===\n' + ('BEFORE: ' + ($elm$core$Debug$toString(model) + ('\n' + ('AFTER:  ' + ($elm$core$Debug$toString(newModel) + '\n')))))));
+		return shouldLog ? _Utils_Tuple2(
+			newModel,
+			$elm$core$Platform$Cmd$batch(
+				_List_fromArray(
+					[
+						cmd,
+						$author$project$Main$logToFile(entry)
+					]))) : _Utils_Tuple2(newModel, cmd);
+	});
+var $author$project$Main$updateImpl = F2(
 	function (msg, model) {
 		switch (msg.$) {
 			case 'Tick':

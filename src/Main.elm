@@ -30,6 +30,8 @@ port showFlash : Bool -> Cmd msg
 
 port musicError : (String -> msg) -> Sub msg
 
+port logToFile : String -> Cmd msg
+
 
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
 debug : Bool
@@ -75,7 +77,7 @@ fakeFlashRangeHi =
 minDingDelay : Float
 minDingDelay =
     if debug then
-        100
+        2000
 
     else
         2000
@@ -86,7 +88,7 @@ minDingDelay =
 maxDingDelay : Float
 maxDingDelay =
     if debug then
-        500
+        5000
 
     else
         15000
@@ -387,6 +389,38 @@ iqFail model state =
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
+    let
+        ( newModel, cmd ) =
+            updateImpl msg model
+
+        shouldLog =
+            case msg of
+                Tick _ ->
+                    False
+
+                DevicesReceived _ ->
+                    False
+
+                TrackInfoReceived _ ->
+                    False
+
+                _ ->
+                    True
+
+        entry =
+            "=== " ++ Debug.toString msg ++ " ===\n"
+                ++ "BEFORE: " ++ Debug.toString model ++ "\n"
+                ++ "AFTER:  " ++ Debug.toString newModel ++ "\n"
+    in
+    if shouldLog then
+        ( newModel, Cmd.batch [ cmd, logToFile entry ] )
+
+    else
+        ( newModel, cmd )
+
+
+updateImpl : Msg -> Model -> ( Model, Cmd Msg )
+updateImpl msg model =
     case msg of
         -- Advance the clock. Fire any events whose fireAt has passed.
         -- The first Tick (model.now == 0) just initialises the clock without firing.
