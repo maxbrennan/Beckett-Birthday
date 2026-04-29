@@ -4381,43 +4381,6 @@ function _Browser_load(url)
 
 
 
-var _Bitwise_and = F2(function(a, b)
-{
-	return a & b;
-});
-
-var _Bitwise_or = F2(function(a, b)
-{
-	return a | b;
-});
-
-var _Bitwise_xor = F2(function(a, b)
-{
-	return a ^ b;
-});
-
-function _Bitwise_complement(a)
-{
-	return ~a;
-};
-
-var _Bitwise_shiftLeftBy = F2(function(offset, a)
-{
-	return a << offset;
-});
-
-var _Bitwise_shiftRightBy = F2(function(offset, a)
-{
-	return a >> offset;
-});
-
-var _Bitwise_shiftRightZfBy = F2(function(offset, a)
-{
-	return a >>> offset;
-});
-
-
-
 function _Time_now(millisToPosix)
 {
 	return _Scheduler_binding(function(callback)
@@ -4461,6 +4424,43 @@ function _Time_getZoneName()
 		callback(_Scheduler_succeed(name));
 	});
 }
+
+
+
+var _Bitwise_and = F2(function(a, b)
+{
+	return a & b;
+});
+
+var _Bitwise_or = F2(function(a, b)
+{
+	return a | b;
+});
+
+var _Bitwise_xor = F2(function(a, b)
+{
+	return a ^ b;
+});
+
+function _Bitwise_complement(a)
+{
+	return ~a;
+};
+
+var _Bitwise_shiftLeftBy = F2(function(offset, a)
+{
+	return a << offset;
+});
+
+var _Bitwise_shiftRightBy = F2(function(offset, a)
+{
+	return a >> offset;
+});
+
+var _Bitwise_shiftRightZfBy = F2(function(offset, a)
+{
+	return a >>> offset;
+});
 var $elm$core$Basics$EQ = {$: 'EQ'};
 var $elm$core$Basics$GT = {$: 'GT'};
 var $elm$core$Basics$LT = {$: 'LT'};
@@ -5251,12 +5251,47 @@ var $elm$core$Task$perform = F2(
 	});
 var $elm$browser$Browser$element = _Browser_element;
 var $author$project$Main$ConnectScreen = {$: 'ConnectScreen'};
+var $author$project$Main$Tick = function (a) {
+	return {$: 'Tick', a: a};
+};
+var $elm$core$Platform$Cmd$batch = _Platform_batch;
+var $elm$time$Time$Name = function (a) {
+	return {$: 'Name', a: a};
+};
+var $elm$time$Time$Offset = function (a) {
+	return {$: 'Offset', a: a};
+};
+var $elm$time$Time$Zone = F2(
+	function (a, b) {
+		return {$: 'Zone', a: a, b: b};
+	});
+var $elm$time$Time$customZone = $elm$time$Time$Zone;
+var $elm$time$Time$Posix = function (a) {
+	return {$: 'Posix', a: a};
+};
+var $elm$time$Time$millisToPosix = $elm$time$Time$Posix;
+var $elm$time$Time$now = _Time_now($elm$time$Time$millisToPosix);
 var $elm$json$Json$Encode$string = _Json_wrap;
 var $author$project$Main$playMusic = _Platform_outgoingPort('playMusic', $elm$json$Json$Encode$string);
+var $elm$time$Time$posixToMillis = function (_v0) {
+	var millis = _v0.a;
+	return millis;
+};
 var $author$project$Main$init = function (_v0) {
 	return _Utils_Tuple2(
-		{connected: false, jeopardyPlaying: true, screen: $author$project$Main$ConnectScreen, trackInfo: $elm$core$Maybe$Nothing},
-		$author$project$Main$playMusic('jeopardy-theme.mp3'));
+		{connected: false, jeopardyPlaying: true, now: 0, pending: _List_Nil, screen: $author$project$Main$ConnectScreen, trackInfo: $elm$core$Maybe$Nothing},
+		$elm$core$Platform$Cmd$batch(
+			_List_fromArray(
+				[
+					$author$project$Main$playMusic('jeopardy-theme.mp3'),
+					A2(
+					$elm$core$Task$perform,
+					function (posix) {
+						return $author$project$Main$Tick(
+							$elm$time$Time$posixToMillis(posix));
+					},
+					$elm$time$Time$now)
+				])));
 };
 var $author$project$Main$DevicesReceived = function (a) {
 	return {$: 'DevicesReceived', a: a};
@@ -5274,6 +5309,136 @@ var $elm$core$Platform$Sub$batch = _Platform_batch;
 var $elm$json$Json$Decode$string = _Json_decodeString;
 var $author$project$Main$musicError = _Platform_incomingPort('musicError', $elm$json$Json$Decode$string);
 var $elm$core$Platform$Sub$none = $elm$core$Platform$Sub$batch(_List_Nil);
+var $elm$browser$Browser$AnimationManager$Time = function (a) {
+	return {$: 'Time', a: a};
+};
+var $elm$browser$Browser$AnimationManager$State = F3(
+	function (subs, request, oldTime) {
+		return {oldTime: oldTime, request: request, subs: subs};
+	});
+var $elm$browser$Browser$AnimationManager$init = $elm$core$Task$succeed(
+	A3($elm$browser$Browser$AnimationManager$State, _List_Nil, $elm$core$Maybe$Nothing, 0));
+var $elm$core$Process$kill = _Scheduler_kill;
+var $elm$browser$Browser$AnimationManager$now = _Browser_now(_Utils_Tuple0);
+var $elm$browser$Browser$AnimationManager$rAF = _Browser_rAF(_Utils_Tuple0);
+var $elm$core$Platform$sendToSelf = _Platform_sendToSelf;
+var $elm$core$Process$spawn = _Scheduler_spawn;
+var $elm$browser$Browser$AnimationManager$onEffects = F3(
+	function (router, subs, _v0) {
+		var request = _v0.request;
+		var oldTime = _v0.oldTime;
+		var _v1 = _Utils_Tuple2(request, subs);
+		if (_v1.a.$ === 'Nothing') {
+			if (!_v1.b.b) {
+				var _v2 = _v1.a;
+				return $elm$browser$Browser$AnimationManager$init;
+			} else {
+				var _v4 = _v1.a;
+				return A2(
+					$elm$core$Task$andThen,
+					function (pid) {
+						return A2(
+							$elm$core$Task$andThen,
+							function (time) {
+								return $elm$core$Task$succeed(
+									A3(
+										$elm$browser$Browser$AnimationManager$State,
+										subs,
+										$elm$core$Maybe$Just(pid),
+										time));
+							},
+							$elm$browser$Browser$AnimationManager$now);
+					},
+					$elm$core$Process$spawn(
+						A2(
+							$elm$core$Task$andThen,
+							$elm$core$Platform$sendToSelf(router),
+							$elm$browser$Browser$AnimationManager$rAF)));
+			}
+		} else {
+			if (!_v1.b.b) {
+				var pid = _v1.a.a;
+				return A2(
+					$elm$core$Task$andThen,
+					function (_v3) {
+						return $elm$browser$Browser$AnimationManager$init;
+					},
+					$elm$core$Process$kill(pid));
+			} else {
+				return $elm$core$Task$succeed(
+					A3($elm$browser$Browser$AnimationManager$State, subs, request, oldTime));
+			}
+		}
+	});
+var $elm$browser$Browser$AnimationManager$onSelfMsg = F3(
+	function (router, newTime, _v0) {
+		var subs = _v0.subs;
+		var oldTime = _v0.oldTime;
+		var send = function (sub) {
+			if (sub.$ === 'Time') {
+				var tagger = sub.a;
+				return A2(
+					$elm$core$Platform$sendToApp,
+					router,
+					tagger(
+						$elm$time$Time$millisToPosix(newTime)));
+			} else {
+				var tagger = sub.a;
+				return A2(
+					$elm$core$Platform$sendToApp,
+					router,
+					tagger(newTime - oldTime));
+			}
+		};
+		return A2(
+			$elm$core$Task$andThen,
+			function (pid) {
+				return A2(
+					$elm$core$Task$andThen,
+					function (_v1) {
+						return $elm$core$Task$succeed(
+							A3(
+								$elm$browser$Browser$AnimationManager$State,
+								subs,
+								$elm$core$Maybe$Just(pid),
+								newTime));
+					},
+					$elm$core$Task$sequence(
+						A2($elm$core$List$map, send, subs)));
+			},
+			$elm$core$Process$spawn(
+				A2(
+					$elm$core$Task$andThen,
+					$elm$core$Platform$sendToSelf(router),
+					$elm$browser$Browser$AnimationManager$rAF)));
+	});
+var $elm$browser$Browser$AnimationManager$Delta = function (a) {
+	return {$: 'Delta', a: a};
+};
+var $elm$core$Basics$composeL = F3(
+	function (g, f, x) {
+		return g(
+			f(x));
+	});
+var $elm$browser$Browser$AnimationManager$subMap = F2(
+	function (func, sub) {
+		if (sub.$ === 'Time') {
+			var tagger = sub.a;
+			return $elm$browser$Browser$AnimationManager$Time(
+				A2($elm$core$Basics$composeL, func, tagger));
+		} else {
+			var tagger = sub.a;
+			return $elm$browser$Browser$AnimationManager$Delta(
+				A2($elm$core$Basics$composeL, func, tagger));
+		}
+	});
+_Platform_effectManagers['Browser.AnimationManager'] = _Platform_createManager($elm$browser$Browser$AnimationManager$init, $elm$browser$Browser$AnimationManager$onEffects, $elm$browser$Browser$AnimationManager$onSelfMsg, 0, $elm$browser$Browser$AnimationManager$subMap);
+var $elm$browser$Browser$AnimationManager$subscription = _Platform_leaf('Browser.AnimationManager');
+var $elm$browser$Browser$AnimationManager$onAnimationFrame = function (tagger) {
+	return $elm$browser$Browser$AnimationManager$subscription(
+		$elm$browser$Browser$AnimationManager$Time(tagger));
+};
+var $elm$browser$Browser$Events$onAnimationFrame = $elm$browser$Browser$AnimationManager$onAnimationFrame;
 var $elm$browser$Browser$Events$Document = {$: 'Document'};
 var $elm$browser$Browser$Events$MySub = F3(
 	function (a, b, c) {
@@ -5424,7 +5589,6 @@ var $elm$core$Dict$fromList = function (assocs) {
 		$elm$core$Dict$empty,
 		assocs);
 };
-var $elm$core$Process$kill = _Scheduler_kill;
 var $elm$core$Dict$foldl = F3(
 	function (func, acc, dict) {
 		foldl:
@@ -5515,7 +5679,6 @@ var $elm$browser$Browser$Events$Event = F2(
 	function (key, event) {
 		return {event: event, key: key};
 	});
-var $elm$core$Platform$sendToSelf = _Platform_sendToSelf;
 var $elm$browser$Browser$Events$spawn = F3(
 	function (router, key, _v0) {
 		var node = _v0.a;
@@ -5723,13 +5886,19 @@ var $author$project$Main$subscriptions = function (model) {
 				$author$project$Main$receiveTrackInfo($author$project$Main$TrackInfoReceived),
 				$author$project$Main$trackEnded($author$project$Main$TrackEnded),
 				$author$project$Main$musicError($author$project$Main$MusicError),
-				keyboardSub
+				keyboardSub,
+				$elm$browser$Browser$Events$onAnimationFrame(
+				function (posix) {
+					return $author$project$Main$Tick(
+						$elm$time$Time$posixToMillis(posix));
+				})
 			]));
 };
 var $author$project$Main$BeginScreen = {$: 'BeginScreen'};
 var $author$project$Main$BlankScreen = function (a) {
 	return {$: 'BlankScreen', a: a};
 };
+var $author$project$Main$CountdownTick = {$: 'CountdownTick'};
 var $author$project$Main$DingFlashEnd = {$: 'DingFlashEnd'};
 var $author$project$Main$DingOccurred = {$: 'DingOccurred'};
 var $author$project$Main$DingWindowExpired = {$: 'DingWindowExpired'};
@@ -5753,6 +5922,9 @@ var $author$project$Main$FfTickDenominator = {$: 'FfTickDenominator'};
 var $author$project$Main$FfTickNumerator = {$: 'FfTickNumerator'};
 var $author$project$Main$IQTestActiveScreen = function (a) {
 	return {$: 'IQTestActiveScreen', a: a};
+};
+var $author$project$Main$IQTestCountdownScreen = function (a) {
+	return {$: 'IQTestCountdownScreen', a: a};
 };
 var $author$project$Main$IQTestScreen = function (a) {
 	return {$: 'IQTestScreen', a: a};
@@ -5799,7 +5971,12 @@ var $elm$core$List$any = F2(
 			}
 		}
 	});
-var $elm$core$Platform$Cmd$batch = _Platform_batch;
+var $author$project$Main$clearPending = function (model) {
+	return _Utils_update(
+		model,
+		{pending: _List_Nil});
+};
+var $author$project$Main$counterTickMs = 80;
 var $author$project$Main$debug = true;
 var $elm$random$Random$Generator = function (a) {
 	return {$: 'Generator', a: a};
@@ -5874,13 +6051,15 @@ var $elm$random$Random$map2 = F3(
 					seed2);
 			});
 	});
+var $author$project$Main$maxDingDelay = $author$project$Main$debug ? 500 : 15000;
+var $author$project$Main$minDingDelay = $author$project$Main$debug ? 100 : 2000;
 var $author$project$Main$dingScheduleGen = A3(
 	$elm$random$Random$map2,
 	F2(
 		function (d, r) {
 			return {delay: d, nextRandom: r};
 		}),
-	A2($elm$random$Random$float, 2000, 15000),
+	A2($elm$random$Random$float, $author$project$Main$minDingDelay, $author$project$Main$maxDingDelay),
 	A2(
 		$elm$random$Random$map,
 		function (n) {
@@ -5899,26 +6078,6 @@ var $elm$random$Random$initialSeed = function (x) {
 	var state2 = (state1 + x) >>> 0;
 	return $elm$random$Random$next(
 		A2($elm$random$Random$Seed, state2, incr));
-};
-var $elm$time$Time$Name = function (a) {
-	return {$: 'Name', a: a};
-};
-var $elm$time$Time$Offset = function (a) {
-	return {$: 'Offset', a: a};
-};
-var $elm$time$Time$Zone = F2(
-	function (a, b) {
-		return {$: 'Zone', a: a, b: b};
-	});
-var $elm$time$Time$customZone = $elm$time$Time$Zone;
-var $elm$time$Time$Posix = function (a) {
-	return {$: 'Posix', a: a};
-};
-var $elm$time$Time$millisToPosix = $elm$time$Time$Posix;
-var $elm$time$Time$now = _Time_now($elm$time$Time$millisToPosix);
-var $elm$time$Time$posixToMillis = function (_v0) {
-	var millis = _v0.a;
-	return millis;
 };
 var $elm$random$Random$init = A2(
 	$elm$core$Task$andThen,
@@ -6059,14 +6218,22 @@ var $author$project$Main$getQuestion = function (idx) {
 var $author$project$Main$iqDingVolume = 0.8;
 var $elm$core$Platform$Cmd$none = $elm$core$Platform$Cmd$batch(_List_Nil);
 var $author$project$Main$stopMusic = _Platform_outgoingPort('stopMusic', $elm$json$Json$Encode$string);
-var $author$project$Main$iqFail = function (state) {
-	return _Utils_Tuple2(
-		$author$project$Main$IQTestScreen(
-			{fakeFlashUsed: state.fakeFlashUsed, in50PercentPhase: state.in50PercentPhase, questionIdx: state.questionIdx, totalDings: state.totalDings}),
-		state.loudPlaying ? $author$project$Main$stopMusic('loud.mp4') : $elm$core$Platform$Cmd$none);
-};
+var $author$project$Main$iqFail = F2(
+	function (model, state) {
+		return _Utils_Tuple2(
+			$author$project$Main$clearPending(
+				_Utils_update(
+					model,
+					{
+						screen: $author$project$Main$IQTestScreen(
+							{fakeFlashUsed: state.fakeFlashUsed, in50PercentPhase: state.in50PercentPhase, questionIdx: state.questionIdx, totalDings: state.totalDings})
+					})),
+			state.loudPlaying ? $author$project$Main$stopMusic('loud.mp4') : $elm$core$Platform$Cmd$none);
+	});
 var $author$project$Main$iqFlashDuration = 250;
-var $author$project$Main$iqQuestionCount = 10;
+var $author$project$Main$iqQuestionCount = $author$project$Main$debug ? 10 : 100;
+var $author$project$Main$fakeFlashRangeHi = $author$project$Main$debug ? 0.75 : 0.95;
+var $author$project$Main$fakeFlashRangeLo = $author$project$Main$debug ? 0.65 : 0.85;
 var $elm$random$Random$int = F2(
 	function (a, b) {
 		return $elm$random$Random$Generator(
@@ -6128,21 +6295,21 @@ var $author$project$Main$iqTestInitGen = function (total) {
 	var lo = A2(
 		$elm$core$Basics$max,
 		0,
-		$elm$core$Basics$floor(0.65 * total));
+		$elm$core$Basics$floor($author$project$Main$fakeFlashRangeLo * total));
 	var hi = A2(
 		$elm$core$Basics$max,
 		lo,
 		A2(
 			$elm$core$Basics$min,
 			total - 1,
-			$elm$core$Basics$floor(0.75 * total)));
+			$elm$core$Basics$floor($author$project$Main$fakeFlashRangeHi * total)));
 	return A4(
 		$elm$random$Random$map3,
 		F3(
 			function (d, r, fp) {
 				return {delay: d, fakeFlashPoint: fp, nextRandom: r};
 			}),
-		A2($elm$random$Random$float, 2000, 15000),
+		A2($elm$random$Random$float, $author$project$Main$minDingDelay, $author$project$Main$maxDingDelay),
 		A2(
 			$elm$random$Random$map,
 			function (n) {
@@ -6217,6 +6384,24 @@ var $author$project$Main$parseDevices = function (json) {
 		return false;
 	}
 };
+var $elm$core$List$partition = F2(
+	function (pred, list) {
+		var step = F2(
+			function (x, _v0) {
+				var trues = _v0.a;
+				var falses = _v0.b;
+				return pred(x) ? _Utils_Tuple2(
+					A2($elm$core$List$cons, x, trues),
+					falses) : _Utils_Tuple2(
+					trues,
+					A2($elm$core$List$cons, x, falses));
+			});
+		return A3(
+			$elm$core$List$foldr,
+			step,
+			_Utils_Tuple2(_List_Nil, _List_Nil),
+			list);
+	});
 var $elm$json$Json$Encode$float = _Json_wrap;
 var $author$project$Main$playDing = _Platform_outgoingPort('playDing', $elm$json$Json$Encode$float);
 var $elm$json$Json$Encode$bool = _Json_wrap;
@@ -6247,30 +6432,69 @@ var $author$project$Main$playVideo = _Platform_outgoingPort(
 					$elm$json$Json$Encode$bool($.loop))
 				]));
 	});
-var $author$project$Main$showFlash = _Platform_outgoingPort('showFlash', $elm$json$Json$Encode$bool);
-var $elm$core$Process$sleep = _Process_sleep;
-var $author$project$Main$sleep = F2(
-	function (ms, msg) {
-		return A2(
-			$elm$core$Task$perform,
-			function (_v0) {
-				return msg;
-			},
-			$elm$core$Process$sleep(ms));
+var $author$project$Main$schedule = F3(
+	function (delay, msg, model) {
+		return _Utils_update(
+			model,
+			{
+				pending: A2(
+					$elm$core$List$cons,
+					{fireAt: model.now + delay, msg: msg},
+					model.pending)
+			});
 	});
+var $author$project$Main$showFlash = _Platform_outgoingPort('showFlash', $elm$json$Json$Encode$bool);
 var $author$project$Main$update = F2(
 	function (msg, model) {
 		switch (msg.$) {
+			case 'Tick':
+				var t = msg.a;
+				if (!model.now) {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{now: t}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					var _v1 = A2(
+						$elm$core$List$partition,
+						function (e) {
+							return _Utils_cmp(e.fireAt, t) < 1;
+						},
+						model.pending);
+					var due = _v1.a;
+					var stillPending = _v1.b;
+					var baseModel = _Utils_update(
+						model,
+						{now: t, pending: stillPending});
+					return A3(
+						$elm$core$List$foldl,
+						F2(
+							function (event, _v2) {
+								var m = _v2.a;
+								var cmd = _v2.b;
+								var _v3 = A2($author$project$Main$update, event.msg, m);
+								var m2 = _v3.a;
+								var cmd2 = _v3.b;
+								return _Utils_Tuple2(
+									m2,
+									$elm$core$Platform$Cmd$batch(
+										_List_fromArray(
+											[cmd, cmd2])));
+							}),
+						_Utils_Tuple2(baseModel, $elm$core$Platform$Cmd$none),
+						due);
+				}
 			case 'DevicesReceived':
 				var json = msg.a;
 				var connected = $author$project$Main$parseDevices(json) || $author$project$Main$debug;
 				if (connected) {
 					var newScreen = function () {
-						var _v1 = model.screen;
-						if (_v1.$ === 'ConnectScreen') {
+						var _v4 = model.screen;
+						if (_v4.$ === 'ConnectScreen') {
 							return $author$project$Main$BeginScreen;
 						} else {
-							var other = _v1;
+							var other = _v4;
 							return other;
 						}
 					}();
@@ -6282,17 +6506,17 @@ var $author$project$Main$update = F2(
 						shouldStart ? $author$project$Main$playMusic('jeopardy-theme.mp3') : $elm$core$Platform$Cmd$none);
 				} else {
 					var stopLoop = function () {
-						var _v3 = model.screen;
-						if (_v3.$ === 'IQTestActiveScreen') {
-							var state = _v3.a;
+						var _v6 = model.screen;
+						if (_v6.$ === 'IQTestActiveScreen') {
+							var state = _v6.a;
 							return state.loudPlaying;
 						} else {
 							return false;
 						}
 					}();
 					var needsJeopardy = function () {
-						var _v2 = model.screen;
-						switch (_v2.$) {
+						var _v5 = model.screen;
+						switch (_v5.$) {
 							case 'BlankScreen':
 								return true;
 							case 'QuestionScreen':
@@ -6300,6 +6524,8 @@ var $author$project$Main$update = F2(
 							case 'WrongAnswerScreen':
 								return true;
 							case 'IQTestScreen':
+								return true;
+							case 'IQTestCountdownScreen':
 								return true;
 							case 'IQTestActiveScreen':
 								return true;
@@ -6310,9 +6536,10 @@ var $author$project$Main$update = F2(
 						}
 					}();
 					return _Utils_Tuple2(
-						_Utils_update(
-							model,
-							{connected: false, jeopardyPlaying: model.jeopardyPlaying || needsJeopardy, screen: $author$project$Main$ConnectScreen}),
+						$author$project$Main$clearPending(
+							_Utils_update(
+								model,
+								{connected: false, jeopardyPlaying: model.jeopardyPlaying || needsJeopardy, screen: $author$project$Main$ConnectScreen})),
 						$elm$core$Platform$Cmd$batch(
 							_List_fromArray(
 								[
@@ -6322,30 +6549,27 @@ var $author$project$Main$update = F2(
 				}
 			case 'BeginPressed':
 				return _Utils_Tuple2(
-					_Utils_update(
-						model,
-						{
-							jeopardyPlaying: false,
-							screen: $author$project$Main$BlankScreen(0)
-						}),
-					$elm$core$Platform$Cmd$batch(
-						_List_fromArray(
-							[
-								$author$project$Main$stopMusic('jeopardy-theme.mp3'),
-								A2(
-								$author$project$Main$sleep,
-								1000,
-								$author$project$Main$PlaySong(0))
-							])));
+					A3(
+						$author$project$Main$schedule,
+						1000,
+						$author$project$Main$PlaySong(0),
+						$author$project$Main$clearPending(
+							_Utils_update(
+								model,
+								{
+									jeopardyPlaying: false,
+									screen: $author$project$Main$BlankScreen(0)
+								}))),
+					$author$project$Main$stopMusic('jeopardy-theme.mp3'));
 			case 'PlaySong':
 				var idx = msg.a;
-				var _v4 = model.screen;
-				if (_v4.$ === 'BlankScreen') {
-					var blankIdx = _v4.a;
+				var _v7 = model.screen;
+				if (_v7.$ === 'BlankScreen') {
+					var blankIdx = _v7.a;
 					if (_Utils_eq(blankIdx, idx)) {
-						var _v5 = $author$project$Main$getQuestion(idx);
-						if (_v5.$ === 'Just') {
-							var q = _v5.a;
+						var _v8 = $author$project$Main$getQuestion(idx);
+						if (_v8.$ === 'Just') {
+							var q = _v8.a;
 							return _Utils_Tuple2(
 								model,
 								$author$project$Main$isVideo(q.song) ? $author$project$Main$playVideo(
@@ -6362,8 +6586,8 @@ var $author$project$Main$update = F2(
 			case 'TrackEnded':
 				var name = msg.a;
 				if (name === 'jeopardy-theme.mp3') {
-					var _v6 = model.screen;
-					switch (_v6.$) {
+					var _v9 = model.screen;
+					switch (_v9.$) {
 						case 'ConnectScreen':
 							return _Utils_Tuple2(
 								_Utils_update(
@@ -6384,18 +6608,19 @@ var $author$project$Main$update = F2(
 								$elm$core$Platform$Cmd$none);
 					}
 				} else {
-					var _v7 = model.screen;
-					if (_v7.$ === 'BlankScreen') {
-						var idx = _v7.a;
-						var _v8 = $author$project$Main$getQuestion(idx);
-						if (_v8.$ === 'Just') {
-							var q = _v8.a;
+					var _v10 = model.screen;
+					if (_v10.$ === 'BlankScreen') {
+						var idx = _v10.a;
+						var _v11 = $author$project$Main$getQuestion(idx);
+						if (_v11.$ === 'Just') {
+							var q = _v11.a;
 							return _Utils_eq(q.song, name) ? _Utils_Tuple2(
-								model,
-								A2(
-									$author$project$Main$sleep,
+								A3(
+									$author$project$Main$schedule,
 									1000,
-									$author$project$Main$ShowQuestion(idx))) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+									$author$project$Main$ShowQuestion(idx),
+									model),
+								$elm$core$Platform$Cmd$none) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 						} else {
 							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 						}
@@ -6405,9 +6630,9 @@ var $author$project$Main$update = F2(
 				}
 			case 'ShowQuestion':
 				var idx = msg.a;
-				var _v9 = model.screen;
-				if (_v9.$ === 'BlankScreen') {
-					var blankIdx = _v9.a;
+				var _v12 = model.screen;
+				if (_v12.$ === 'BlankScreen') {
+					var blankIdx = _v12.a;
 					return _Utils_eq(blankIdx, idx) ? _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -6431,9 +6656,9 @@ var $author$project$Main$update = F2(
 				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			case 'AnswerChanged':
 				var typed = msg.a;
-				var _v10 = model.screen;
-				if (_v10.$ === 'QuestionScreen') {
-					var idx = _v10.a;
+				var _v13 = model.screen;
+				if (_v13.$ === 'QuestionScreen') {
+					var idx = _v13.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -6445,13 +6670,13 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'AnswerSubmitted':
-				var _v11 = model.screen;
-				if (_v11.$ === 'QuestionScreen') {
-					var idx = _v11.a;
-					var answer = _v11.b;
-					var _v12 = $author$project$Main$getQuestion(idx);
-					if (_v12.$ === 'Just') {
-						var q = _v12.a;
+				var _v14 = model.screen;
+				if (_v14.$ === 'QuestionScreen') {
+					var idx = _v14.a;
+					var answer = _v14.b;
+					var _v15 = $author$project$Main$getQuestion(idx);
+					if (_v15.$ === 'Just') {
+						var q = _v15.a;
 						if (A2(
 							$elm$core$List$any,
 							function (a) {
@@ -6461,23 +6686,26 @@ var $author$project$Main$update = F2(
 							},
 							q.answers)) {
 							var nextIdx = idx + 1;
-							var _v13 = $author$project$Main$getQuestion(nextIdx);
-							if (_v13.$ === 'Just') {
+							var _v16 = $author$project$Main$getQuestion(nextIdx);
+							if (_v16.$ === 'Just') {
 								return _Utils_Tuple2(
-									_Utils_update(
-										model,
-										{
-											screen: $author$project$Main$BlankScreen(nextIdx)
-										}),
-									A2(
-										$author$project$Main$sleep,
+									A3(
+										$author$project$Main$schedule,
 										1000,
-										$author$project$Main$PlaySong(nextIdx)));
+										$author$project$Main$PlaySong(nextIdx),
+										$author$project$Main$clearPending(
+											_Utils_update(
+												model,
+												{
+													screen: $author$project$Main$BlankScreen(nextIdx)
+												}))),
+									$elm$core$Platform$Cmd$none);
 							} else {
 								return _Utils_Tuple2(
-									_Utils_update(
-										model,
-										{screen: $author$project$Main$WinScreen}),
+									$author$project$Main$clearPending(
+										_Utils_update(
+											model,
+											{screen: $author$project$Main$WinScreen})),
 									$elm$core$Platform$Cmd$none);
 							}
 						} else {
@@ -6496,24 +6724,25 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'ContinuePressed':
-				var _v14 = model.screen;
-				if (_v14.$ === 'WrongAnswerScreen') {
-					var idx = _v14.a;
+				var _v17 = model.screen;
+				if (_v17.$ === 'WrongAnswerScreen') {
+					var idx = _v17.a;
 					return _Utils_Tuple2(
-						_Utils_update(
-							model,
-							{
-								screen: $author$project$Main$IQTestScreen(
-									{fakeFlashUsed: false, in50PercentPhase: false, questionIdx: idx, totalDings: $author$project$Main$iqQuestionCount})
-							}),
+						$author$project$Main$clearPending(
+							_Utils_update(
+								model,
+								{
+									screen: $author$project$Main$IQTestScreen(
+										{fakeFlashUsed: false, in50PercentPhase: false, questionIdx: idx, totalDings: $author$project$Main$iqQuestionCount})
+								})),
 						$elm$core$Platform$Cmd$none);
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'IQTestBeginPressed':
-				var _v15 = model.screen;
-				if (_v15.$ === 'IQTestScreen') {
-					var iqScreen = _v15.a;
+				var _v18 = model.screen;
+				if (_v18.$ === 'IQTestScreen') {
+					var iqScreen = _v18.a;
 					return _Utils_Tuple2(
 						model,
 						A2(
@@ -6524,77 +6753,132 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'IQTestStarted':
-				var delay = msg.a.delay;
-				var nextRandom = msg.a.nextRandom;
-				var fakeFlashPoint = msg.a.fakeFlashPoint;
-				var _v16 = model.screen;
-				if (_v16.$ === 'IQTestScreen') {
-					var iqScreen = _v16.a;
+				var initData = msg.a;
+				var _v19 = model.screen;
+				if (_v19.$ === 'IQTestScreen') {
+					var iqScreen = _v19.a;
 					return _Utils_Tuple2(
-						_Utils_update(
-							model,
-							{
-								screen: $author$project$Main$IQTestActiveScreen(
-									{dingActive: false, dingCount: 0, fakeFlashActive: false, fakeFlashPoint: fakeFlashPoint, fakeFlashUsed: iqScreen.fakeFlashUsed, in50PercentPhase: iqScreen.in50PercentPhase, isFlashing: false, loudPlaying: false, loudWarningShown: false, nextRandom: nextRandom, questionIdx: iqScreen.questionIdx, totalDings: iqScreen.totalDings})
-							}),
-						A2($author$project$Main$sleep, delay, $author$project$Main$DingOccurred));
+						A3(
+							$author$project$Main$schedule,
+							1000,
+							$author$project$Main$CountdownTick,
+							_Utils_update(
+								model,
+								{
+									screen: $author$project$Main$IQTestCountdownScreen(
+										{countdown: iqScreen.totalDings, fakeFlashUsed: iqScreen.fakeFlashUsed, in50PercentPhase: iqScreen.in50PercentPhase, initData: initData, questionIdx: iqScreen.questionIdx, totalDings: iqScreen.totalDings})
+								})),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'CountdownTick':
+				var _v20 = model.screen;
+				if (_v20.$ === 'IQTestCountdownScreen') {
+					var state = _v20.a;
+					if (state.countdown > 1) {
+						return _Utils_Tuple2(
+							A3(
+								$author$project$Main$schedule,
+								1000,
+								$author$project$Main$CountdownTick,
+								_Utils_update(
+									model,
+									{
+										screen: $author$project$Main$IQTestCountdownScreen(
+											_Utils_update(
+												state,
+												{countdown: state.countdown - 1}))
+									})),
+							$elm$core$Platform$Cmd$none);
+					} else {
+						var _v21 = state.initData;
+						var delay = _v21.delay;
+						var nextRandom = _v21.nextRandom;
+						var fakeFlashPoint = _v21.fakeFlashPoint;
+						return _Utils_Tuple2(
+							A3(
+								$author$project$Main$schedule,
+								delay,
+								$author$project$Main$DingOccurred,
+								$author$project$Main$clearPending(
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$IQTestActiveScreen(
+												{dingActive: false, dingCount: 0, fakeFlashActive: false, fakeFlashPoint: fakeFlashPoint, fakeFlashUsed: state.fakeFlashUsed, in50PercentPhase: state.in50PercentPhase, isFlashing: false, loudPlaying: false, nextRandom: nextRandom, questionIdx: state.questionIdx, totalDings: state.totalDings})
+										}))),
+							$elm$core$Platform$Cmd$none);
+					}
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'ScheduleNextDing':
 				var delay = msg.a.delay;
 				var nextRandom = msg.a.nextRandom;
-				var _v17 = model.screen;
-				if (_v17.$ === 'IQTestActiveScreen') {
-					var state = _v17.a;
+				var _v22 = model.screen;
+				if (_v22.$ === 'IQTestActiveScreen') {
+					var state = _v22.a;
 					return _Utils_Tuple2(
-						_Utils_update(
-							model,
-							{
-								screen: $author$project$Main$IQTestActiveScreen(
-									_Utils_update(
-										state,
-										{nextRandom: nextRandom}))
-							}),
-						A2($author$project$Main$sleep, delay, $author$project$Main$DingOccurred));
+						A3(
+							$author$project$Main$schedule,
+							delay,
+							$author$project$Main$DingOccurred,
+							_Utils_update(
+								model,
+								{
+									screen: $author$project$Main$IQTestActiveScreen(
+										_Utils_update(
+											state,
+											{nextRandom: nextRandom}))
+								})),
+						$elm$core$Platform$Cmd$none);
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'DingOccurred':
-				var _v18 = model.screen;
-				if (_v18.$ === 'IQTestActiveScreen') {
-					var state = _v18.a;
+				var _v23 = model.screen;
+				if (_v23.$ === 'IQTestActiveScreen') {
+					var state = _v23.a;
 					var isFakeFlashPoint = (!state.fakeFlashUsed) && ((!state.in50PercentPhase) && _Utils_eq(state.dingCount, state.fakeFlashPoint));
 					var isFake = isFakeFlashPoint || (state.in50PercentPhase && state.nextRandom);
 					return isFake ? _Utils_Tuple2(
-						_Utils_update(
-							model,
-							{
-								screen: $author$project$Main$IQTestActiveScreen(
-									_Utils_update(
-										state,
-										{fakeFlashActive: true, isFlashing: true}))
-							}),
+						A3(
+							$author$project$Main$schedule,
+							$author$project$Main$iqWindowDuration,
+							$author$project$Main$FakeFlashWindowExpired,
+							A3(
+								$author$project$Main$schedule,
+								$author$project$Main$iqFlashDuration,
+								$author$project$Main$DingFlashEnd,
+								_Utils_update(
+									model,
+									{
+										screen: $author$project$Main$IQTestActiveScreen(
+											_Utils_update(
+												state,
+												{fakeFlashActive: true, isFlashing: true}))
+									}))),
+						$author$project$Main$showFlash(true)) : _Utils_Tuple2(
+						A3(
+							$author$project$Main$schedule,
+							$author$project$Main$iqWindowDuration,
+							$author$project$Main$DingWindowExpired,
+							A3(
+								$author$project$Main$schedule,
+								$author$project$Main$iqFlashDuration,
+								$author$project$Main$DingFlashEnd,
+								_Utils_update(
+									model,
+									{
+										screen: $author$project$Main$IQTestActiveScreen(
+											_Utils_update(
+												state,
+												{dingActive: true, isFlashing: true}))
+									}))),
 						$elm$core$Platform$Cmd$batch(
 							_List_fromArray(
 								[
-									A2($author$project$Main$sleep, $author$project$Main$iqFlashDuration, $author$project$Main$DingFlashEnd),
-									A2($author$project$Main$sleep, $author$project$Main$iqWindowDuration, $author$project$Main$FakeFlashWindowExpired),
-									$author$project$Main$showFlash(true)
-								]))) : _Utils_Tuple2(
-						_Utils_update(
-							model,
-							{
-								screen: $author$project$Main$IQTestActiveScreen(
-									_Utils_update(
-										state,
-										{dingActive: true, isFlashing: true}))
-							}),
-						$elm$core$Platform$Cmd$batch(
-							_List_fromArray(
-								[
-									A2($author$project$Main$sleep, $author$project$Main$iqFlashDuration, $author$project$Main$DingFlashEnd),
-									A2($author$project$Main$sleep, $author$project$Main$iqWindowDuration, $author$project$Main$DingWindowExpired),
 									$author$project$Main$playDing($author$project$Main$iqDingVolume),
 									$author$project$Main$showFlash(true)
 								])));
@@ -6602,19 +6886,10 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'DingFlashEnd':
-				var _v19 = model.screen;
-				if (_v19.$ === 'IQTestActiveScreen') {
-					var state = _v19.a;
-					return state.fakeFlashActive ? _Utils_Tuple2(
-						_Utils_update(
-							model,
-							{
-								screen: $author$project$Main$IQTestActiveScreen(
-									_Utils_update(
-										state,
-										{isFlashing: false}))
-							}),
-						$author$project$Main$showFlash(false)) : _Utils_Tuple2(
+				var _v24 = model.screen;
+				if (_v24.$ === 'IQTestActiveScreen') {
+					var state = _v24.a;
+					return _Utils_Tuple2(
 						_Utils_update(
 							model,
 							{
@@ -6628,28 +6903,17 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'DingWindowExpired':
-				var _v20 = model.screen;
-				if (_v20.$ === 'IQTestActiveScreen') {
-					var state = _v20.a;
-					if (state.dingActive) {
-						var _v21 = $author$project$Main$iqFail(state);
-						var newScreen = _v21.a;
-						var cmd = _v21.b;
-						return _Utils_Tuple2(
-							_Utils_update(
-								model,
-								{screen: newScreen}),
-							cmd);
-					} else {
-						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
-					}
+				var _v25 = model.screen;
+				if (_v25.$ === 'IQTestActiveScreen') {
+					var state = _v25.a;
+					return state.dingActive ? A2($author$project$Main$iqFail, model, state) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'FakeFlashWindowExpired':
-				var _v22 = model.screen;
-				if (_v22.$ === 'IQTestActiveScreen') {
-					var state = _v22.a;
+				var _v26 = model.screen;
+				if (_v26.$ === 'IQTestActiveScreen') {
+					var state = _v26.a;
 					return state.fakeFlashActive ? _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -6664,33 +6928,35 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'SpaceBarPressed':
-				var _v23 = model.screen;
-				if (_v23.$ === 'IQTestActiveScreen') {
-					var state = _v23.a;
+				var _v27 = model.screen;
+				if (_v27.$ === 'IQTestActiveScreen') {
+					var state = _v27.a;
 					if (state.fakeFlashActive) {
 						if (!state.fakeFlashUsed) {
 							return _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{
-										screen: $author$project$Main$FakeFlashCaughtScreen(
-											{displayDenominator: state.totalDings, displayNumerator: state.dingCount, originalTotal: state.totalDings, phase: $author$project$Main$FfDelay, questionIdx: state.questionIdx})
-									}),
+								A3(
+									$author$project$Main$schedule,
+									1000,
+									$author$project$Main$FakeFlashNextPhase,
+									$author$project$Main$clearPending(
+										_Utils_update(
+											model,
+											{
+												screen: $author$project$Main$FakeFlashCaughtScreen(
+													{displayDenominator: state.totalDings, displayNumerator: state.dingCount, originalTotal: state.totalDings, phase: $author$project$Main$FfDelay, questionIdx: state.questionIdx})
+											}))),
 								$elm$core$Platform$Cmd$batch(
 									_List_fromArray(
 										[
-											A2($author$project$Main$sleep, 1000, $author$project$Main$FakeFlashNextPhase),
 											state.loudPlaying ? $author$project$Main$stopMusic('loud.mp4') : $elm$core$Platform$Cmd$none,
 											$author$project$Main$showFlash(false)
 										])));
 						} else {
-							var _v24 = $author$project$Main$iqFail(state);
-							var newScreen = _v24.a;
-							var cmd = _v24.b;
+							var _v28 = A2($author$project$Main$iqFail, model, state);
+							var newModel = _v28.a;
+							var cmd = _v28.b;
 							return _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{screen: newScreen}),
+								newModel,
 								$elm$core$Platform$Cmd$batch(
 									_List_fromArray(
 										[
@@ -6705,59 +6971,53 @@ var $author$project$Main$update = F2(
 							var newTotalDings = stillPunished ? (state.totalDings - 1) : state.totalDings;
 							var newIn50Percent = state.in50PercentPhase || (stillPunished && _Utils_eq(newTotalDings, $author$project$Main$iqQuestionCount));
 							var newDingCount = stillPunished ? state.dingCount : (state.dingCount + 1);
-							var showLoudWarning = (!stillPunished) && ((!state.loudWarningShown) && (newDingCount === 4));
+							var triggerLoud = (!stillPunished) && ((!state.loudPlaying) && (newDingCount === 4));
 							var completed = (!stillPunished) && (_Utils_cmp(newDingCount, state.totalDings) > -1);
 							if (completed) {
 								return _Utils_Tuple2(
-									_Utils_update(
-										model,
-										{
-											screen: $author$project$Main$BlankScreen(nextIdx)
-										}),
-									$elm$core$Platform$Cmd$batch(
-										_List_fromArray(
-											[
-												state.loudPlaying ? $author$project$Main$stopMusic('loud.mp4') : $elm$core$Platform$Cmd$none,
-												A2(
-												$author$project$Main$sleep,
-												1000,
-												$author$project$Main$PlaySong(nextIdx))
-											])));
+									A3(
+										$author$project$Main$schedule,
+										1000,
+										$author$project$Main$PlaySong(nextIdx),
+										$author$project$Main$clearPending(
+											_Utils_update(
+												model,
+												{
+													screen: $author$project$Main$BlankScreen(nextIdx)
+												}))),
+									state.loudPlaying ? $author$project$Main$stopMusic('loud.mp4') : $elm$core$Platform$Cmd$none);
 							} else {
 								var newState = _Utils_update(
 									state,
-									{dingActive: false, dingCount: newDingCount, in50PercentPhase: newIn50Percent, loudWarningShown: state.loudWarningShown || showLoudWarning, totalDings: newTotalDings});
-								return _Utils_Tuple2(
+									{dingActive: false, dingCount: newDingCount, in50PercentPhase: newIn50Percent, totalDings: newTotalDings});
+								var newModel = triggerLoud ? A3(
+									$author$project$Main$schedule,
+									3000,
+									$author$project$Main$StartLoudMusic,
 									_Utils_update(
 										model,
 										{
 											screen: $author$project$Main$IQTestActiveScreen(newState)
-										}),
-									$elm$core$Platform$Cmd$batch(
-										_List_fromArray(
-											[
-												A2($elm$random$Random$generate, $author$project$Main$ScheduleNextDing, $author$project$Main$dingScheduleGen),
-												showLoudWarning ? A2($author$project$Main$sleep, 3000, $author$project$Main$StartLoudMusic) : $elm$core$Platform$Cmd$none
-											])));
+										})) : _Utils_update(
+									model,
+									{
+										screen: $author$project$Main$IQTestActiveScreen(newState)
+									});
+								return _Utils_Tuple2(
+									newModel,
+									A2($elm$random$Random$generate, $author$project$Main$ScheduleNextDing, $author$project$Main$dingScheduleGen));
 							}
 						} else {
-							var _v25 = $author$project$Main$iqFail(state);
-							var newScreen = _v25.a;
-							var cmd = _v25.b;
-							return _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{screen: newScreen}),
-								cmd);
+							return A2($author$project$Main$iqFail, model, state);
 						}
 					}
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'StartLoudMusic':
-				var _v26 = model.screen;
-				if (_v26.$ === 'IQTestActiveScreen') {
-					var state = _v26.a;
+				var _v29 = model.screen;
+				if (_v29.$ === 'IQTestActiveScreen') {
+					var state = _v29.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -6773,24 +7033,28 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'FakeFlashNextPhase':
-				var _v27 = model.screen;
-				if (_v27.$ === 'FakeFlashCaughtScreen') {
-					var state = _v27.a;
+				var _v30 = model.screen;
+				if (_v30.$ === 'FakeFlashCaughtScreen') {
+					var state = _v30.a;
 					var advance = F2(
 						function (newPhase, delay) {
 							return _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{
-										screen: $author$project$Main$FakeFlashCaughtScreen(
-											_Utils_update(
-												state,
-												{phase: newPhase}))
-									}),
-								A2($author$project$Main$sleep, delay, $author$project$Main$FakeFlashNextPhase));
+								A3(
+									$author$project$Main$schedule,
+									delay,
+									$author$project$Main$FakeFlashNextPhase,
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$FakeFlashCaughtScreen(
+												_Utils_update(
+													state,
+													{phase: newPhase}))
+										})),
+								$elm$core$Platform$Cmd$none);
 						});
-					var _v28 = state.phase;
-					switch (_v28.$) {
+					var _v31 = state.phase;
+					switch (_v31.$) {
 						case 'FfDelay':
 							return A2(advance, $author$project$Main$FfText1In, 1000);
 						case 'FfText1In':
@@ -6807,34 +7071,43 @@ var $author$project$Main$update = F2(
 							return A2(advance, $author$project$Main$FfCounterIn, 700);
 						case 'FfCounterIn':
 							return _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{
-										screen: $author$project$Main$FakeFlashCaughtScreen(
-											_Utils_update(
-												state,
-												{phase: $author$project$Main$FfTickNumerator}))
-									}),
-								A2($author$project$Main$sleep, 80, $author$project$Main$FakeFlashCounterTick));
+								A3(
+									$author$project$Main$schedule,
+									$author$project$Main$counterTickMs,
+									$author$project$Main$FakeFlashCounterTick,
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$FakeFlashCaughtScreen(
+												_Utils_update(
+													state,
+													{phase: $author$project$Main$FfTickNumerator}))
+										})),
+								$elm$core$Platform$Cmd$none);
 						case 'FfTickDelay':
 							return _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{
-										screen: $author$project$Main$FakeFlashCaughtScreen(
-											_Utils_update(
-												state,
-												{phase: $author$project$Main$FfTickDenominator}))
-									}),
-								A2($author$project$Main$sleep, 80, $author$project$Main$FakeFlashCounterTick));
+								A3(
+									$author$project$Main$schedule,
+									$author$project$Main$counterTickMs,
+									$author$project$Main$FakeFlashCounterTick,
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$FakeFlashCaughtScreen(
+												_Utils_update(
+													state,
+													{phase: $author$project$Main$FfTickDenominator}))
+										})),
+								$elm$core$Platform$Cmd$none);
 						case 'FfCounterOut':
 							return _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{
-										screen: $author$project$Main$IQTestScreen(
-											{fakeFlashUsed: true, in50PercentPhase: false, questionIdx: state.questionIdx, totalDings: state.originalTotal * 2})
-									}),
+								$author$project$Main$clearPending(
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$IQTestScreen(
+												{fakeFlashUsed: true, in50PercentPhase: false, questionIdx: state.questionIdx, totalDings: state.originalTotal * 2})
+										})),
 								$elm$core$Platform$Cmd$none);
 						default:
 							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
@@ -6843,62 +7116,68 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			default:
-				var _v29 = model.screen;
-				if (_v29.$ === 'FakeFlashCaughtScreen') {
-					var state = _v29.a;
-					var _v30 = state.phase;
-					switch (_v30.$) {
+				var _v32 = model.screen;
+				if (_v32.$ === 'FakeFlashCaughtScreen') {
+					var state = _v32.a;
+					var _v33 = state.phase;
+					switch (_v33.$) {
 						case 'FfTickNumerator':
 							return (state.displayNumerator > 0) ? _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{
-										screen: $author$project$Main$FakeFlashCaughtScreen(
-											_Utils_update(
-												state,
-												{displayNumerator: state.displayNumerator - 1}))
-									}),
-								$elm$core$Platform$Cmd$batch(
-									_List_fromArray(
-										[
-											A2($author$project$Main$sleep, 80, $author$project$Main$FakeFlashCounterTick),
-											$author$project$Main$playDing(0.15)
-										]))) : _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{
-										screen: $author$project$Main$FakeFlashCaughtScreen(
-											_Utils_update(
-												state,
-												{phase: $author$project$Main$FfTickDelay}))
-									}),
-								A2($author$project$Main$sleep, 500, $author$project$Main$FakeFlashNextPhase));
+								A3(
+									$author$project$Main$schedule,
+									$author$project$Main$counterTickMs,
+									$author$project$Main$FakeFlashCounterTick,
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$FakeFlashCaughtScreen(
+												_Utils_update(
+													state,
+													{displayNumerator: state.displayNumerator - 1}))
+										})),
+								$author$project$Main$playDing(0.15)) : _Utils_Tuple2(
+								A3(
+									$author$project$Main$schedule,
+									500,
+									$author$project$Main$FakeFlashNextPhase,
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$FakeFlashCaughtScreen(
+												_Utils_update(
+													state,
+													{phase: $author$project$Main$FfTickDelay}))
+										})),
+								$elm$core$Platform$Cmd$none);
 						case 'FfTickDenominator':
 							var target = state.originalTotal * 2;
 							return (_Utils_cmp(state.displayDenominator, target) < 0) ? _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{
-										screen: $author$project$Main$FakeFlashCaughtScreen(
-											_Utils_update(
-												state,
-												{displayDenominator: state.displayDenominator + 1}))
-									}),
-								$elm$core$Platform$Cmd$batch(
-									_List_fromArray(
-										[
-											A2($author$project$Main$sleep, 80, $author$project$Main$FakeFlashCounterTick),
-											$author$project$Main$playDing(0.3)
-										]))) : _Utils_Tuple2(
-								_Utils_update(
-									model,
-									{
-										screen: $author$project$Main$FakeFlashCaughtScreen(
-											_Utils_update(
-												state,
-												{phase: $author$project$Main$FfCounterOut}))
-									}),
-								A2($author$project$Main$sleep, 1500, $author$project$Main$FakeFlashNextPhase));
+								A3(
+									$author$project$Main$schedule,
+									$author$project$Main$counterTickMs,
+									$author$project$Main$FakeFlashCounterTick,
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$FakeFlashCaughtScreen(
+												_Utils_update(
+													state,
+													{displayDenominator: state.displayDenominator + 1}))
+										})),
+								$author$project$Main$playDing(0.3)) : _Utils_Tuple2(
+								A3(
+									$author$project$Main$schedule,
+									1500,
+									$author$project$Main$FakeFlashNextPhase,
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$FakeFlashCaughtScreen(
+												_Utils_update(
+													state,
+													{phase: $author$project$Main$FfCounterOut}))
+										})),
+								$elm$core$Platform$Cmd$none);
 						default:
 							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 					}
@@ -7345,6 +7624,29 @@ var $author$project$Main$view = function (model) {
 								$elm$html$Html$text('Begin')
 							]))
 					]));
+		case 'IQTestCountdownScreen':
+			var state = _v0.a;
+			var secondsWord = (state.countdown === 1) ? 'second' : 'seconds';
+			return $author$project$Main$screen(
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '28px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0'),
+								A2($elm$html$Html$Attributes$style, 'max-width', '560px'),
+								A2($elm$html$Html$Attributes$style, 'line-height', '1.6')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(
+								'You may start the IQ test in ' + ($elm$core$String$fromInt(state.countdown) + (' ' + (secondsWord + '.'))))
+							]))
+					]));
 		case 'IQTestActiveScreen':
 			var state = _v0.a;
 			var counter = $elm$core$String$fromInt(state.dingCount) + (' / ' + $elm$core$String$fromInt(state.totalDings));
@@ -7372,28 +7674,7 @@ var $author$project$Main$view = function (model) {
 							[
 								$elm$html$Html$text(counter)
 							])),
-						A2(
-						$author$project$Main$screenBg,
-						bg,
-						state.loudWarningShown ? _List_fromArray(
-							[
-								A2(
-								$elm$html$Html$p,
-								_List_fromArray(
-									[
-										A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
-										A2($elm$html$Html$Attributes$style, 'color', '#8b0000'),
-										A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
-										A2($elm$html$Html$Attributes$style, 'margin', '0'),
-										A2($elm$html$Html$Attributes$style, 'max-width', '560px'),
-										A2($elm$html$Html$Attributes$style, 'line-height', '1.6'),
-										A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
-									]),
-								_List_fromArray(
-									[
-										$elm$html$Html$text('WARNING: A very loud sound is about to begin.')
-									]))
-							]) : _List_Nil)
+						A2($author$project$Main$screenBg, bg, _List_Nil)
 					]));
 		case 'FakeFlashCaughtScreen':
 			var state = _v0.a;
