@@ -5172,7 +5172,7 @@ var $elm$json$Json$Encode$string = _Json_wrap;
 var $author$project$Main$playMusic = _Platform_outgoingPort('playMusic', $elm$json$Json$Encode$string);
 var $author$project$Main$init = function (_v0) {
 	return _Utils_Tuple2(
-		{connected: false, screen: $author$project$Main$ConnectScreen, trackInfo: $elm$core$Maybe$Nothing},
+		{connected: false, jeopardyPlaying: true, screen: $author$project$Main$ConnectScreen, trackInfo: $elm$core$Maybe$Nothing},
 		$author$project$Main$playMusic('jeopardy-theme.mp3'));
 };
 var $author$project$Main$DevicesReceived = function (a) {
@@ -5225,15 +5225,71 @@ var $author$project$Main$subscriptions = function (_v0) {
 			]));
 };
 var $author$project$Main$BeginScreen = {$: 'BeginScreen'};
-var $author$project$Main$BlankScreen = {$: 'BlankScreen'};
-var $author$project$Main$QuestionScreen = function (a) {
-	return {$: 'QuestionScreen', a: a};
+var $author$project$Main$BlankScreen = function (a) {
+	return {$: 'BlankScreen', a: a};
 };
-var $author$project$Main$ShowQuestion = {$: 'ShowQuestion'};
-var $author$project$Main$StartGolden = {$: 'StartGolden'};
+var $author$project$Main$PlaySong = function (a) {
+	return {$: 'PlaySong', a: a};
+};
+var $author$project$Main$QuestionScreen = F2(
+	function (a, b) {
+		return {$: 'QuestionScreen', a: a, b: b};
+	});
+var $author$project$Main$ShowQuestion = function (a) {
+	return {$: 'ShowQuestion', a: a};
+};
+var $author$project$Main$WinScreen = {$: 'WinScreen'};
 var $elm$core$Platform$Cmd$batch = _Platform_batch;
 var $author$project$Main$debug = true;
+var $elm$core$List$drop = F2(
+	function (n, list) {
+		drop:
+		while (true) {
+			if (n <= 0) {
+				return list;
+			} else {
+				if (!list.b) {
+					return list;
+				} else {
+					var x = list.a;
+					var xs = list.b;
+					var $temp$n = n - 1,
+						$temp$list = xs;
+					n = $temp$n;
+					list = $temp$list;
+					continue drop;
+				}
+			}
+		}
+	});
+var $elm$core$List$head = function (list) {
+	if (list.b) {
+		var x = list.a;
+		var xs = list.b;
+		return $elm$core$Maybe$Just(x);
+	} else {
+		return $elm$core$Maybe$Nothing;
+	}
+};
+var $author$project$Main$questions = _List_fromArray(
+	[
+		{answer: 'golden', song: 'golden.mp3'},
+		{answer: 'golden', song: 'golden.mp3'}
+	]);
+var $author$project$Main$getQuestion = function (idx) {
+	return $elm$core$List$head(
+		A2($elm$core$List$drop, idx, $author$project$Main$questions));
+};
 var $elm$core$Platform$Cmd$none = $elm$core$Platform$Cmd$batch(_List_Nil);
+var $elm$core$String$filter = _String_filter;
+var $elm$core$String$toLower = _String_toLower;
+var $author$project$Main$normalize = function (s) {
+	return A2(
+		$elm$core$String$filter,
+		$elm$core$Char$isAlpha,
+		$elm$core$String$toLower(s));
+};
+var $elm$core$Basics$not = _Basics_not;
 var $elm$json$Json$Decode$decodeString = _Json_runOnString;
 var $elm$core$List$filter = F2(
 	function (isGood, list) {
@@ -5304,89 +5360,124 @@ var $author$project$Main$update = F2(
 							return other;
 						}
 					}();
+					var shouldStart = (!model.jeopardyPlaying) && (_Utils_eq(newScreen, $author$project$Main$ConnectScreen) || _Utils_eq(newScreen, $author$project$Main$BeginScreen));
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{connected: true, screen: newScreen}),
-						$elm$core$Platform$Cmd$none);
+							{connected: true, jeopardyPlaying: model.jeopardyPlaying || shouldStart, screen: newScreen}),
+						shouldStart ? $author$project$Main$playMusic('jeopardy-theme.mp3') : $elm$core$Platform$Cmd$none);
 				} else {
-					var cmd = function () {
+					var needsJeopardy = function () {
 						var _v2 = model.screen;
 						switch (_v2.$) {
 							case 'BlankScreen':
-								return $author$project$Main$playMusic('jeopardy-theme.mp3');
+								return true;
 							case 'QuestionScreen':
-								return $author$project$Main$playMusic('jeopardy-theme.mp3');
+								return true;
 							default:
-								return $elm$core$Platform$Cmd$none;
+								return false;
 						}
 					}();
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{connected: false, screen: $author$project$Main$ConnectScreen}),
-						cmd);
+							{connected: false, jeopardyPlaying: model.jeopardyPlaying || needsJeopardy, screen: $author$project$Main$ConnectScreen}),
+						needsJeopardy ? $author$project$Main$playMusic('jeopardy-theme.mp3') : $elm$core$Platform$Cmd$none);
 				}
 			case 'BeginPressed':
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{screen: $author$project$Main$BlankScreen}),
+						{
+							jeopardyPlaying: false,
+							screen: $author$project$Main$BlankScreen(0)
+						}),
 					$elm$core$Platform$Cmd$batch(
 						_List_fromArray(
 							[
 								$author$project$Main$stopMusic('jeopardy-theme.mp3'),
-								A2($author$project$Main$sleep, 1000, $author$project$Main$StartGolden)
+								A2(
+								$author$project$Main$sleep,
+								1000,
+								$author$project$Main$PlaySong(0))
 							])));
-			case 'StartGolden':
+			case 'PlaySong':
+				var idx = msg.a;
 				var _v3 = model.screen;
 				if (_v3.$ === 'BlankScreen') {
-					return _Utils_Tuple2(
-						model,
-						$author$project$Main$playMusic('golden.mp3'));
+					var blankIdx = _v3.a;
+					if (_Utils_eq(blankIdx, idx)) {
+						var _v4 = $author$project$Main$getQuestion(idx);
+						if (_v4.$ === 'Just') {
+							var q = _v4.a;
+							return _Utils_Tuple2(
+								model,
+								$author$project$Main$playMusic(q.song));
+						} else {
+							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+						}
+					} else {
+						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+					}
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'TrackEnded':
 				var name = msg.a;
-				if (name === 'golden.mp3') {
-					var _v4 = model.screen;
-					if (_v4.$ === 'BlankScreen') {
-						return _Utils_Tuple2(
-							model,
-							A2($author$project$Main$sleep, 1000, $author$project$Main$ShowQuestion));
-					} else {
-						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				if (name === 'jeopardy-theme.mp3') {
+					var _v5 = model.screen;
+					switch (_v5.$) {
+						case 'ConnectScreen':
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{jeopardyPlaying: true}),
+								$author$project$Main$playMusic('jeopardy-theme.mp3'));
+						case 'BeginScreen':
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{jeopardyPlaying: true}),
+								$author$project$Main$playMusic('jeopardy-theme.mp3'));
+						default:
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{jeopardyPlaying: false}),
+								$elm$core$Platform$Cmd$none);
 					}
 				} else {
-					if (name === 'jeopardy-theme.mp3') {
-						var _v5 = model.screen;
-						switch (_v5.$) {
-							case 'ConnectScreen':
-								return _Utils_Tuple2(
-									model,
-									$author$project$Main$playMusic('jeopardy-theme.mp3'));
-							case 'BeginScreen':
-								return _Utils_Tuple2(
-									model,
-									$author$project$Main$playMusic('jeopardy-theme.mp3'));
-							default:
-								return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+					var _v6 = model.screen;
+					if (_v6.$ === 'BlankScreen') {
+						var idx = _v6.a;
+						var _v7 = $author$project$Main$getQuestion(idx);
+						if (_v7.$ === 'Just') {
+							var q = _v7.a;
+							return _Utils_eq(q.song, name) ? _Utils_Tuple2(
+								model,
+								A2(
+									$author$project$Main$sleep,
+									1000,
+									$author$project$Main$ShowQuestion(idx))) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+						} else {
+							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 						}
 					} else {
 						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 					}
 				}
 			case 'ShowQuestion':
-				var _v6 = model.screen;
-				if (_v6.$ === 'BlankScreen') {
-					return _Utils_Tuple2(
+				var idx = msg.a;
+				var _v8 = model.screen;
+				if (_v8.$ === 'BlankScreen') {
+					var blankIdx = _v8.a;
+					return _Utils_eq(blankIdx, idx) ? _Utils_Tuple2(
 						_Utils_update(
 							model,
 							{
-								screen: $author$project$Main$QuestionScreen('')
+								screen: A2($author$project$Main$QuestionScreen, idx, '')
 							}),
-						$elm$core$Platform$Cmd$none);
+						$elm$core$Platform$Cmd$none) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
@@ -5401,17 +5492,58 @@ var $author$project$Main$update = F2(
 					$elm$core$Platform$Cmd$none);
 			case 'MusicError':
 				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
-			default:
-				var text = msg.a;
-				var _v7 = model.screen;
-				if (_v7.$ === 'QuestionScreen') {
+			case 'AnswerChanged':
+				var typed = msg.a;
+				var _v9 = model.screen;
+				if (_v9.$ === 'QuestionScreen') {
+					var idx = _v9.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
 							{
-								screen: $author$project$Main$QuestionScreen(text)
+								screen: A2($author$project$Main$QuestionScreen, idx, typed)
 							}),
 						$elm$core$Platform$Cmd$none);
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			default:
+				var _v10 = model.screen;
+				if (_v10.$ === 'QuestionScreen') {
+					var idx = _v10.a;
+					var answer = _v10.b;
+					var _v11 = $author$project$Main$getQuestion(idx);
+					if (_v11.$ === 'Just') {
+						var q = _v11.a;
+						if (_Utils_eq(
+							$author$project$Main$normalize(answer),
+							q.answer)) {
+							var nextIdx = idx + 1;
+							var _v12 = $author$project$Main$getQuestion(nextIdx);
+							if (_v12.$ === 'Just') {
+								return _Utils_Tuple2(
+									_Utils_update(
+										model,
+										{
+											screen: $author$project$Main$BlankScreen(nextIdx)
+										}),
+									A2(
+										$author$project$Main$sleep,
+										1000,
+										$author$project$Main$PlaySong(nextIdx)));
+							} else {
+								return _Utils_Tuple2(
+									_Utils_update(
+										model,
+										{screen: $author$project$Main$WinScreen}),
+									$elm$core$Platform$Cmd$none);
+							}
+						} else {
+							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+						}
+					} else {
+						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+					}
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
@@ -5420,6 +5552,7 @@ var $author$project$Main$update = F2(
 var $author$project$Main$AnswerChanged = function (a) {
 	return {$: 'AnswerChanged', a: a};
 };
+var $author$project$Main$AnswerSubmitted = {$: 'AnswerSubmitted'};
 var $author$project$Main$BeginPressed = {$: 'BeginPressed'};
 var $elm$html$Html$button = _VirtualDom_node('button');
 var $elm$html$Html$img = _VirtualDom_node('img');
@@ -5582,8 +5715,10 @@ var $author$project$Main$view = function (model) {
 					]));
 		case 'BlankScreen':
 			return $author$project$Main$screen(_List_Nil);
-		default:
-			var answer = _v0.a;
+		case 'QuestionScreen':
+			var idx = _v0.a;
+			var answer = _v0.b;
+			var prompt = (!idx) ? 'Let\'s start with an easy one. What song just played?' : 'What song just played?';
 			return $author$project$Main$screen(
 				_List_fromArray(
 					[
@@ -5600,7 +5735,7 @@ var $author$project$Main$view = function (model) {
 							]),
 						_List_fromArray(
 							[
-								$elm$html$Html$text('Let\'s start with an easy one. What song just played?')
+								$elm$html$Html$text(prompt)
 							])),
 						A2(
 						$elm$html$Html$input,
@@ -5618,7 +5753,44 @@ var $author$project$Main$view = function (model) {
 								A2($elm$html$Html$Attributes$style, 'width', '400px'),
 								A2($elm$html$Html$Attributes$style, 'box-sizing', 'border-box')
 							]),
-						_List_Nil)
+						_List_Nil),
+						A2(
+						$elm$html$Html$button,
+						_List_fromArray(
+							[
+								$elm$html$Html$Events$onClick($author$project$Main$AnswerSubmitted),
+								A2($elm$html$Html$Attributes$style, 'padding', '16px 48px'),
+								A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
+								A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+								A2($elm$html$Html$Attributes$style, 'border-radius', '12px'),
+								A2($elm$html$Html$Attributes$style, 'border', 'none'),
+								A2($elm$html$Html$Attributes$style, 'background-color', '#4a9eca'),
+								A2($elm$html$Html$Attributes$style, 'color', 'white'),
+								A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Submit')
+							]))
+					]));
+		default:
+			return $author$project$Main$screen(
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '48px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0'),
+								A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('You Win!')
+							]))
 					]));
 	}
 };

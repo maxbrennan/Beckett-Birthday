@@ -1,6 +1,7 @@
 port module Main exposing (main)
 
 import Browser
+import Char
 import Html exposing (Html, button, div, img, input, p, text)
 import Html.Attributes exposing (placeholder, src, style, type_, value)
 import Html.Events exposing (onClick, onInput)
@@ -25,6 +26,33 @@ port musicError : (String -> msg) -> Sub msg
 debug : Bool
 debug =
     True
+
+
+type alias Question =
+    { song : String
+    , answers : List String
+    }
+
+
+questions : List Question
+questions =
+    [ { song = "golden.mp3", answers = [ "golden" ] }
+    , { song = "im-just-ken.mp3", answers = [ "im just ken" ] }
+    , { song = "espresso.mp3", answers = [ "espresso" ] }
+    , { song = "revenge.mp4", answers = [ "revenge", "revenge parody", "revenge a minecraft parody" ] }
+    , { song = "chest-pain.mp3", answers = [ "chest pain", "i love", "chest pain i love" ] }
+    , { song = "i-saw-your-face.mp3", answers = [ "i saw your face" ] }
+    ]
+
+
+getQuestion : Int -> Maybe Question
+getQuestion idx =
+    List.head (List.drop idx questions)
+
+
+normalize : String -> String
+normalize s =
+    String.filter Char.isAlpha (String.toLower s)
 
 
 isMatchDecoder : Decoder Bool
@@ -61,31 +89,34 @@ type alias TrackInfo =
 type Screen
     = ConnectScreen
     | BeginScreen
-    | BlankScreen
-    | QuestionScreen String
+    | BlankScreen Int
+    | QuestionScreen Int String
+    | WinScreen
 
 
 type alias Model =
     { connected : Bool
     , screen : Screen
     , trackInfo : Maybe TrackInfo
+    , jeopardyPlaying : Bool
     }
 
 
 type Msg
     = DevicesReceived String
     | BeginPressed
-    | StartGolden
+    | PlaySong Int
     | TrackEnded String
-    | ShowQuestion
+    | ShowQuestion Int
     | TrackInfoReceived TrackInfo
     | MusicError String
     | AnswerChanged String
+    | AnswerSubmitted
 
 
 init : () -> ( Model, Cmd Msg )
 init _ =
-    ( { connected = False, screen = ConnectScreen, trackInfo = Nothing }
+    ( { connected = False, screen = ConnectScreen, trackInfo = Nothing, jeopardyPlaying = True }
     , playMusic "jeopardy-theme.mp3"
     )
 
@@ -112,67 +143,94 @@ update msg model =
 
                             other ->
                                 other
+
+                    shouldStart =
+                        not model.jeopardyPlaying
+                            && (newScreen == ConnectScreen || newScreen == BeginScreen)
                 in
-                ( { model | connected = True, screen = newScreen }, Cmd.none )
+                ( { model | connected = True, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
+                , if shouldStart then playMusic "jeopardy-theme.mp3" else Cmd.none
+                )
 
             else
                 let
-                    cmd =
+                    needsJeopardy =
                         case model.screen of
-                            BlankScreen ->
-                                playMusic "jeopardy-theme.mp3"
+                            BlankScreen _ ->
+                                True
 
-                            QuestionScreen _ ->
-                                playMusic "jeopardy-theme.mp3"
+                            QuestionScreen _ _ ->
+                                True
 
                             _ ->
-                                Cmd.none
+                                False
                 in
-                ( { model | connected = False, screen = ConnectScreen }, cmd )
+                ( { model | connected = False, screen = ConnectScreen, jeopardyPlaying = model.jeopardyPlaying || needsJeopardy }
+                , if needsJeopardy then playMusic "jeopardy-theme.mp3" else Cmd.none
+                )
 
         BeginPressed ->
-            ( { model | screen = BlankScreen }
+            ( { model | screen = BlankScreen 0, jeopardyPlaying = False }
             , Cmd.batch
                 [ stopMusic "jeopardy-theme.mp3"
-                , sleep 1000 StartGolden
+                , sleep 1000 (PlaySong 0)
                 ]
             )
 
-        StartGolden ->
+        PlaySong idx ->
             case model.screen of
-                BlankScreen ->
-                    ( model, playMusic "golden.mp3" )
+                BlankScreen blankIdx ->
+                    if blankIdx == idx then
+                        case getQuestion idx of
+                            Just q ->
+                                ( model, playMusic q.song )
+
+                            Nothing ->
+                                ( model, Cmd.none )
+
+                    else
+                        ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
 
         TrackEnded name ->
-            if name == "golden.mp3" then
-                case model.screen of
-                    BlankScreen ->
-                        ( model, sleep 1000 ShowQuestion )
-
-                    _ ->
-                        ( model, Cmd.none )
-
-            else if name == "jeopardy-theme.mp3" then
+            if name == "jeopardy-theme.mp3" then
                 case model.screen of
                     ConnectScreen ->
-                        ( model, playMusic "jeopardy-theme.mp3" )
+                        ( { model | jeopardyPlaying = True }, playMusic "jeopardy-theme.mp3" )
 
                     BeginScreen ->
-                        ( model, playMusic "jeopardy-theme.mp3" )
+                        ( { model | jeopardyPlaying = True }, playMusic "jeopardy-theme.mp3" )
+
+                    _ ->
+                        ( { model | jeopardyPlaying = False }, Cmd.none )
+
+            else
+                case model.screen of
+                    BlankScreen idx ->
+                        case getQuestion idx of
+                            Just q ->
+                                if q.song == name then
+                                    ( model, sleep 1000 (ShowQuestion idx) )
+
+                                else
+                                    ( model, Cmd.none )
+
+                            Nothing ->
+                                ( model, Cmd.none )
 
                     _ ->
                         ( model, Cmd.none )
 
-            else
-                ( model, Cmd.none )
-
-        ShowQuestion ->
+        ShowQuestion idx ->
             case model.screen of
-                BlankScreen ->
-                    ( { model | screen = QuestionScreen "" }, Cmd.none )
+                BlankScreen blankIdx ->
+                    if blankIdx == idx then
+                        ( { model | screen = QuestionScreen idx "" }, Cmd.none )
+
+                    else
+                        ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
@@ -183,10 +241,38 @@ update msg model =
         MusicError _ ->
             ( model, Cmd.none )
 
-        AnswerChanged text ->
+        AnswerChanged typed ->
             case model.screen of
-                QuestionScreen _ ->
-                    ( { model | screen = QuestionScreen text }, Cmd.none )
+                QuestionScreen idx _ ->
+                    ( { model | screen = QuestionScreen idx typed }, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        AnswerSubmitted ->
+            case model.screen of
+                QuestionScreen idx answer ->
+                    case getQuestion idx of
+                        Just q ->
+                            if normalize answer == q.answer then
+                                let
+                                    nextIdx =
+                                        idx + 1
+                                in
+                                case getQuestion nextIdx of
+                                    Just _ ->
+                                        ( { model | screen = BlankScreen nextIdx }
+                                        , sleep 1000 (PlaySong nextIdx)
+                                        )
+
+                                    Nothing ->
+                                        ( { model | screen = WinScreen }, Cmd.none )
+
+                            else
+                                ( model, Cmd.none )
+
+                        Nothing ->
+                            ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
@@ -258,10 +344,18 @@ view model =
                     [ text "Begin" ]
                 ]
 
-        BlankScreen ->
+        BlankScreen _ ->
             screen []
 
-        QuestionScreen answer ->
+        QuestionScreen idx answer ->
+            let
+                prompt =
+                    if idx == 0 then
+                        "Let's start with an easy one. What song just played?"
+
+                    else
+                        "What song just played?"
+            in
             screen
                 [ p
                     [ style "font-size" "26px"
@@ -271,7 +365,7 @@ view model =
                     , style "max-width" "560px"
                     , style "line-height" "1.5"
                     ]
-                    [ text "Let's start with an easy one. What song just played?" ]
+                    [ text prompt ]
                 , input
                     [ type_ "text"
                     , value answer
@@ -286,6 +380,30 @@ view model =
                     , style "box-sizing" "border-box"
                     ]
                     []
+                , button
+                    [ onClick AnswerSubmitted
+                    , style "padding" "16px 48px"
+                    , style "font-size" "22px"
+                    , style "cursor" "pointer"
+                    , style "border-radius" "12px"
+                    , style "border" "none"
+                    , style "background-color" "#4a9eca"
+                    , style "color" "white"
+                    , style "font-weight" "bold"
+                    ]
+                    [ text "Submit" ]
+                ]
+
+        WinScreen ->
+            screen
+                [ p
+                    [ style "font-size" "48px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    , style "font-weight" "bold"
+                    ]
+                    [ text "You Win!" ]
                 ]
 
 
