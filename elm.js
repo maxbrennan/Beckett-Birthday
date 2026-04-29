@@ -4378,6 +4378,89 @@ function _Browser_load(url)
 		}
 	}));
 }
+
+
+
+var _Bitwise_and = F2(function(a, b)
+{
+	return a & b;
+});
+
+var _Bitwise_or = F2(function(a, b)
+{
+	return a | b;
+});
+
+var _Bitwise_xor = F2(function(a, b)
+{
+	return a ^ b;
+});
+
+function _Bitwise_complement(a)
+{
+	return ~a;
+};
+
+var _Bitwise_shiftLeftBy = F2(function(offset, a)
+{
+	return a << offset;
+});
+
+var _Bitwise_shiftRightBy = F2(function(offset, a)
+{
+	return a >> offset;
+});
+
+var _Bitwise_shiftRightZfBy = F2(function(offset, a)
+{
+	return a >>> offset;
+});
+
+
+
+function _Time_now(millisToPosix)
+{
+	return _Scheduler_binding(function(callback)
+	{
+		callback(_Scheduler_succeed(millisToPosix(Date.now())));
+	});
+}
+
+var _Time_setInterval = F2(function(interval, task)
+{
+	return _Scheduler_binding(function(callback)
+	{
+		var id = setInterval(function() { _Scheduler_rawSpawn(task); }, interval);
+		return function() { clearInterval(id); };
+	});
+});
+
+function _Time_here()
+{
+	return _Scheduler_binding(function(callback)
+	{
+		callback(_Scheduler_succeed(
+			A2($elm$time$Time$customZone, -(new Date().getTimezoneOffset()), _List_Nil)
+		));
+	});
+}
+
+
+function _Time_getZoneName()
+{
+	return _Scheduler_binding(function(callback)
+	{
+		try
+		{
+			var name = $elm$time$Time$Name(Intl.DateTimeFormat().resolvedOptions().timeZone);
+		}
+		catch (e)
+		{
+			var name = $elm$time$Time$Offset(new Date().getTimezoneOffset());
+		}
+		callback(_Scheduler_succeed(name));
+	});
+}
 var $elm$core$Basics$EQ = {$: 'EQ'};
 var $elm$core$Basics$GT = {$: 'GT'};
 var $elm$core$Basics$LT = {$: 'LT'};
@@ -5190,6 +5273,408 @@ var $author$project$Main$TrackInfoReceived = function (a) {
 var $elm$core$Platform$Sub$batch = _Platform_batch;
 var $elm$json$Json$Decode$string = _Json_decodeString;
 var $author$project$Main$musicError = _Platform_incomingPort('musicError', $elm$json$Json$Decode$string);
+var $elm$core$Platform$Sub$none = $elm$core$Platform$Sub$batch(_List_Nil);
+var $elm$browser$Browser$Events$Document = {$: 'Document'};
+var $elm$browser$Browser$Events$MySub = F3(
+	function (a, b, c) {
+		return {$: 'MySub', a: a, b: b, c: c};
+	});
+var $elm$browser$Browser$Events$State = F2(
+	function (subs, pids) {
+		return {pids: pids, subs: subs};
+	});
+var $elm$core$Dict$RBEmpty_elm_builtin = {$: 'RBEmpty_elm_builtin'};
+var $elm$core$Dict$empty = $elm$core$Dict$RBEmpty_elm_builtin;
+var $elm$browser$Browser$Events$init = $elm$core$Task$succeed(
+	A2($elm$browser$Browser$Events$State, _List_Nil, $elm$core$Dict$empty));
+var $elm$browser$Browser$Events$nodeToKey = function (node) {
+	if (node.$ === 'Document') {
+		return 'd_';
+	} else {
+		return 'w_';
+	}
+};
+var $elm$browser$Browser$Events$addKey = function (sub) {
+	var node = sub.a;
+	var name = sub.b;
+	return _Utils_Tuple2(
+		_Utils_ap(
+			$elm$browser$Browser$Events$nodeToKey(node),
+			name),
+		sub);
+};
+var $elm$core$Dict$Black = {$: 'Black'};
+var $elm$core$Dict$RBNode_elm_builtin = F5(
+	function (a, b, c, d, e) {
+		return {$: 'RBNode_elm_builtin', a: a, b: b, c: c, d: d, e: e};
+	});
+var $elm$core$Dict$Red = {$: 'Red'};
+var $elm$core$Dict$balance = F5(
+	function (color, key, value, left, right) {
+		if ((right.$ === 'RBNode_elm_builtin') && (right.a.$ === 'Red')) {
+			var _v1 = right.a;
+			var rK = right.b;
+			var rV = right.c;
+			var rLeft = right.d;
+			var rRight = right.e;
+			if ((left.$ === 'RBNode_elm_builtin') && (left.a.$ === 'Red')) {
+				var _v3 = left.a;
+				var lK = left.b;
+				var lV = left.c;
+				var lLeft = left.d;
+				var lRight = left.e;
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					$elm$core$Dict$Red,
+					key,
+					value,
+					A5($elm$core$Dict$RBNode_elm_builtin, $elm$core$Dict$Black, lK, lV, lLeft, lRight),
+					A5($elm$core$Dict$RBNode_elm_builtin, $elm$core$Dict$Black, rK, rV, rLeft, rRight));
+			} else {
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					color,
+					rK,
+					rV,
+					A5($elm$core$Dict$RBNode_elm_builtin, $elm$core$Dict$Red, key, value, left, rLeft),
+					rRight);
+			}
+		} else {
+			if ((((left.$ === 'RBNode_elm_builtin') && (left.a.$ === 'Red')) && (left.d.$ === 'RBNode_elm_builtin')) && (left.d.a.$ === 'Red')) {
+				var _v5 = left.a;
+				var lK = left.b;
+				var lV = left.c;
+				var _v6 = left.d;
+				var _v7 = _v6.a;
+				var llK = _v6.b;
+				var llV = _v6.c;
+				var llLeft = _v6.d;
+				var llRight = _v6.e;
+				var lRight = left.e;
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					$elm$core$Dict$Red,
+					lK,
+					lV,
+					A5($elm$core$Dict$RBNode_elm_builtin, $elm$core$Dict$Black, llK, llV, llLeft, llRight),
+					A5($elm$core$Dict$RBNode_elm_builtin, $elm$core$Dict$Black, key, value, lRight, right));
+			} else {
+				return A5($elm$core$Dict$RBNode_elm_builtin, color, key, value, left, right);
+			}
+		}
+	});
+var $elm$core$Basics$compare = _Utils_compare;
+var $elm$core$Dict$insertHelp = F3(
+	function (key, value, dict) {
+		if (dict.$ === 'RBEmpty_elm_builtin') {
+			return A5($elm$core$Dict$RBNode_elm_builtin, $elm$core$Dict$Red, key, value, $elm$core$Dict$RBEmpty_elm_builtin, $elm$core$Dict$RBEmpty_elm_builtin);
+		} else {
+			var nColor = dict.a;
+			var nKey = dict.b;
+			var nValue = dict.c;
+			var nLeft = dict.d;
+			var nRight = dict.e;
+			var _v1 = A2($elm$core$Basics$compare, key, nKey);
+			switch (_v1.$) {
+				case 'LT':
+					return A5(
+						$elm$core$Dict$balance,
+						nColor,
+						nKey,
+						nValue,
+						A3($elm$core$Dict$insertHelp, key, value, nLeft),
+						nRight);
+				case 'EQ':
+					return A5($elm$core$Dict$RBNode_elm_builtin, nColor, nKey, value, nLeft, nRight);
+				default:
+					return A5(
+						$elm$core$Dict$balance,
+						nColor,
+						nKey,
+						nValue,
+						nLeft,
+						A3($elm$core$Dict$insertHelp, key, value, nRight));
+			}
+		}
+	});
+var $elm$core$Dict$insert = F3(
+	function (key, value, dict) {
+		var _v0 = A3($elm$core$Dict$insertHelp, key, value, dict);
+		if ((_v0.$ === 'RBNode_elm_builtin') && (_v0.a.$ === 'Red')) {
+			var _v1 = _v0.a;
+			var k = _v0.b;
+			var v = _v0.c;
+			var l = _v0.d;
+			var r = _v0.e;
+			return A5($elm$core$Dict$RBNode_elm_builtin, $elm$core$Dict$Black, k, v, l, r);
+		} else {
+			var x = _v0;
+			return x;
+		}
+	});
+var $elm$core$Dict$fromList = function (assocs) {
+	return A3(
+		$elm$core$List$foldl,
+		F2(
+			function (_v0, dict) {
+				var key = _v0.a;
+				var value = _v0.b;
+				return A3($elm$core$Dict$insert, key, value, dict);
+			}),
+		$elm$core$Dict$empty,
+		assocs);
+};
+var $elm$core$Process$kill = _Scheduler_kill;
+var $elm$core$Dict$foldl = F3(
+	function (func, acc, dict) {
+		foldl:
+		while (true) {
+			if (dict.$ === 'RBEmpty_elm_builtin') {
+				return acc;
+			} else {
+				var key = dict.b;
+				var value = dict.c;
+				var left = dict.d;
+				var right = dict.e;
+				var $temp$func = func,
+					$temp$acc = A3(
+					func,
+					key,
+					value,
+					A3($elm$core$Dict$foldl, func, acc, left)),
+					$temp$dict = right;
+				func = $temp$func;
+				acc = $temp$acc;
+				dict = $temp$dict;
+				continue foldl;
+			}
+		}
+	});
+var $elm$core$Dict$merge = F6(
+	function (leftStep, bothStep, rightStep, leftDict, rightDict, initialResult) {
+		var stepState = F3(
+			function (rKey, rValue, _v0) {
+				stepState:
+				while (true) {
+					var list = _v0.a;
+					var result = _v0.b;
+					if (!list.b) {
+						return _Utils_Tuple2(
+							list,
+							A3(rightStep, rKey, rValue, result));
+					} else {
+						var _v2 = list.a;
+						var lKey = _v2.a;
+						var lValue = _v2.b;
+						var rest = list.b;
+						if (_Utils_cmp(lKey, rKey) < 0) {
+							var $temp$rKey = rKey,
+								$temp$rValue = rValue,
+								$temp$_v0 = _Utils_Tuple2(
+								rest,
+								A3(leftStep, lKey, lValue, result));
+							rKey = $temp$rKey;
+							rValue = $temp$rValue;
+							_v0 = $temp$_v0;
+							continue stepState;
+						} else {
+							if (_Utils_cmp(lKey, rKey) > 0) {
+								return _Utils_Tuple2(
+									list,
+									A3(rightStep, rKey, rValue, result));
+							} else {
+								return _Utils_Tuple2(
+									rest,
+									A4(bothStep, lKey, lValue, rValue, result));
+							}
+						}
+					}
+				}
+			});
+		var _v3 = A3(
+			$elm$core$Dict$foldl,
+			stepState,
+			_Utils_Tuple2(
+				$elm$core$Dict$toList(leftDict),
+				initialResult),
+			rightDict);
+		var leftovers = _v3.a;
+		var intermediateResult = _v3.b;
+		return A3(
+			$elm$core$List$foldl,
+			F2(
+				function (_v4, result) {
+					var k = _v4.a;
+					var v = _v4.b;
+					return A3(leftStep, k, v, result);
+				}),
+			intermediateResult,
+			leftovers);
+	});
+var $elm$browser$Browser$Events$Event = F2(
+	function (key, event) {
+		return {event: event, key: key};
+	});
+var $elm$core$Platform$sendToSelf = _Platform_sendToSelf;
+var $elm$browser$Browser$Events$spawn = F3(
+	function (router, key, _v0) {
+		var node = _v0.a;
+		var name = _v0.b;
+		var actualNode = function () {
+			if (node.$ === 'Document') {
+				return _Browser_doc;
+			} else {
+				return _Browser_window;
+			}
+		}();
+		return A2(
+			$elm$core$Task$map,
+			function (value) {
+				return _Utils_Tuple2(key, value);
+			},
+			A3(
+				_Browser_on,
+				actualNode,
+				name,
+				function (event) {
+					return A2(
+						$elm$core$Platform$sendToSelf,
+						router,
+						A2($elm$browser$Browser$Events$Event, key, event));
+				}));
+	});
+var $elm$core$Dict$union = F2(
+	function (t1, t2) {
+		return A3($elm$core$Dict$foldl, $elm$core$Dict$insert, t2, t1);
+	});
+var $elm$browser$Browser$Events$onEffects = F3(
+	function (router, subs, state) {
+		var stepRight = F3(
+			function (key, sub, _v6) {
+				var deads = _v6.a;
+				var lives = _v6.b;
+				var news = _v6.c;
+				return _Utils_Tuple3(
+					deads,
+					lives,
+					A2(
+						$elm$core$List$cons,
+						A3($elm$browser$Browser$Events$spawn, router, key, sub),
+						news));
+			});
+		var stepLeft = F3(
+			function (_v4, pid, _v5) {
+				var deads = _v5.a;
+				var lives = _v5.b;
+				var news = _v5.c;
+				return _Utils_Tuple3(
+					A2($elm$core$List$cons, pid, deads),
+					lives,
+					news);
+			});
+		var stepBoth = F4(
+			function (key, pid, _v2, _v3) {
+				var deads = _v3.a;
+				var lives = _v3.b;
+				var news = _v3.c;
+				return _Utils_Tuple3(
+					deads,
+					A3($elm$core$Dict$insert, key, pid, lives),
+					news);
+			});
+		var newSubs = A2($elm$core$List$map, $elm$browser$Browser$Events$addKey, subs);
+		var _v0 = A6(
+			$elm$core$Dict$merge,
+			stepLeft,
+			stepBoth,
+			stepRight,
+			state.pids,
+			$elm$core$Dict$fromList(newSubs),
+			_Utils_Tuple3(_List_Nil, $elm$core$Dict$empty, _List_Nil));
+		var deadPids = _v0.a;
+		var livePids = _v0.b;
+		var makeNewPids = _v0.c;
+		return A2(
+			$elm$core$Task$andThen,
+			function (pids) {
+				return $elm$core$Task$succeed(
+					A2(
+						$elm$browser$Browser$Events$State,
+						newSubs,
+						A2(
+							$elm$core$Dict$union,
+							livePids,
+							$elm$core$Dict$fromList(pids))));
+			},
+			A2(
+				$elm$core$Task$andThen,
+				function (_v1) {
+					return $elm$core$Task$sequence(makeNewPids);
+				},
+				$elm$core$Task$sequence(
+					A2($elm$core$List$map, $elm$core$Process$kill, deadPids))));
+	});
+var $elm$core$List$maybeCons = F3(
+	function (f, mx, xs) {
+		var _v0 = f(mx);
+		if (_v0.$ === 'Just') {
+			var x = _v0.a;
+			return A2($elm$core$List$cons, x, xs);
+		} else {
+			return xs;
+		}
+	});
+var $elm$core$List$filterMap = F2(
+	function (f, xs) {
+		return A3(
+			$elm$core$List$foldr,
+			$elm$core$List$maybeCons(f),
+			_List_Nil,
+			xs);
+	});
+var $elm$browser$Browser$Events$onSelfMsg = F3(
+	function (router, _v0, state) {
+		var key = _v0.key;
+		var event = _v0.event;
+		var toMessage = function (_v2) {
+			var subKey = _v2.a;
+			var _v3 = _v2.b;
+			var node = _v3.a;
+			var name = _v3.b;
+			var decoder = _v3.c;
+			return _Utils_eq(subKey, key) ? A2(_Browser_decodeEvent, decoder, event) : $elm$core$Maybe$Nothing;
+		};
+		var messages = A2($elm$core$List$filterMap, toMessage, state.subs);
+		return A2(
+			$elm$core$Task$andThen,
+			function (_v1) {
+				return $elm$core$Task$succeed(state);
+			},
+			$elm$core$Task$sequence(
+				A2(
+					$elm$core$List$map,
+					$elm$core$Platform$sendToApp(router),
+					messages)));
+	});
+var $elm$browser$Browser$Events$subMap = F2(
+	function (func, _v0) {
+		var node = _v0.a;
+		var name = _v0.b;
+		var decoder = _v0.c;
+		return A3(
+			$elm$browser$Browser$Events$MySub,
+			node,
+			name,
+			A2($elm$json$Json$Decode$map, func, decoder));
+	});
+_Platform_effectManagers['Browser.Events'] = _Platform_createManager($elm$browser$Browser$Events$init, $elm$browser$Browser$Events$onEffects, $elm$browser$Browser$Events$onSelfMsg, 0, $elm$browser$Browser$Events$subMap);
+var $elm$browser$Browser$Events$subscription = _Platform_leaf('Browser.Events');
+var $elm$browser$Browser$Events$on = F3(
+	function (node, name, decoder) {
+		return $elm$browser$Browser$Events$subscription(
+			A3($elm$browser$Browser$Events$MySub, node, name, decoder));
+	});
+var $elm$browser$Browser$Events$onKeyDown = A2($elm$browser$Browser$Events$on, $elm$browser$Browser$Events$Document, 'keydown');
 var $author$project$Main$receiveDevices = _Platform_incomingPort('receiveDevices', $elm$json$Json$Decode$string);
 var $elm$json$Json$Decode$andThen = _Json_andThen;
 var $elm$json$Json$Decode$field = _Json_decodeField;
@@ -5213,20 +5698,46 @@ var $author$project$Main$receiveTrackInfo = _Platform_incomingPort(
 				A2($elm$json$Json$Decode$field, 'duration', $elm$json$Json$Decode$float));
 		},
 		A2($elm$json$Json$Decode$field, 'name', $elm$json$Json$Decode$string)));
+var $author$project$Main$SpaceBarPressed = {$: 'SpaceBarPressed'};
+var $elm$json$Json$Decode$fail = _Json_fail;
+var $author$project$Main$spaceBarDecoder = A2(
+	$elm$json$Json$Decode$andThen,
+	function (key) {
+		return (key === ' ') ? $elm$json$Json$Decode$succeed($author$project$Main$SpaceBarPressed) : $elm$json$Json$Decode$fail('not space');
+	},
+	A2($elm$json$Json$Decode$field, 'key', $elm$json$Json$Decode$string));
 var $author$project$Main$trackEnded = _Platform_incomingPort('trackEnded', $elm$json$Json$Decode$string);
-var $author$project$Main$subscriptions = function (_v0) {
+var $author$project$Main$subscriptions = function (model) {
+	var keyboardSub = function () {
+		var _v0 = model.screen;
+		if (_v0.$ === 'IQTestActiveScreen') {
+			return $elm$browser$Browser$Events$onKeyDown($author$project$Main$spaceBarDecoder);
+		} else {
+			return $elm$core$Platform$Sub$none;
+		}
+	}();
 	return $elm$core$Platform$Sub$batch(
 		_List_fromArray(
 			[
 				$author$project$Main$receiveDevices($author$project$Main$DevicesReceived),
 				$author$project$Main$receiveTrackInfo($author$project$Main$TrackInfoReceived),
 				$author$project$Main$trackEnded($author$project$Main$TrackEnded),
-				$author$project$Main$musicError($author$project$Main$MusicError)
+				$author$project$Main$musicError($author$project$Main$MusicError),
+				keyboardSub
 			]));
 };
 var $author$project$Main$BeginScreen = {$: 'BeginScreen'};
 var $author$project$Main$BlankScreen = function (a) {
 	return {$: 'BlankScreen', a: a};
+};
+var $author$project$Main$DingFlashEnd = {$: 'DingFlashEnd'};
+var $author$project$Main$DingOccurred = {$: 'DingOccurred'};
+var $author$project$Main$DingWindowExpired = {$: 'DingWindowExpired'};
+var $author$project$Main$IQTestActiveScreen = function (a) {
+	return {$: 'IQTestActiveScreen', a: a};
+};
+var $author$project$Main$IQTestScreen = function (a) {
+	return {$: 'IQTestScreen', a: a};
 };
 var $author$project$Main$PlaySong = function (a) {
 	return {$: 'PlaySong', a: a};
@@ -5235,12 +5746,178 @@ var $author$project$Main$QuestionScreen = F2(
 	function (a, b) {
 		return {$: 'QuestionScreen', a: a, b: b};
 	});
+var $author$project$Main$ScheduleNextDing = function (a) {
+	return {$: 'ScheduleNextDing', a: a};
+};
 var $author$project$Main$ShowQuestion = function (a) {
 	return {$: 'ShowQuestion', a: a};
 };
+var $author$project$Main$StartLoudMusic = {$: 'StartLoudMusic'};
 var $author$project$Main$WinScreen = {$: 'WinScreen'};
+var $author$project$Main$WrongAnswerScreen = function (a) {
+	return {$: 'WrongAnswerScreen', a: a};
+};
+var $elm$core$List$any = F2(
+	function (isOkay, list) {
+		any:
+		while (true) {
+			if (!list.b) {
+				return false;
+			} else {
+				var x = list.a;
+				var xs = list.b;
+				if (isOkay(x)) {
+					return true;
+				} else {
+					var $temp$isOkay = isOkay,
+						$temp$list = xs;
+					isOkay = $temp$isOkay;
+					list = $temp$list;
+					continue any;
+				}
+			}
+		}
+	});
 var $elm$core$Platform$Cmd$batch = _Platform_batch;
 var $author$project$Main$debug = true;
+var $elm$random$Random$Generator = function (a) {
+	return {$: 'Generator', a: a};
+};
+var $elm$core$Basics$negate = function (n) {
+	return -n;
+};
+var $elm$core$Basics$abs = function (n) {
+	return (n < 0) ? (-n) : n;
+};
+var $elm$core$Bitwise$and = _Bitwise_and;
+var $elm$random$Random$Seed = F2(
+	function (a, b) {
+		return {$: 'Seed', a: a, b: b};
+	});
+var $elm$core$Bitwise$shiftRightZfBy = _Bitwise_shiftRightZfBy;
+var $elm$random$Random$next = function (_v0) {
+	var state0 = _v0.a;
+	var incr = _v0.b;
+	return A2($elm$random$Random$Seed, ((state0 * 1664525) + incr) >>> 0, incr);
+};
+var $elm$core$Bitwise$xor = _Bitwise_xor;
+var $elm$random$Random$peel = function (_v0) {
+	var state = _v0.a;
+	var word = (state ^ (state >>> ((state >>> 28) + 4))) * 277803737;
+	return ((word >>> 22) ^ word) >>> 0;
+};
+var $elm$random$Random$float = F2(
+	function (a, b) {
+		return $elm$random$Random$Generator(
+			function (seed0) {
+				var seed1 = $elm$random$Random$next(seed0);
+				var range = $elm$core$Basics$abs(b - a);
+				var n1 = $elm$random$Random$peel(seed1);
+				var n0 = $elm$random$Random$peel(seed0);
+				var lo = (134217727 & n1) * 1.0;
+				var hi = (67108863 & n0) * 1.0;
+				var val = ((hi * 134217728.0) + lo) / 9007199254740992.0;
+				var scaled = (val * range) + a;
+				return _Utils_Tuple2(
+					scaled,
+					$elm$random$Random$next(seed1));
+			});
+	});
+var $elm$core$Basics$ge = _Utils_ge;
+var $elm$random$Random$Generate = function (a) {
+	return {$: 'Generate', a: a};
+};
+var $elm$random$Random$initialSeed = function (x) {
+	var _v0 = $elm$random$Random$next(
+		A2($elm$random$Random$Seed, 0, 1013904223));
+	var state1 = _v0.a;
+	var incr = _v0.b;
+	var state2 = (state1 + x) >>> 0;
+	return $elm$random$Random$next(
+		A2($elm$random$Random$Seed, state2, incr));
+};
+var $elm$time$Time$Name = function (a) {
+	return {$: 'Name', a: a};
+};
+var $elm$time$Time$Offset = function (a) {
+	return {$: 'Offset', a: a};
+};
+var $elm$time$Time$Zone = F2(
+	function (a, b) {
+		return {$: 'Zone', a: a, b: b};
+	});
+var $elm$time$Time$customZone = $elm$time$Time$Zone;
+var $elm$time$Time$Posix = function (a) {
+	return {$: 'Posix', a: a};
+};
+var $elm$time$Time$millisToPosix = $elm$time$Time$Posix;
+var $elm$time$Time$now = _Time_now($elm$time$Time$millisToPosix);
+var $elm$time$Time$posixToMillis = function (_v0) {
+	var millis = _v0.a;
+	return millis;
+};
+var $elm$random$Random$init = A2(
+	$elm$core$Task$andThen,
+	function (time) {
+		return $elm$core$Task$succeed(
+			$elm$random$Random$initialSeed(
+				$elm$time$Time$posixToMillis(time)));
+	},
+	$elm$time$Time$now);
+var $elm$random$Random$step = F2(
+	function (_v0, seed) {
+		var generator = _v0.a;
+		return generator(seed);
+	});
+var $elm$random$Random$onEffects = F3(
+	function (router, commands, seed) {
+		if (!commands.b) {
+			return $elm$core$Task$succeed(seed);
+		} else {
+			var generator = commands.a.a;
+			var rest = commands.b;
+			var _v1 = A2($elm$random$Random$step, generator, seed);
+			var value = _v1.a;
+			var newSeed = _v1.b;
+			return A2(
+				$elm$core$Task$andThen,
+				function (_v2) {
+					return A3($elm$random$Random$onEffects, router, rest, newSeed);
+				},
+				A2($elm$core$Platform$sendToApp, router, value));
+		}
+	});
+var $elm$random$Random$onSelfMsg = F3(
+	function (_v0, _v1, seed) {
+		return $elm$core$Task$succeed(seed);
+	});
+var $elm$random$Random$map = F2(
+	function (func, _v0) {
+		var genA = _v0.a;
+		return $elm$random$Random$Generator(
+			function (seed0) {
+				var _v1 = genA(seed0);
+				var a = _v1.a;
+				var seed1 = _v1.b;
+				return _Utils_Tuple2(
+					func(a),
+					seed1);
+			});
+	});
+var $elm$random$Random$cmdMap = F2(
+	function (func, _v0) {
+		var generator = _v0.a;
+		return $elm$random$Random$Generate(
+			A2($elm$random$Random$map, func, generator));
+	});
+_Platform_effectManagers['Random'] = _Platform_createManager($elm$random$Random$init, $elm$random$Random$onEffects, $elm$random$Random$onSelfMsg, $elm$random$Random$cmdMap);
+var $elm$random$Random$command = _Platform_leaf('Random');
+var $elm$random$Random$generate = F2(
+	function (tagger, generator) {
+		return $elm$random$Random$command(
+			$elm$random$Random$Generate(
+				A2($elm$random$Random$map, tagger, generator)));
+	});
 var $elm$core$List$drop = F2(
 	function (n, list) {
 		drop:
@@ -5273,21 +5950,92 @@ var $elm$core$List$head = function (list) {
 };
 var $author$project$Main$questions = _List_fromArray(
 	[
-		{answer: 'golden', song: 'golden.mp3'},
-		{answer: 'golden', song: 'golden.mp3'}
+		{
+		answers: _List_fromArray(
+			['golden']),
+		song: 'golden.mp3'
+	},
+		{
+		answers: _List_fromArray(
+			['im just ken']),
+		song: 'im-just-ken.mp3'
+	},
+		{
+		answers: _List_fromArray(
+			['espresso']),
+		song: 'espresso.mp3'
+	},
+		{
+		answers: _List_fromArray(
+			['revenge', 'revenge parody', 'revenge a minecraft parody']),
+		song: 'revenge.mp4'
+	},
+		{
+		answers: _List_fromArray(
+			['chest pain', 'i love', 'chest pain i love']),
+		song: 'chest-pain.mp3'
+	},
+		{
+		answers: _List_fromArray(
+			['i saw your face']),
+		song: 'i-saw-your-face.mp3'
+	},
+		{
+		answers: _List_fromArray(
+			['dracula']),
+		song: 'dracula.mp3'
+	},
+		{
+		answers: _List_fromArray(
+			['borderline']),
+		song: 'borderline.mp3'
+	},
+		{
+		answers: _List_fromArray(
+			['cant stop']),
+		song: 'cant-stop.mp3'
+	},
+		{
+		answers: _List_fromArray(
+			['천 번 차이는 남자']),
+		song: 'korean.mp3'
+	}
 	]);
 var $author$project$Main$getQuestion = function (idx) {
 	return $elm$core$List$head(
 		A2($elm$core$List$drop, idx, $author$project$Main$questions));
 };
+var $author$project$Main$iqDingVolume = 0.75;
 var $elm$core$Platform$Cmd$none = $elm$core$Platform$Cmd$batch(_List_Nil);
+var $author$project$Main$stopMusic = _Platform_outgoingPort('stopMusic', $elm$json$Json$Encode$string);
+var $author$project$Main$iqFail = function (state) {
+	return _Utils_Tuple2(
+		$author$project$Main$IQTestScreen(state.questionIdx),
+		state.loudPlaying ? $author$project$Main$stopMusic('loud.mp4') : $elm$core$Platform$Cmd$none);
+};
+var $author$project$Main$iqFlashDuration = 250;
+var $author$project$Main$iqQuestionCount = 10;
+var $author$project$Main$iqWindowDuration = 1000;
+var $elm$core$String$endsWith = _String_endsWith;
+var $author$project$Main$isVideo = function (filename) {
+	return A2($elm$core$String$endsWith, '.mp4', filename);
+};
 var $elm$core$String$filter = _String_filter;
 var $elm$core$String$toLower = _String_toLower;
+var $elm$core$String$words = _String_words;
 var $author$project$Main$normalize = function (s) {
 	return A2(
-		$elm$core$String$filter,
-		$elm$core$Char$isAlpha,
-		$elm$core$String$toLower(s));
+		$elm$core$String$join,
+		' ',
+		$elm$core$String$words(
+			A2(
+				$elm$core$String$filter,
+				function (c) {
+					return $elm$core$Char$isAlpha(c) || _Utils_eq(
+						c,
+						_Utils_chr(' '));
+				},
+				$elm$core$String$toLower(s))));
 };
 var $elm$core$Basics$not = _Basics_not;
 var $elm$json$Json$Decode$decodeString = _Json_runOnString;
@@ -5333,6 +6081,37 @@ var $author$project$Main$parseDevices = function (json) {
 		return false;
 	}
 };
+var $elm$json$Json$Encode$float = _Json_wrap;
+var $author$project$Main$playDing = _Platform_outgoingPort('playDing', $elm$json$Json$Encode$float);
+var $elm$json$Json$Encode$bool = _Json_wrap;
+var $elm$json$Json$Encode$object = function (pairs) {
+	return _Json_wrap(
+		A3(
+			$elm$core$List$foldl,
+			F2(
+				function (_v0, obj) {
+					var k = _v0.a;
+					var v = _v0.b;
+					return A3(_Json_addField, k, v, obj);
+				}),
+			_Json_emptyObject(_Utils_Tuple0),
+			pairs));
+};
+var $author$project$Main$playVideo = _Platform_outgoingPort(
+	'playVideo',
+	function ($) {
+		return $elm$json$Json$Encode$object(
+			_List_fromArray(
+				[
+					_Utils_Tuple2(
+					'filename',
+					$elm$json$Json$Encode$string($.filename)),
+					_Utils_Tuple2(
+					'loop',
+					$elm$json$Json$Encode$bool($.loop))
+				]));
+	});
+var $author$project$Main$showFlash = _Platform_outgoingPort('showFlash', $elm$json$Json$Encode$bool);
 var $elm$core$Process$sleep = _Process_sleep;
 var $author$project$Main$sleep = F2(
 	function (ms, msg) {
@@ -5343,7 +6122,6 @@ var $author$project$Main$sleep = F2(
 			},
 			$elm$core$Process$sleep(ms));
 	});
-var $author$project$Main$stopMusic = _Platform_outgoingPort('stopMusic', $elm$json$Json$Encode$string);
 var $author$project$Main$update = F2(
 	function (msg, model) {
 		switch (msg.$) {
@@ -5367,12 +6145,27 @@ var $author$project$Main$update = F2(
 							{connected: true, jeopardyPlaying: model.jeopardyPlaying || shouldStart, screen: newScreen}),
 						shouldStart ? $author$project$Main$playMusic('jeopardy-theme.mp3') : $elm$core$Platform$Cmd$none);
 				} else {
+					var stopLoop = function () {
+						var _v3 = model.screen;
+						if (_v3.$ === 'IQTestActiveScreen') {
+							var state = _v3.a;
+							return state.loudPlaying;
+						} else {
+							return false;
+						}
+					}();
 					var needsJeopardy = function () {
 						var _v2 = model.screen;
 						switch (_v2.$) {
 							case 'BlankScreen':
 								return true;
 							case 'QuestionScreen':
+								return true;
+							case 'WrongAnswerScreen':
+								return true;
+							case 'IQTestScreen':
+								return true;
+							case 'IQTestActiveScreen':
 								return true;
 							default:
 								return false;
@@ -5382,7 +6175,12 @@ var $author$project$Main$update = F2(
 						_Utils_update(
 							model,
 							{connected: false, jeopardyPlaying: model.jeopardyPlaying || needsJeopardy, screen: $author$project$Main$ConnectScreen}),
-						needsJeopardy ? $author$project$Main$playMusic('jeopardy-theme.mp3') : $elm$core$Platform$Cmd$none);
+						$elm$core$Platform$Cmd$batch(
+							_List_fromArray(
+								[
+									needsJeopardy ? $author$project$Main$playMusic('jeopardy-theme.mp3') : $elm$core$Platform$Cmd$none,
+									stopLoop ? $author$project$Main$stopMusic('loud.mp4') : $elm$core$Platform$Cmd$none
+								])));
 				}
 			case 'BeginPressed':
 				return _Utils_Tuple2(
@@ -5403,16 +6201,17 @@ var $author$project$Main$update = F2(
 							])));
 			case 'PlaySong':
 				var idx = msg.a;
-				var _v3 = model.screen;
-				if (_v3.$ === 'BlankScreen') {
-					var blankIdx = _v3.a;
+				var _v4 = model.screen;
+				if (_v4.$ === 'BlankScreen') {
+					var blankIdx = _v4.a;
 					if (_Utils_eq(blankIdx, idx)) {
-						var _v4 = $author$project$Main$getQuestion(idx);
-						if (_v4.$ === 'Just') {
-							var q = _v4.a;
+						var _v5 = $author$project$Main$getQuestion(idx);
+						if (_v5.$ === 'Just') {
+							var q = _v5.a;
 							return _Utils_Tuple2(
 								model,
-								$author$project$Main$playMusic(q.song));
+								$author$project$Main$isVideo(q.song) ? $author$project$Main$playVideo(
+									{filename: q.song, loop: false}) : $author$project$Main$playMusic(q.song));
 						} else {
 							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 						}
@@ -5425,8 +6224,8 @@ var $author$project$Main$update = F2(
 			case 'TrackEnded':
 				var name = msg.a;
 				if (name === 'jeopardy-theme.mp3') {
-					var _v5 = model.screen;
-					switch (_v5.$) {
+					var _v6 = model.screen;
+					switch (_v6.$) {
 						case 'ConnectScreen':
 							return _Utils_Tuple2(
 								_Utils_update(
@@ -5447,12 +6246,12 @@ var $author$project$Main$update = F2(
 								$elm$core$Platform$Cmd$none);
 					}
 				} else {
-					var _v6 = model.screen;
-					if (_v6.$ === 'BlankScreen') {
-						var idx = _v6.a;
-						var _v7 = $author$project$Main$getQuestion(idx);
-						if (_v7.$ === 'Just') {
-							var q = _v7.a;
+					var _v7 = model.screen;
+					if (_v7.$ === 'BlankScreen') {
+						var idx = _v7.a;
+						var _v8 = $author$project$Main$getQuestion(idx);
+						if (_v8.$ === 'Just') {
+							var q = _v8.a;
 							return _Utils_eq(q.song, name) ? _Utils_Tuple2(
 								model,
 								A2(
@@ -5468,9 +6267,9 @@ var $author$project$Main$update = F2(
 				}
 			case 'ShowQuestion':
 				var idx = msg.a;
-				var _v8 = model.screen;
-				if (_v8.$ === 'BlankScreen') {
-					var blankIdx = _v8.a;
+				var _v9 = model.screen;
+				if (_v9.$ === 'BlankScreen') {
+					var blankIdx = _v9.a;
 					return _Utils_eq(blankIdx, idx) ? _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -5494,9 +6293,9 @@ var $author$project$Main$update = F2(
 				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			case 'AnswerChanged':
 				var typed = msg.a;
-				var _v9 = model.screen;
-				if (_v9.$ === 'QuestionScreen') {
-					var idx = _v9.a;
+				var _v10 = model.screen;
+				if (_v10.$ === 'QuestionScreen') {
+					var idx = _v10.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -5507,20 +6306,25 @@ var $author$project$Main$update = F2(
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
-			default:
-				var _v10 = model.screen;
-				if (_v10.$ === 'QuestionScreen') {
-					var idx = _v10.a;
-					var answer = _v10.b;
-					var _v11 = $author$project$Main$getQuestion(idx);
-					if (_v11.$ === 'Just') {
-						var q = _v11.a;
-						if (_Utils_eq(
-							$author$project$Main$normalize(answer),
-							q.answer)) {
+			case 'AnswerSubmitted':
+				var _v11 = model.screen;
+				if (_v11.$ === 'QuestionScreen') {
+					var idx = _v11.a;
+					var answer = _v11.b;
+					var _v12 = $author$project$Main$getQuestion(idx);
+					if (_v12.$ === 'Just') {
+						var q = _v12.a;
+						if (A2(
+							$elm$core$List$any,
+							function (a) {
+								return _Utils_eq(
+									$author$project$Main$normalize(answer),
+									$author$project$Main$normalize(a));
+							},
+							q.answers)) {
 							var nextIdx = idx + 1;
-							var _v12 = $author$project$Main$getQuestion(nextIdx);
-							if (_v12.$ === 'Just') {
+							var _v13 = $author$project$Main$getQuestion(nextIdx);
+							if (_v13.$ === 'Just') {
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
@@ -5539,11 +6343,195 @@ var $author$project$Main$update = F2(
 									$elm$core$Platform$Cmd$none);
 							}
 						} else {
-							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										screen: $author$project$Main$WrongAnswerScreen(idx)
+									}),
+								$elm$core$Platform$Cmd$none);
 						}
 					} else {
 						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 					}
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'ContinuePressed':
+				var _v14 = model.screen;
+				if (_v14.$ === 'WrongAnswerScreen') {
+					var idx = _v14.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								screen: $author$project$Main$IQTestScreen(idx)
+							}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'IQTestBeginPressed':
+				var _v15 = model.screen;
+				if (_v15.$ === 'IQTestScreen') {
+					var questionIdx = _v15.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								screen: $author$project$Main$IQTestActiveScreen(
+									{dingActive: false, dingCount: 0, isFlashing: false, loudPlaying: false, loudWarningShown: false, questionIdx: questionIdx})
+							}),
+						A2(
+							$elm$random$Random$generate,
+							$author$project$Main$ScheduleNextDing,
+							A2($elm$random$Random$float, 2000, 15000)));
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'ScheduleNextDing':
+				var delay = msg.a;
+				var _v16 = model.screen;
+				if (_v16.$ === 'IQTestActiveScreen') {
+					return _Utils_Tuple2(
+						model,
+						A2($author$project$Main$sleep, delay, $author$project$Main$DingOccurred));
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'DingOccurred':
+				var _v17 = model.screen;
+				if (_v17.$ === 'IQTestActiveScreen') {
+					var state = _v17.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								screen: $author$project$Main$IQTestActiveScreen(
+									_Utils_update(
+										state,
+										{dingActive: true, isFlashing: true}))
+							}),
+						$elm$core$Platform$Cmd$batch(
+							_List_fromArray(
+								[
+									A2($author$project$Main$sleep, $author$project$Main$iqFlashDuration, $author$project$Main$DingFlashEnd),
+									A2($author$project$Main$sleep, $author$project$Main$iqWindowDuration, $author$project$Main$DingWindowExpired),
+									$author$project$Main$playDing($author$project$Main$iqDingVolume),
+									$author$project$Main$showFlash(true)
+								])));
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'DingFlashEnd':
+				var _v18 = model.screen;
+				if (_v18.$ === 'IQTestActiveScreen') {
+					var state = _v18.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								screen: $author$project$Main$IQTestActiveScreen(
+									_Utils_update(
+										state,
+										{isFlashing: false}))
+							}),
+						$author$project$Main$showFlash(false));
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'DingWindowExpired':
+				var _v19 = model.screen;
+				if (_v19.$ === 'IQTestActiveScreen') {
+					var state = _v19.a;
+					if (state.dingActive) {
+						var _v20 = $author$project$Main$iqFail(state);
+						var newScreen = _v20.a;
+						var cmd = _v20.b;
+						return _Utils_Tuple2(
+							_Utils_update(
+								model,
+								{screen: newScreen}),
+							cmd);
+					} else {
+						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+					}
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			case 'SpaceBarPressed':
+				var _v21 = model.screen;
+				if (_v21.$ === 'IQTestActiveScreen') {
+					var state = _v21.a;
+					if (state.dingActive) {
+						var nextIdx = state.questionIdx + 1;
+						var newCount = state.dingCount + 1;
+						var showLoudWarning = newCount === 4;
+						var completed = _Utils_cmp(newCount, $author$project$Main$iqQuestionCount) > -1;
+						if (completed) {
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										screen: $author$project$Main$BlankScreen(nextIdx)
+									}),
+								$elm$core$Platform$Cmd$batch(
+									_List_fromArray(
+										[
+											state.loudPlaying ? $author$project$Main$stopMusic('loud.mp4') : $elm$core$Platform$Cmd$none,
+											A2(
+											$author$project$Main$sleep,
+											1000,
+											$author$project$Main$PlaySong(nextIdx))
+										])));
+						} else {
+							var newState = _Utils_update(
+								state,
+								{dingActive: false, dingCount: newCount, loudWarningShown: state.loudWarningShown || showLoudWarning});
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										screen: $author$project$Main$IQTestActiveScreen(newState)
+									}),
+								$elm$core$Platform$Cmd$batch(
+									_List_fromArray(
+										[
+											A2(
+											$elm$random$Random$generate,
+											$author$project$Main$ScheduleNextDing,
+											A2($elm$random$Random$float, 2000, 15000)),
+											showLoudWarning ? A2($author$project$Main$sleep, 3000, $author$project$Main$StartLoudMusic) : $elm$core$Platform$Cmd$none
+										])));
+						}
+					} else {
+						var _v22 = $author$project$Main$iqFail(state);
+						var newScreen = _v22.a;
+						var cmd = _v22.b;
+						return _Utils_Tuple2(
+							_Utils_update(
+								model,
+								{screen: newScreen}),
+							cmd);
+					}
+				} else {
+					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				}
+			default:
+				var _v23 = model.screen;
+				if (_v23.$ === 'IQTestActiveScreen') {
+					var state = _v23.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								screen: $author$project$Main$IQTestActiveScreen(
+									_Utils_update(
+										state,
+										{loudPlaying: true}))
+							}),
+						$author$project$Main$playVideo(
+							{filename: 'loud.mp4', loop: true}));
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
@@ -5554,7 +6542,29 @@ var $author$project$Main$AnswerChanged = function (a) {
 };
 var $author$project$Main$AnswerSubmitted = {$: 'AnswerSubmitted'};
 var $author$project$Main$BeginPressed = {$: 'BeginPressed'};
+var $author$project$Main$ContinuePressed = {$: 'ContinuePressed'};
+var $author$project$Main$IQTestBeginPressed = {$: 'IQTestBeginPressed'};
 var $elm$html$Html$button = _VirtualDom_node('button');
+var $elm$core$String$cons = _String_cons;
+var $elm$core$String$fromChar = function (_char) {
+	return A2($elm$core$String$cons, _char, '');
+};
+var $elm$core$Char$toUpper = _Char_toUpper;
+var $author$project$Main$capitalize = function (s) {
+	var _v0 = $elm$core$String$uncons(s);
+	if (_v0.$ === 'Just') {
+		var _v1 = _v0.a;
+		var first = _v1.a;
+		var rest = _v1.b;
+		return _Utils_ap(
+			$elm$core$String$fromChar(
+				$elm$core$Char$toUpper(first)),
+			rest);
+	} else {
+		return s;
+	}
+};
+var $elm$html$Html$div = _VirtualDom_node('div');
 var $elm$html$Html$img = _VirtualDom_node('img');
 var $elm$html$Html$Attributes$stringProperty = F2(
 	function (key, string) {
@@ -5580,6 +6590,16 @@ var $author$project$Main$headphones = A2(
 		]),
 	_List_Nil);
 var $elm$html$Html$input = _VirtualDom_node('input');
+var $elm$core$Maybe$map = F2(
+	function (f, maybe) {
+		if (maybe.$ === 'Just') {
+			var value = maybe.a;
+			return $elm$core$Maybe$Just(
+				f(value));
+		} else {
+			return $elm$core$Maybe$Nothing;
+		}
+	});
 var $elm$virtual_dom$VirtualDom$Normal = function (a) {
 	return {$: 'Normal', a: a};
 };
@@ -5630,26 +6650,36 @@ var $elm$html$Html$Events$onInput = function (tagger) {
 };
 var $elm$html$Html$p = _VirtualDom_node('p');
 var $elm$html$Html$Attributes$placeholder = $elm$html$Html$Attributes$stringProperty('placeholder');
-var $elm$html$Html$div = _VirtualDom_node('div');
-var $author$project$Main$screen = function (children) {
-	return A2(
-		$elm$html$Html$div,
-		_List_fromArray(
-			[
-				A2($elm$html$Html$Attributes$style, 'height', '100vh'),
-				A2($elm$html$Html$Attributes$style, 'background-color', '#a8c8e0'),
-				A2($elm$html$Html$Attributes$style, 'display', 'flex'),
-				A2($elm$html$Html$Attributes$style, 'flex-direction', 'column'),
-				A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
-				A2($elm$html$Html$Attributes$style, 'justify-content', 'center'),
-				A2($elm$html$Html$Attributes$style, 'gap', '36px')
-			]),
-		children);
-};
+var $author$project$Main$screenBg = F2(
+	function (bg, children) {
+		return A2(
+			$elm$html$Html$div,
+			_List_fromArray(
+				[
+					A2($elm$html$Html$Attributes$style, 'height', '100vh'),
+					A2($elm$html$Html$Attributes$style, 'background-color', bg),
+					A2($elm$html$Html$Attributes$style, 'display', 'flex'),
+					A2($elm$html$Html$Attributes$style, 'flex-direction', 'column'),
+					A2($elm$html$Html$Attributes$style, 'align-items', 'center'),
+					A2($elm$html$Html$Attributes$style, 'justify-content', 'center'),
+					A2($elm$html$Html$Attributes$style, 'gap', '36px')
+				]),
+			children);
+	});
+var $author$project$Main$screen = $author$project$Main$screenBg('#a8c8e0');
 var $elm$virtual_dom$VirtualDom$text = _VirtualDom_text;
 var $elm$html$Html$text = $elm$virtual_dom$VirtualDom$text;
 var $elm$html$Html$Attributes$type_ = $elm$html$Html$Attributes$stringProperty('type');
 var $elm$html$Html$Attributes$value = $elm$html$Html$Attributes$stringProperty('value');
+var $elm$core$Maybe$withDefault = F2(
+	function (_default, maybe) {
+		if (maybe.$ === 'Just') {
+			var value = maybe.a;
+			return value;
+		} else {
+			return _default;
+		}
+	});
 var $author$project$Main$view = function (model) {
 	var _v0 = model.screen;
 	switch (_v0.$) {
@@ -5714,11 +6744,117 @@ var $author$project$Main$view = function (model) {
 							]))
 					]));
 		case 'BlankScreen':
-			return $author$project$Main$screen(_List_Nil);
+			var idx = _v0.a;
+			var bg = function () {
+				var _v1 = $author$project$Main$getQuestion(idx);
+				if (_v1.$ === 'Just') {
+					var q = _v1.a;
+					return $author$project$Main$isVideo(q.song) ? '#000000' : '#a8c8e0';
+				} else {
+					return '#a8c8e0';
+				}
+			}();
+			return A2($author$project$Main$screenBg, bg, _List_Nil);
 		case 'QuestionScreen':
 			var idx = _v0.a;
 			var answer = _v0.b;
+			var total = $elm$core$List$length($author$project$Main$questions);
 			var prompt = (!idx) ? 'Let\'s start with an easy one. What song just played?' : 'What song just played?';
+			var progress = 'Question ' + ($elm$core$String$fromInt(idx + 1) + (' of ' + $elm$core$String$fromInt(total)));
+			return A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'position', 'fixed'),
+								A2($elm$html$Html$Attributes$style, 'top', '20px'),
+								A2($elm$html$Html$Attributes$style, 'left', '0'),
+								A2($elm$html$Html$Attributes$style, 'width', '100%'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'font-size', '16px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(progress)
+							])),
+						$author$project$Main$screen(
+						_List_fromArray(
+							[
+								A2(
+								$elm$html$Html$p,
+								_List_fromArray(
+									[
+										A2($elm$html$Html$Attributes$style, 'font-size', '26px'),
+										A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+										A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+										A2($elm$html$Html$Attributes$style, 'margin', '0'),
+										A2($elm$html$Html$Attributes$style, 'max-width', '560px'),
+										A2($elm$html$Html$Attributes$style, 'line-height', '1.5')
+									]),
+								_List_fromArray(
+									[
+										$elm$html$Html$text(prompt)
+									])),
+								A2(
+								$elm$html$Html$input,
+								_List_fromArray(
+									[
+										$elm$html$Html$Attributes$type_('text'),
+										$elm$html$Html$Attributes$value(answer),
+										$elm$html$Html$Events$onInput($author$project$Main$AnswerChanged),
+										$elm$html$Html$Attributes$placeholder('Type your answer...'),
+										A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
+										A2($elm$html$Html$Attributes$style, 'padding', '12px 20px'),
+										A2($elm$html$Html$Attributes$style, 'border-radius', '8px'),
+										A2($elm$html$Html$Attributes$style, 'border', '1px solid #4a9eca'),
+										A2($elm$html$Html$Attributes$style, 'outline', 'none'),
+										A2($elm$html$Html$Attributes$style, 'width', '400px'),
+										A2($elm$html$Html$Attributes$style, 'box-sizing', 'border-box')
+									]),
+								_List_Nil),
+								A2(
+								$elm$html$Html$button,
+								_List_fromArray(
+									[
+										$elm$html$Html$Events$onClick($author$project$Main$AnswerSubmitted),
+										A2($elm$html$Html$Attributes$style, 'padding', '16px 48px'),
+										A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
+										A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+										A2($elm$html$Html$Attributes$style, 'border-radius', '12px'),
+										A2($elm$html$Html$Attributes$style, 'border', 'none'),
+										A2($elm$html$Html$Attributes$style, 'background-color', '#4a9eca'),
+										A2($elm$html$Html$Attributes$style, 'color', 'white'),
+										A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
+									]),
+								_List_fromArray(
+									[
+										$elm$html$Html$text('Submit')
+									]))
+							]))
+					]));
+		case 'WrongAnswerScreen':
+			var idx = _v0.a;
+			var correctAnswer = function () {
+				var _v2 = $author$project$Main$getQuestion(idx);
+				if (_v2.$ === 'Just') {
+					var q = _v2.a;
+					return A2(
+						$elm$core$Maybe$withDefault,
+						'Unknown',
+						A2(
+							$elm$core$Maybe$map,
+							$author$project$Main$capitalize,
+							$elm$core$List$head(q.answers)));
+				} else {
+					return 'Unknown';
+				}
+			}();
 			return $author$project$Main$screen(
 				_List_fromArray(
 					[
@@ -5735,30 +6871,13 @@ var $author$project$Main$view = function (model) {
 							]),
 						_List_fromArray(
 							[
-								$elm$html$Html$text(prompt)
+								$elm$html$Html$text('The song was \"' + (correctAnswer + '\".'))
 							])),
-						A2(
-						$elm$html$Html$input,
-						_List_fromArray(
-							[
-								$elm$html$Html$Attributes$type_('text'),
-								$elm$html$Html$Attributes$value(answer),
-								$elm$html$Html$Events$onInput($author$project$Main$AnswerChanged),
-								$elm$html$Html$Attributes$placeholder('Type your answer...'),
-								A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
-								A2($elm$html$Html$Attributes$style, 'padding', '12px 20px'),
-								A2($elm$html$Html$Attributes$style, 'border-radius', '8px'),
-								A2($elm$html$Html$Attributes$style, 'border', '1px solid #4a9eca'),
-								A2($elm$html$Html$Attributes$style, 'outline', 'none'),
-								A2($elm$html$Html$Attributes$style, 'width', '400px'),
-								A2($elm$html$Html$Attributes$style, 'box-sizing', 'border-box')
-							]),
-						_List_Nil),
 						A2(
 						$elm$html$Html$button,
 						_List_fromArray(
 							[
-								$elm$html$Html$Events$onClick($author$project$Main$AnswerSubmitted),
+								$elm$html$Html$Events$onClick($author$project$Main$ContinuePressed),
 								A2($elm$html$Html$Attributes$style, 'padding', '16px 48px'),
 								A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
 								A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
@@ -5770,8 +6889,125 @@ var $author$project$Main$view = function (model) {
 							]),
 						_List_fromArray(
 							[
-								$elm$html$Html$text('Submit')
+								$elm$html$Html$text('Continue')
 							]))
+					]));
+		case 'IQTestScreen':
+			return $author$project$Main$screen(
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '36px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0'),
+								A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('IQ Test 2.0')
+							])),
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0'),
+								A2($elm$html$Html$Attributes$style, 'max-width', '560px'),
+								A2($elm$html$Html$Attributes$style, 'line-height', '1.6')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('You are so dumb that you don\'t know what song was playing. You must prove your IQ to keep playing.')
+							])),
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '20px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0'),
+								A2($elm$html$Html$Attributes$style, 'max-width', '520px'),
+								A2($elm$html$Html$Attributes$style, 'line-height', '1.6')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Listen carefully for a faint ding. Every time you hear it, press the space bar.')
+							])),
+						A2(
+						$elm$html$Html$button,
+						_List_fromArray(
+							[
+								$elm$html$Html$Events$onClick($author$project$Main$IQTestBeginPressed),
+								A2($elm$html$Html$Attributes$style, 'padding', '16px 48px'),
+								A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
+								A2($elm$html$Html$Attributes$style, 'cursor', 'pointer'),
+								A2($elm$html$Html$Attributes$style, 'border-radius', '12px'),
+								A2($elm$html$Html$Attributes$style, 'border', 'none'),
+								A2($elm$html$Html$Attributes$style, 'background-color', '#4a9eca'),
+								A2($elm$html$Html$Attributes$style, 'color', 'white'),
+								A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Begin')
+							]))
+					]));
+		case 'IQTestActiveScreen':
+			var state = _v0.a;
+			var counter = $elm$core$String$fromInt(state.dingCount) + (' / ' + $elm$core$String$fromInt($author$project$Main$iqQuestionCount));
+			var bg = state.isFlashing ? '#00cc44' : (state.loudPlaying ? 'transparent' : '#a8c8e0');
+			return A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'position', 'fixed'),
+								A2($elm$html$Html$Attributes$style, 'top', '20px'),
+								A2($elm$html$Html$Attributes$style, 'left', '0'),
+								A2($elm$html$Html$Attributes$style, 'width', '100%'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'font-size', '20px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0'),
+								A2($elm$html$Html$Attributes$style, 'z-index', '10')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(counter)
+							])),
+						A2(
+						$author$project$Main$screenBg,
+						bg,
+						state.loudWarningShown ? _List_fromArray(
+							[
+								A2(
+								$elm$html$Html$p,
+								_List_fromArray(
+									[
+										A2($elm$html$Html$Attributes$style, 'font-size', '22px'),
+										A2($elm$html$Html$Attributes$style, 'color', '#8b0000'),
+										A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+										A2($elm$html$Html$Attributes$style, 'margin', '0'),
+										A2($elm$html$Html$Attributes$style, 'max-width', '560px'),
+										A2($elm$html$Html$Attributes$style, 'line-height', '1.6'),
+										A2($elm$html$Html$Attributes$style, 'font-weight', 'bold')
+									]),
+								_List_fromArray(
+									[
+										$elm$html$Html$text('WARNING: A very loud sound is about to begin.')
+									]))
+							]) : _List_Nil)
 					]));
 		default:
 			return $author$project$Main$screen(
