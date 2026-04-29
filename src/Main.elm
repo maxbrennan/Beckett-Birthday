@@ -15,7 +15,9 @@ import Time
 
 port receiveDevices : (String -> msg) -> Sub msg
 
-port playMusic : { filename : String, volume : Float, startTime : Float } -> Cmd msg
+port loadMusic : String -> Cmd msg
+
+port playMusic : { id : String, volume : Float, startTime : Float } -> Cmd msg
 
 port stopMusic : String -> Cmd msg
 
@@ -23,7 +25,7 @@ port receiveTrackInfo : (List { id : String, currentTime : Float, duration : Flo
 
 port trackEnded : (String -> msg) -> Sub msg
 
-port musicStarted : ({ id : String, filename : String } -> msg) -> Sub msg
+port musicLoaded : ({ id : String, filename : String } -> msg) -> Sub msg
 
 port musicError : (String -> msg) -> Sub msg
 
@@ -305,6 +307,8 @@ type alias Model =
     , ignoreDisconnect : Bool
     , activeSongId : Maybe String
     , savedState : Maybe PausedState
+    , dingId : Maybe String
+    , pendingStartTime : Maybe Float
     }
 
 
@@ -333,7 +337,7 @@ type Msg
     | FakeFlashCounterTick
     | FakeFlashWindowExpired
     | ToggleIgnoreDisconnect
-    | MusicStarted { id : String, filename : String }
+    | MusicLoaded { id : String, filename : String }
     | NoOp
 
 
@@ -349,9 +353,12 @@ init _ =
       , ignoreDisconnect = False
       , activeSongId = Nothing
       , savedState = Nothing
+      , dingId = Nothing
+      , pendingStartTime = Nothing
       }
     , Cmd.batch
-        [ playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 }
+        [ loadMusic "jeopardy-theme.mp3"
+        , loadMusic "ding.mp3"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -424,7 +431,7 @@ update msg model =
                 TrackInfoReceived _ ->
                     False
 
-                MusicStarted info ->
+                MusicLoaded info ->
                     info.filename /= "ding.mp3"
 
                 NoOp ->
@@ -506,11 +513,7 @@ updateImpl msg model =
                                         case getQuestion idx of
                                             Just q ->
                                                 if not (isVideo q.song) then
-                                                    playMusic
-                                                        { filename = q.song
-                                                        , volume = 1.0
-                                                        , startTime = Maybe.withDefault 0 saved.songResumeTime
-                                                        }
+                                                    loadMusic q.song
 
                                                 else
                                                     Cmd.none
@@ -556,6 +559,7 @@ updateImpl msg model =
                             , savedState = Nothing
                             , jeopardyPlaying = False
                             , jeopardyId = Nothing
+                            , pendingStartTime = saved.songResumeTime
                           }
                         , Cmd.batch [ stopJeopardyCmd, audioCmd, videoCmd ]
                         )
@@ -575,7 +579,7 @@ updateImpl msg model =
                                     && (newScreen == ConnectScreen || newScreen == BeginScreen)
                         in
                         ( { model | connected = True, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
-                        , if shouldStart then playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 } else Cmd.none
+                        , if shouldStart then loadMusic "jeopardy-theme.mp3" else Cmd.none
                         )
 
             else
@@ -658,7 +662,7 @@ updateImpl msg model =
                 , Cmd.batch
                     [ stopSongCmd
                     , if needsJeopardy then
-                        playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 }
+                        loadMusic "jeopardy-theme.mp3"
 
                       else
                         Cmd.none
@@ -684,7 +688,7 @@ updateImpl msg model =
                                     ( { model | screen = VideoScreen idx q.song }, Cmd.none )
 
                                 else
-                                    ( model, playMusic { filename = q.song, volume = 1.0, startTime = 0 } )
+                                    ( model, loadMusic q.song )
 
                             Nothing ->
                                 ( model, Cmd.none )
@@ -700,12 +704,12 @@ updateImpl msg model =
                 case model.screen of
                     ConnectScreen ->
                         ( { model | jeopardyPlaying = True, jeopardyId = Nothing }
-                        , playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 }
+                        , loadMusic "jeopardy-theme.mp3"
                         )
 
                     BeginScreen ->
                         ( { model | jeopardyPlaying = True, jeopardyId = Nothing }
-                        , playMusic { filename = "jeopardy-theme.mp3", volume = 1.0, startTime = 0 }
+                        , loadMusic "jeopardy-theme.mp3"
                         )
 
                     _ ->
@@ -918,7 +922,12 @@ updateImpl msg model =
                         ( { model | screen = IQTestActiveScreen { state | isFlashing = True, dingActive = True } }
                             |> schedule iqFlashDuration DingFlashEnd
                             |> schedule iqWindowDuration DingWindowExpired
-                        , playMusic { filename = "ding.mp3", volume = iqDingVolume, startTime = 0 }
+                        , case model.dingId of
+                            Just id ->
+                                playMusic { id = id, volume = iqDingVolume, startTime = 0 }
+
+                            Nothing ->
+                                Cmd.none
                         )
 
                 _ ->
@@ -1120,15 +1129,19 @@ updateImpl msg model =
             else
                 ( model, Cmd.none )
 
-        MusicStarted info ->
+        MusicLoaded info ->
             if info.filename == "jeopardy-theme.mp3" then
-                ( { model | jeopardyId = Just info.id }, Cmd.none )
+                ( { model | jeopardyId = Just info.id }
+                , playMusic { id = info.id, volume = 1.0, startTime = 0 }
+                )
 
             else if info.filename == "ding.mp3" then
-                ( model, Cmd.none )
+                ( { model | dingId = Just info.id }, Cmd.none )
 
             else
-                ( { model | activeSongId = Just info.id }, Cmd.none )
+                ( { model | activeSongId = Just info.id, pendingStartTime = Nothing }
+                , playMusic { id = info.id, volume = 1.0, startTime = Maybe.withDefault 0 model.pendingStartTime }
+                )
 
         NoOp ->
             ( model, Cmd.none )
@@ -1141,7 +1154,12 @@ updateImpl msg model =
                             if state.displayNumerator > 0 then
                                 ( { model | screen = FakeFlashCaughtScreen { state | displayNumerator = state.displayNumerator - 1 } }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , playMusic { filename = "ding.mp3", volume = 0.15, startTime = 0 }
+                                , case model.dingId of
+                                    Just id ->
+                                        playMusic { id = id, volume = 0.15, startTime = 0 }
+
+                                    Nothing ->
+                                        Cmd.none
                                 )
 
                             else
@@ -1158,7 +1176,12 @@ updateImpl msg model =
                             if state.displayDenominator < target then
                                 ( { model | screen = FakeFlashCaughtScreen { state | displayDenominator = state.displayDenominator + 1 } }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , playMusic { filename = "ding.mp3", volume = 0.3, startTime = 0 }
+                                , case model.dingId of
+                                    Just id ->
+                                        playMusic { id = id, volume = 0.3, startTime = 0 }
+
+                                    Nothing ->
+                                        Cmd.none
                                 )
 
                             else
@@ -1702,7 +1725,7 @@ subscriptions model =
         [ receiveDevices DevicesReceived
         , receiveTrackInfo TrackInfoReceived
         , trackEnded TrackEnded
-        , musicStarted MusicStarted
+        , musicLoaded MusicLoaded
         , musicError MusicError
         , keyboardSub
         , debugToggleSub

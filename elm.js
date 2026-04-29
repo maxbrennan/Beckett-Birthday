@@ -5255,6 +5255,8 @@ var $author$project$Main$Tick = function (a) {
 	return {$: 'Tick', a: a};
 };
 var $elm$core$Platform$Cmd$batch = _Platform_batch;
+var $elm$json$Json$Encode$string = _Json_wrap;
+var $author$project$Main$loadMusic = _Platform_outgoingPort('loadMusic', $elm$json$Json$Encode$string);
 var $elm$time$Time$Name = function (a) {
 	return {$: 'Name', a: a};
 };
@@ -5271,50 +5273,18 @@ var $elm$time$Time$Posix = function (a) {
 };
 var $elm$time$Time$millisToPosix = $elm$time$Time$Posix;
 var $elm$time$Time$now = _Time_now($elm$time$Time$millisToPosix);
-var $elm$json$Json$Encode$float = _Json_wrap;
-var $elm$json$Json$Encode$object = function (pairs) {
-	return _Json_wrap(
-		A3(
-			$elm$core$List$foldl,
-			F2(
-				function (_v0, obj) {
-					var k = _v0.a;
-					var v = _v0.b;
-					return A3(_Json_addField, k, v, obj);
-				}),
-			_Json_emptyObject(_Utils_Tuple0),
-			pairs));
-};
-var $elm$json$Json$Encode$string = _Json_wrap;
-var $author$project$Main$playMusic = _Platform_outgoingPort(
-	'playMusic',
-	function ($) {
-		return $elm$json$Json$Encode$object(
-			_List_fromArray(
-				[
-					_Utils_Tuple2(
-					'filename',
-					$elm$json$Json$Encode$string($.filename)),
-					_Utils_Tuple2(
-					'startTime',
-					$elm$json$Json$Encode$float($.startTime)),
-					_Utils_Tuple2(
-					'volume',
-					$elm$json$Json$Encode$float($.volume))
-				]));
-	});
 var $elm$time$Time$posixToMillis = function (_v0) {
 	var millis = _v0.a;
 	return millis;
 };
 var $author$project$Main$init = function (_v0) {
 	return _Utils_Tuple2(
-		{activeSongId: $elm$core$Maybe$Nothing, connected: false, ignoreDisconnect: false, jeopardyId: $elm$core$Maybe$Nothing, jeopardyPlaying: true, now: 0, pending: _List_Nil, savedState: $elm$core$Maybe$Nothing, screen: $author$project$Main$ConnectScreen, trackInfo: _List_Nil},
+		{activeSongId: $elm$core$Maybe$Nothing, connected: false, dingId: $elm$core$Maybe$Nothing, ignoreDisconnect: false, jeopardyId: $elm$core$Maybe$Nothing, jeopardyPlaying: true, now: 0, pending: _List_Nil, pendingStartTime: $elm$core$Maybe$Nothing, savedState: $elm$core$Maybe$Nothing, screen: $author$project$Main$ConnectScreen, trackInfo: _List_Nil},
 		$elm$core$Platform$Cmd$batch(
 			_List_fromArray(
 				[
-					$author$project$Main$playMusic(
-					{filename: 'jeopardy-theme.mp3', startTime: 0, volume: 1.0}),
+					$author$project$Main$loadMusic('jeopardy-theme.mp3'),
+					$author$project$Main$loadMusic('ding.mp3'),
 					A2(
 					$elm$core$Task$perform,
 					function (posix) {
@@ -5330,8 +5300,8 @@ var $author$project$Main$DevicesReceived = function (a) {
 var $author$project$Main$MusicError = function (a) {
 	return {$: 'MusicError', a: a};
 };
-var $author$project$Main$MusicStarted = function (a) {
-	return {$: 'MusicStarted', a: a};
+var $author$project$Main$MusicLoaded = function (a) {
+	return {$: 'MusicLoaded', a: a};
 };
 var $author$project$Main$TrackEnded = function (a) {
 	return {$: 'TrackEnded', a: a};
@@ -5345,8 +5315,8 @@ var $elm$json$Json$Decode$string = _Json_decodeString;
 var $author$project$Main$musicError = _Platform_incomingPort('musicError', $elm$json$Json$Decode$string);
 var $elm$json$Json$Decode$andThen = _Json_andThen;
 var $elm$json$Json$Decode$field = _Json_decodeField;
-var $author$project$Main$musicStarted = _Platform_incomingPort(
-	'musicStarted',
+var $author$project$Main$musicLoaded = _Platform_incomingPort(
+	'musicLoaded',
 	A2(
 		$elm$json$Json$Decode$andThen,
 		function (id) {
@@ -5967,7 +5937,7 @@ var $author$project$Main$subscriptions = function (model) {
 				$author$project$Main$receiveDevices($author$project$Main$DevicesReceived),
 				$author$project$Main$receiveTrackInfo($author$project$Main$TrackInfoReceived),
 				$author$project$Main$trackEnded($author$project$Main$TrackEnded),
-				$author$project$Main$musicStarted($author$project$Main$MusicStarted),
+				$author$project$Main$musicLoaded($author$project$Main$MusicLoaded),
 				$author$project$Main$musicError($author$project$Main$MusicError),
 				keyboardSub,
 				debugToggleSub,
@@ -6526,6 +6496,37 @@ var $elm$core$List$partition = F2(
 			_Utils_Tuple2(_List_Nil, _List_Nil),
 			list);
 	});
+var $elm$json$Json$Encode$float = _Json_wrap;
+var $elm$json$Json$Encode$object = function (pairs) {
+	return _Json_wrap(
+		A3(
+			$elm$core$List$foldl,
+			F2(
+				function (_v0, obj) {
+					var k = _v0.a;
+					var v = _v0.b;
+					return A3(_Json_addField, k, v, obj);
+				}),
+			_Json_emptyObject(_Utils_Tuple0),
+			pairs));
+};
+var $author$project$Main$playMusic = _Platform_outgoingPort(
+	'playMusic',
+	function ($) {
+		return $elm$json$Json$Encode$object(
+			_List_fromArray(
+				[
+					_Utils_Tuple2(
+					'id',
+					$elm$json$Json$Encode$string($.id)),
+					_Utils_Tuple2(
+					'startTime',
+					$elm$json$Json$Encode$float($.startTime)),
+					_Utils_Tuple2(
+					'volume',
+					$elm$json$Json$Encode$float($.volume))
+				]));
+	});
 var $author$project$Main$schedule = F3(
 	function (delay, msg, model) {
 		return _Utils_update(
@@ -6559,7 +6560,7 @@ var $author$project$Main$update = F2(
 					return false;
 				case 'TrackInfoReceived':
 					return false;
-				case 'MusicStarted':
+				case 'MusicLoaded':
 					var info = msg.a;
 					return info.filename !== 'ding.mp3';
 				case 'NoOp':
@@ -6568,9 +6569,9 @@ var $author$project$Main$update = F2(
 					return true;
 			}
 		}();
-		var _v42 = A2($author$project$Main$updateImpl, msg, model);
-		var newModel = _v42.a;
-		var cmd = _v42.b;
+		var _v45 = A2($author$project$Main$updateImpl, msg, model);
+		var newModel = _v45.a;
+		var cmd = _v45.b;
 		var entry = '=== ' + ($elm$core$Debug$toString(msg) + (' ===\n' + ('BEFORE: ' + ($elm$core$Debug$toString(model) + ('\n' + ('AFTER:  ' + ($elm$core$Debug$toString(newModel) + '\n')))))));
 		return shouldLog ? _Utils_Tuple2(
 			newModel,
@@ -6684,12 +6685,7 @@ var $author$project$Main$updateImpl = F2(
 								var _v6 = $author$project$Main$getQuestion(idx);
 								if (_v6.$ === 'Just') {
 									var q = _v6.a;
-									return (!$author$project$Main$isVideo(q.song)) ? $author$project$Main$playMusic(
-										{
-											filename: q.song,
-											startTime: A2($elm$core$Maybe$withDefault, 0, saved.songResumeTime),
-											volume: 1.0
-										}) : $elm$core$Platform$Cmd$none;
+									return (!$author$project$Main$isVideo(q.song)) ? $author$project$Main$loadMusic(q.song) : $elm$core$Platform$Cmd$none;
 								} else {
 									return $elm$core$Platform$Cmd$none;
 								}
@@ -6700,7 +6696,7 @@ var $author$project$Main$updateImpl = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{connected: true, jeopardyId: $elm$core$Maybe$Nothing, jeopardyPlaying: false, pending: rebasedPending, savedState: $elm$core$Maybe$Nothing, screen: restoredScreen}),
+								{connected: true, jeopardyId: $elm$core$Maybe$Nothing, jeopardyPlaying: false, pending: rebasedPending, pendingStartTime: saved.songResumeTime, savedState: $elm$core$Maybe$Nothing, screen: restoredScreen}),
 							$elm$core$Platform$Cmd$batch(
 								_List_fromArray(
 									[stopJeopardyCmd, audioCmd, videoCmd])));
@@ -6719,8 +6715,7 @@ var $author$project$Main$updateImpl = F2(
 							_Utils_update(
 								model,
 								{connected: true, jeopardyPlaying: model.jeopardyPlaying || shouldStart, screen: newScreen}),
-							shouldStart ? $author$project$Main$playMusic(
-								{filename: 'jeopardy-theme.mp3', startTime: 0, volume: 1.0}) : $elm$core$Platform$Cmd$none);
+							shouldStart ? $author$project$Main$loadMusic('jeopardy-theme.mp3') : $elm$core$Platform$Cmd$none);
 					}
 				} else {
 					var stopSongCmd = function () {
@@ -6801,8 +6796,7 @@ var $author$project$Main$updateImpl = F2(
 							_List_fromArray(
 								[
 									stopSongCmd,
-									needsJeopardy ? $author$project$Main$playMusic(
-									{filename: 'jeopardy-theme.mp3', startTime: 0, volume: 1.0}) : $elm$core$Platform$Cmd$none
+									needsJeopardy ? $author$project$Main$loadMusic('jeopardy-theme.mp3') : $elm$core$Platform$Cmd$none
 								])));
 				}
 			case 'BeginPressed':
@@ -6847,8 +6841,7 @@ var $author$project$Main$updateImpl = F2(
 									}),
 								$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
 								model,
-								$author$project$Main$playMusic(
-									{filename: q.song, startTime: 0, volume: 1.0}));
+								$author$project$Main$loadMusic(q.song));
 						} else {
 							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 						}
@@ -6868,15 +6861,13 @@ var $author$project$Main$updateImpl = F2(
 								_Utils_update(
 									model,
 									{jeopardyId: $elm$core$Maybe$Nothing, jeopardyPlaying: true}),
-								$author$project$Main$playMusic(
-									{filename: 'jeopardy-theme.mp3', startTime: 0, volume: 1.0}));
+								$author$project$Main$loadMusic('jeopardy-theme.mp3'));
 						case 'BeginScreen':
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{jeopardyId: $elm$core$Maybe$Nothing, jeopardyPlaying: true}),
-								$author$project$Main$playMusic(
-									{filename: 'jeopardy-theme.mp3', startTime: 0, volume: 1.0}));
+								$author$project$Main$loadMusic('jeopardy-theme.mp3'));
 						default:
 							return _Utils_Tuple2(
 								_Utils_update(
@@ -7173,15 +7164,23 @@ var $author$project$Main$updateImpl = F2(
 												state,
 												{dingActive: true, isFlashing: true}))
 									}))),
-						$author$project$Main$playMusic(
-							{filename: 'ding.mp3', startTime: 0, volume: $author$project$Main$iqDingVolume}));
+						function () {
+							var _v33 = model.dingId;
+							if (_v33.$ === 'Just') {
+								var id = _v33.a;
+								return $author$project$Main$playMusic(
+									{id: id, startTime: 0, volume: $author$project$Main$iqDingVolume});
+							} else {
+								return $elm$core$Platform$Cmd$none;
+							}
+						}());
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'DingFlashEnd':
-				var _v33 = model.screen;
-				if (_v33.$ === 'IQTestActiveScreen') {
-					var state = _v33.a;
+				var _v34 = model.screen;
+				if (_v34.$ === 'IQTestActiveScreen') {
+					var state = _v34.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -7196,17 +7195,17 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'DingWindowExpired':
-				var _v34 = model.screen;
-				if (_v34.$ === 'IQTestActiveScreen') {
-					var state = _v34.a;
+				var _v35 = model.screen;
+				if (_v35.$ === 'IQTestActiveScreen') {
+					var state = _v35.a;
 					return state.dingActive ? A2($author$project$Main$iqFail, model, state) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'FakeFlashWindowExpired':
-				var _v35 = model.screen;
-				if (_v35.$ === 'IQTestActiveScreen') {
-					var state = _v35.a;
+				var _v36 = model.screen;
+				if (_v36.$ === 'IQTestActiveScreen') {
+					var state = _v36.a;
 					return state.fakeFlashActive ? _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -7221,9 +7220,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'SpaceBarPressed':
-				var _v36 = model.screen;
-				if (_v36.$ === 'IQTestActiveScreen') {
-					var state = _v36.a;
+				var _v37 = model.screen;
+				if (_v37.$ === 'IQTestActiveScreen') {
+					var state = _v37.a;
 					if (state.fakeFlashActive) {
 						return (!state.fakeFlashUsed) ? _Utils_Tuple2(
 							A3(
@@ -7289,9 +7288,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'StartLoudMusic':
-				var _v37 = model.screen;
-				if (_v37.$ === 'IQTestActiveScreen') {
-					var state = _v37.a;
+				var _v38 = model.screen;
+				if (_v38.$ === 'IQTestActiveScreen') {
+					var state = _v38.a;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -7306,9 +7305,9 @@ var $author$project$Main$updateImpl = F2(
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'FakeFlashNextPhase':
-				var _v38 = model.screen;
-				if (_v38.$ === 'FakeFlashCaughtScreen') {
-					var state = _v38.a;
+				var _v39 = model.screen;
+				if (_v39.$ === 'FakeFlashCaughtScreen') {
+					var state = _v39.a;
 					var advance = F2(
 						function (newPhase, delay) {
 							return _Utils_Tuple2(
@@ -7326,8 +7325,8 @@ var $author$project$Main$updateImpl = F2(
 										})),
 								$elm$core$Platform$Cmd$none);
 						});
-					var _v39 = state.phase;
-					switch (_v39.$) {
+					var _v40 = state.phase;
+					switch (_v40.$) {
 						case 'FfDelay':
 							return A2(advance, $author$project$Main$FfText1In, 1000);
 						case 'FfText1In':
@@ -7394,7 +7393,7 @@ var $author$project$Main$updateImpl = F2(
 						model,
 						{ignoreDisconnect: !model.ignoreDisconnect}),
 					$elm$core$Platform$Cmd$none) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
-			case 'MusicStarted':
+			case 'MusicLoaded':
 				var info = msg.a;
 				return (info.filename === 'jeopardy-theme.mp3') ? _Utils_Tuple2(
 					_Utils_update(
@@ -7402,21 +7401,34 @@ var $author$project$Main$updateImpl = F2(
 						{
 							jeopardyId: $elm$core$Maybe$Just(info.id)
 						}),
-					$elm$core$Platform$Cmd$none) : ((info.filename === 'ding.mp3') ? _Utils_Tuple2(model, $elm$core$Platform$Cmd$none) : _Utils_Tuple2(
+					$author$project$Main$playMusic(
+						{id: info.id, startTime: 0, volume: 1.0})) : ((info.filename === 'ding.mp3') ? _Utils_Tuple2(
 					_Utils_update(
 						model,
 						{
-							activeSongId: $elm$core$Maybe$Just(info.id)
+							dingId: $elm$core$Maybe$Just(info.id)
 						}),
-					$elm$core$Platform$Cmd$none));
+					$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							activeSongId: $elm$core$Maybe$Just(info.id),
+							pendingStartTime: $elm$core$Maybe$Nothing
+						}),
+					$author$project$Main$playMusic(
+						{
+							id: info.id,
+							startTime: A2($elm$core$Maybe$withDefault, 0, model.pendingStartTime),
+							volume: 1.0
+						})));
 			case 'NoOp':
 				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			default:
-				var _v40 = model.screen;
-				if (_v40.$ === 'FakeFlashCaughtScreen') {
-					var state = _v40.a;
-					var _v41 = state.phase;
-					switch (_v41.$) {
+				var _v41 = model.screen;
+				if (_v41.$ === 'FakeFlashCaughtScreen') {
+					var state = _v41.a;
+					var _v42 = state.phase;
+					switch (_v42.$) {
 						case 'FfTickNumerator':
 							return (state.displayNumerator > 0) ? _Utils_Tuple2(
 								A3(
@@ -7431,8 +7443,16 @@ var $author$project$Main$updateImpl = F2(
 													state,
 													{displayNumerator: state.displayNumerator - 1}))
 										})),
-								$author$project$Main$playMusic(
-									{filename: 'ding.mp3', startTime: 0, volume: 0.15})) : _Utils_Tuple2(
+								function () {
+									var _v43 = model.dingId;
+									if (_v43.$ === 'Just') {
+										var id = _v43.a;
+										return $author$project$Main$playMusic(
+											{id: id, startTime: 0, volume: 0.15});
+									} else {
+										return $elm$core$Platform$Cmd$none;
+									}
+								}()) : _Utils_Tuple2(
 								A3(
 									$author$project$Main$schedule,
 									500,
@@ -7461,8 +7481,16 @@ var $author$project$Main$updateImpl = F2(
 													state,
 													{displayDenominator: state.displayDenominator + 1}))
 										})),
-								$author$project$Main$playMusic(
-									{filename: 'ding.mp3', startTime: 0, volume: 0.3})) : _Utils_Tuple2(
+								function () {
+									var _v44 = model.dingId;
+									if (_v44.$ === 'Just') {
+										var id = _v44.a;
+										return $author$project$Main$playMusic(
+											{id: id, startTime: 0, volume: 0.3});
+									} else {
+										return $elm$core$Platform$Cmd$none;
+									}
+								}()) : _Utils_Tuple2(
 								A3(
 									$author$project$Main$schedule,
 									1500,

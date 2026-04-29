@@ -49,7 +49,7 @@ setInterval(() => {
   })
 }, 100)
 
-app.ports.playMusic.subscribe(({ filename, volume, startTime }) => {
+app.ports.loadMusic.subscribe((filename) => {
   if (!existsSync(resolveAsset(filename))) {
     app.ports.musicError.send(`File not found: ${filename}`)
     return
@@ -57,30 +57,40 @@ app.ports.playMusic.subscribe(({ filename, volume, startTime }) => {
 
   const id = generateId()
   const audio = new Audio(`assets/${filename}`)
-  audio.volume = volume
-
-  audioMap.set(id, { element: audio, filename })
+  audio.preload = 'auto'
 
   audio.onended = () => {
-    audioMap.delete(id)
+    if (filename !== 'ding.mp3') {
+      audioMap.delete(id)
+    }
     app.ports.trackEnded.send(filename)
   }
 
-  if (startTime === 0) {
-    audio.play()
-  } else {
-    audio.addEventListener('loadedmetadata', () => {
-      if (startTime >= audio.duration) {
-        audioMap.delete(id)
-        app.ports.musicError.send(`Invalid start time ${startTime} for ${filename}`)
-        return
-      }
-      audio.currentTime = startTime
-      audio.play()
-    }, { once: true })
-  }
+  audioMap.set(id, { element: audio, filename })
+  app.ports.musicLoaded.send({ id, filename })
+})
 
-  app.ports.musicStarted.send({ id, filename })
+app.ports.playMusic.subscribe(({ id, volume, startTime }) => {
+  const entry = audioMap.get(id)
+  if (!entry) {
+    app.ports.musicError.send(`No audio loaded with id: ${id}`)
+    return
+  }
+  const audio = entry.element
+  audio.volume = volume
+  const doPlay = () => {
+    if (startTime > 0 && startTime >= audio.duration) {
+      app.ports.musicError.send(`Invalid start time ${startTime} for ${entry.filename}`)
+      return
+    }
+    audio.currentTime = startTime
+    audio.play()
+  }
+  if (startTime === 0 || audio.readyState >= 1) {
+    doPlay()
+  } else {
+    audio.addEventListener('loadedmetadata', doPlay, { once: true })
+  }
 })
 
 app.ports.seekVideo.subscribe((time) => {
