@@ -5279,7 +5279,7 @@ var $elm$time$Time$posixToMillis = function (_v0) {
 };
 var $author$project$Main$init = function (_v0) {
 	return _Utils_Tuple2(
-		{connected: false, jeopardyPlaying: true, now: 0, pending: _List_Nil, screen: $author$project$Main$ConnectScreen, trackInfo: $elm$core$Maybe$Nothing},
+		{connected: false, ignoreDisconnect: false, jeopardyPlaying: true, now: 0, pending: _List_Nil, screen: $author$project$Main$ConnectScreen, trackInfo: $elm$core$Maybe$Nothing},
 		$elm$core$Platform$Cmd$batch(
 			_List_fromArray(
 				[
@@ -5306,6 +5306,7 @@ var $author$project$Main$TrackInfoReceived = function (a) {
 	return {$: 'TrackInfoReceived', a: a};
 };
 var $elm$core$Platform$Sub$batch = _Platform_batch;
+var $author$project$Main$debug = true;
 var $elm$json$Json$Decode$string = _Json_decodeString;
 var $author$project$Main$musicError = _Platform_incomingPort('musicError', $elm$json$Json$Decode$string);
 var $elm$core$Platform$Sub$none = $elm$core$Platform$Sub$batch(_List_Nil);
@@ -5838,9 +5839,29 @@ var $elm$browser$Browser$Events$on = F3(
 			A3($elm$browser$Browser$Events$MySub, node, name, decoder));
 	});
 var $elm$browser$Browser$Events$onKeyDown = A2($elm$browser$Browser$Events$on, $elm$browser$Browser$Events$Document, 'keydown');
-var $author$project$Main$receiveDevices = _Platform_incomingPort('receiveDevices', $elm$json$Json$Decode$string);
+var $author$project$Main$ToggleIgnoreDisconnect = {$: 'ToggleIgnoreDisconnect'};
 var $elm$json$Json$Decode$andThen = _Json_andThen;
+var $elm$json$Json$Decode$bool = _Json_decodeBool;
+var $elm$json$Json$Decode$fail = _Json_fail;
 var $elm$json$Json$Decode$field = _Json_decodeField;
+var $elm$core$Basics$not = _Basics_not;
+var $elm$core$Tuple$pair = F2(
+	function (a, b) {
+		return _Utils_Tuple2(a, b);
+	});
+var $author$project$Main$pKeyDecoder = A2(
+	$elm$json$Json$Decode$andThen,
+	function (_v0) {
+		var key = _v0.a;
+		var repeat = _v0.b;
+		return (((key === 'p') || (key === 'P')) && (!repeat)) ? $elm$json$Json$Decode$succeed($author$project$Main$ToggleIgnoreDisconnect) : $elm$json$Json$Decode$fail('not p');
+	},
+	A3(
+		$elm$json$Json$Decode$map2,
+		$elm$core$Tuple$pair,
+		A2($elm$json$Json$Decode$field, 'key', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'repeat', $elm$json$Json$Decode$bool)));
+var $author$project$Main$receiveDevices = _Platform_incomingPort('receiveDevices', $elm$json$Json$Decode$string);
 var $elm$json$Json$Decode$float = _Json_decodeFloat;
 var $author$project$Main$receiveTrackInfo = _Platform_incomingPort(
 	'receiveTrackInfo',
@@ -5862,7 +5883,6 @@ var $author$project$Main$receiveTrackInfo = _Platform_incomingPort(
 		},
 		A2($elm$json$Json$Decode$field, 'name', $elm$json$Json$Decode$string)));
 var $author$project$Main$SpaceBarPressed = {$: 'SpaceBarPressed'};
-var $elm$json$Json$Decode$fail = _Json_fail;
 var $author$project$Main$spaceBarDecoder = A2(
 	$elm$json$Json$Decode$andThen,
 	function (key) {
@@ -5879,6 +5899,7 @@ var $author$project$Main$subscriptions = function (model) {
 			return $elm$core$Platform$Sub$none;
 		}
 	}();
+	var debugToggleSub = $author$project$Main$debug ? $elm$browser$Browser$Events$onKeyDown($author$project$Main$pKeyDecoder) : $elm$core$Platform$Sub$none;
 	return $elm$core$Platform$Sub$batch(
 		_List_fromArray(
 			[
@@ -5887,6 +5908,7 @@ var $author$project$Main$subscriptions = function (model) {
 				$author$project$Main$trackEnded($author$project$Main$TrackEnded),
 				$author$project$Main$musicError($author$project$Main$MusicError),
 				keyboardSub,
+				debugToggleSub,
 				$elm$browser$Browser$Events$onAnimationFrame(
 				function (posix) {
 					return $author$project$Main$Tick(
@@ -5977,7 +5999,6 @@ var $author$project$Main$clearPending = function (model) {
 		{pending: _List_Nil});
 };
 var $author$project$Main$counterTickMs = 80;
-var $author$project$Main$debug = true;
 var $elm$random$Random$Generator = function (a) {
 	return {$: 'Generator', a: a};
 };
@@ -6341,7 +6362,6 @@ var $author$project$Main$normalize = function (s) {
 				},
 				$elm$core$String$toLower(s))));
 };
-var $elm$core$Basics$not = _Basics_not;
 var $elm$json$Json$Decode$decodeString = _Json_runOnString;
 var $elm$core$List$filter = F2(
 	function (isGood, list) {
@@ -6354,7 +6374,6 @@ var $elm$core$List$filter = F2(
 			_List_Nil,
 			list);
 	});
-var $elm$json$Json$Decode$bool = _Json_decodeBool;
 var $elm$json$Json$Decode$map4 = _Json_map4;
 var $author$project$Main$isMatchDecoder = A5(
 	$elm$json$Json$Decode$map4,
@@ -6516,8 +6535,8 @@ var $author$project$Main$updateImpl = F2(
 				}
 			case 'DevicesReceived':
 				var json = msg.a;
-				var connected = $author$project$Main$parseDevices(json) || $author$project$Main$debug;
-				if (connected) {
+				var connected = $author$project$Main$parseDevices(json);
+				if (connected || model.ignoreDisconnect) {
 					var newScreen = function () {
 						var _v4 = model.screen;
 						if (_v4.$ === 'ConnectScreen') {
@@ -7144,6 +7163,12 @@ var $author$project$Main$updateImpl = F2(
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
+			case 'ToggleIgnoreDisconnect':
+				return $author$project$Main$debug ? _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{ignoreDisconnect: !model.ignoreDisconnect}),
+					$elm$core$Platform$Cmd$none) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			default:
 				var _v32 = model.screen;
 				if (_v32.$ === 'FakeFlashCaughtScreen') {

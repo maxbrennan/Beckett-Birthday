@@ -292,6 +292,7 @@ type alias Model =
     , jeopardyPlaying : Bool
     , now : Float
     , pending : List PendingEvent
+    , ignoreDisconnect : Bool
     }
 
 
@@ -319,6 +320,7 @@ type Msg
     | FakeFlashNextPhase
     | FakeFlashCounterTick
     | FakeFlashWindowExpired
+    | ToggleIgnoreDisconnect
 
 
 init : () -> ( Model, Cmd Msg )
@@ -329,6 +331,7 @@ init _ =
       , jeopardyPlaying = True
       , now = 0
       , pending = []
+      , ignoreDisconnect = False
       }
     , Cmd.batch
         [ playMusic "jeopardy-theme.mp3"
@@ -450,9 +453,9 @@ updateImpl msg model =
         DevicesReceived json ->
             let
                 connected =
-                    parseDevices json || debug
+                    parseDevices json
             in
-            if connected then
+            if connected || model.ignoreDisconnect then
                 let
                     newScreen =
                         case model.screen of
@@ -952,6 +955,13 @@ updateImpl msg model =
                 _ ->
                     ( model, Cmd.none )
 
+        ToggleIgnoreDisconnect ->
+            if debug then
+                ( { model | ignoreDisconnect = not model.ignoreDisconnect }, Cmd.none )
+
+            else
+                ( model, Cmd.none )
+
         FakeFlashCounterTick ->
             case model.screen of
                 FakeFlashCaughtScreen state ->
@@ -1402,6 +1412,21 @@ view model =
                 ]
 
 
+pKeyDecoder : Decoder Msg
+pKeyDecoder =
+    Decode.map2 Tuple.pair
+        (Decode.field "key" Decode.string)
+        (Decode.field "repeat" Decode.bool)
+        |> Decode.andThen
+            (\( key, repeat ) ->
+                if (key == "p" || key == "P") && not repeat then
+                    Decode.succeed ToggleIgnoreDisconnect
+
+                else
+                    Decode.fail "not p"
+            )
+
+
 spaceBarDecoder : Decoder Msg
 spaceBarDecoder =
     Decode.field "key" Decode.string
@@ -1425,6 +1450,13 @@ subscriptions model =
 
                 _ ->
                     Sub.none
+
+        debugToggleSub =
+            if debug then
+                Browser.Events.onKeyDown pKeyDecoder
+
+            else
+                Sub.none
     in
     Sub.batch
         [ receiveDevices DevicesReceived
@@ -1432,6 +1464,7 @@ subscriptions model =
         , trackEnded TrackEnded
         , musicError MusicError
         , keyboardSub
+        , debugToggleSub
         , Browser.Events.onAnimationFrame (\posix -> Tick (toFloat (Time.posixToMillis posix)))
         ]
 
