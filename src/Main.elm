@@ -8,6 +8,7 @@ import Html exposing (Html, button, div, img, input, p, text, video)
 import Html.Attributes exposing (autoplay, id, loop, placeholder, src, style, type_, value)
 import Html.Events exposing (on, onClick, onInput)
 import Json.Decode as Decode exposing (Decoder)
+import Json.Encode as Encode
 import Random
 import Task
 import Time
@@ -32,6 +33,21 @@ port musicError : (String -> msg) -> Sub msg
 port logToFile : String -> Cmd msg
 
 port seekVideo : Float -> Cmd msg
+
+wsUrl : String
+wsUrl =
+    "ws://72.211.182.145:5270"
+
+
+port initWebSocketClient : String -> Cmd msg
+
+port wsClientReady : (String -> msg) -> Sub msg
+
+port sendToWs : { wsId : String, data : String } -> Cmd msg
+
+port receiveFromWs : (String -> msg) -> Sub msg
+
+port wsClientFailed : (String -> msg) -> Sub msg
 
 
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
@@ -117,6 +133,17 @@ iqDingVolume =
 counterTickMs : Float
 counterTickMs =
     80
+
+
+-- Total time allowed to complete the quiz.
+-- Debug: 1 minute  |  Production: 7 days
+timeLimitMs : Float
+timeLimitMs =
+    if debug then
+        600000
+
+    else
+        7 * 24 * 60 * 60 * 1000
 
 
 type alias Question =
@@ -276,7 +303,10 @@ type alias FakeFlashCaughtState =
 
 
 type Screen
-    = ConnectScreen
+    = WsConnectingScreen
+    | WsErrorScreen
+    | WsLoadingScreen
+    | ConnectScreen
     | BeginScreen
     | BlankScreen Int
     | VideoScreen Int String
@@ -287,6 +317,7 @@ type Screen
     | IQTestActiveScreen IQTestState
     | FakeFlashCaughtScreen FakeFlashCaughtState
     | WinScreen
+    | TimedOutScreen
 
 
 -- A message scheduled to fire at an absolute timestamp (ms since Unix epoch).
@@ -310,6 +341,8 @@ type alias Model =
     , dingIds : List String
     , nextDingIdx : Int
     , pendingStartTime : Maybe Float
+    , wsClientId : Maybe String
+    , timerEndsAt : Float
     }
 
 
@@ -339,15 +372,20 @@ type Msg
     | FakeFlashWindowExpired
     | ToggleIgnoreDisconnect
     | MusicLoaded { id : String, filename : String }
+    | WsClientReady String
+    | WsDataReceived String
+    | WsSyncTick
+    | WsDisconnected String
+    | WsReconnect
     | NoOp
 
 
 init : () -> ( Model, Cmd Msg )
 init _ =
     ( { connected = False
-      , screen = ConnectScreen
+      , screen = WsConnectingScreen
       , trackInfo = []
-      , jeopardyPlaying = True
+      , jeopardyPlaying = False
       , jeopardyId = Nothing
       , now = 0
       , pending = []
@@ -357,9 +395,11 @@ init _ =
       , dingIds = []
       , nextDingIdx = 0
       , pendingStartTime = Nothing
+      , wsClientId = Nothing
+      , timerEndsAt = 0
       }
     , Cmd.batch
-        [ loadMusic "jeopardy-theme.mp3"
+        [ initWebSocketClient wsUrl
         , loadMusic "ding.mp3"
         , loadMusic "ding.mp3"
         , loadMusic "ding.mp3"
@@ -458,6 +498,21 @@ update msg model =
                 MusicLoaded info ->
                     info.filename /= "ding.mp3"
 
+                WsClientReady _ ->
+                    False
+
+                WsDataReceived _ ->
+                    False
+
+                WsSyncTick ->
+                    False
+
+                WsDisconnected _ ->
+                    False
+
+                WsReconnect ->
+                    False
+
                 NoOp ->
                     False
 
@@ -483,7 +538,7 @@ updateImpl msg model =
         -- The first Tick (model.now == 0) just initialises the clock without firing.
         Tick t ->
             if model.now == 0 then
-                ( { model | now = t }, Cmd.none )
+                ( { model | now = t, timerEndsAt = t + timeLimitMs }, Cmd.none )
 
             else
                 let
@@ -492,132 +547,159 @@ updateImpl msg model =
 
                     baseModel =
                         { model | now = t, pending = stillPending }
+
+                    ( finalModel, finalCmd ) =
+                        List.foldl
+                            (\event ( m, cmd ) ->
+                                let
+                                    ( m2, cmd2 ) =
+                                        update event.msg m
+                                in
+                                ( m2, Cmd.batch [ cmd, cmd2 ] )
+                            )
+                            ( baseModel, Cmd.none )
+                            due
+
+                    timedOut =
+                        finalModel.timerEndsAt > 0 && t >= finalModel.timerEndsAt &&
+                            (case finalModel.screen of
+                                WsConnectingScreen -> False
+                                WsErrorScreen -> False
+                                WsLoadingScreen -> False
+                                TimedOutScreen -> False
+                                _ -> True
+                            )
                 in
-                List.foldl
-                    (\event ( m, cmd ) ->
-                        let
-                            ( m2, cmd2 ) =
-                                update event.msg m
-                        in
-                        ( m2, Cmd.batch [ cmd, cmd2 ] )
-                    )
-                    ( baseModel, Cmd.none )
-                    due
+                if timedOut then
+                    ( { finalModel | screen = TimedOutScreen }, finalCmd )
+                else
+                    ( finalModel, finalCmd )
 
         DevicesReceived json ->
-            let
-                connected =
-                    parseDevices json
-            in
-            if connected || model.ignoreDisconnect then
-                case model.savedState of
-                    Just _ ->
-                        ( { model | connected = True, screen = BeginScreen }, Cmd.none )
+            case model.screen of
+                WsConnectingScreen ->
+                    ( model, Cmd.none )
 
-                    Nothing ->
-                        let
-                            newScreen =
-                                case model.screen of
-                                    ConnectScreen ->
-                                        BeginScreen
+                WsLoadingScreen ->
+                    ( model, Cmd.none )
 
-                                    other ->
-                                        other
+                TimedOutScreen ->
+                    ( model, Cmd.none )
 
-                            shouldStart =
-                                not model.jeopardyPlaying
-                                    && (newScreen == ConnectScreen || newScreen == BeginScreen)
-                        in
-                        ( { model | connected = True, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
-                        , if shouldStart then loadMusic "jeopardy-theme.mp3" else Cmd.none
-                        )
-
-            else
-                let
-                    needsJeopardy =
-                        case model.screen of
-                            BlankScreen _ ->
-                                True
-
-                            QuestionScreen _ _ ->
-                                True
-
-                            WrongAnswerScreen _ ->
-                                True
-
-                            IQTestScreen _ ->
-                                True
-
-                            IQTestCountdownScreen _ ->
-                                True
-
-                            IQTestActiveScreen _ ->
-                                True
-
-                            FakeFlashCaughtScreen _ ->
-                                True
-
-                            VideoScreen _ _ ->
-                                True
-
-                            _ ->
-                                False
-
-                    newSavedState =
-                        if needsJeopardy then
-                            let
-                                songResumeTime =
-                                    model.activeSongId
-                                        |> Maybe.andThen
-                                            (\sid ->
-                                                model.trackInfo
-                                                    |> List.filter (\t -> t.id == sid)
-                                                    |> List.head
-                                            )
-                                        |> Maybe.map .currentTime
-
-                                videoResumeTime =
-                                    model.trackInfo
-                                        |> List.filter (\t -> t.id == "video")
-                                        |> List.head
-                                        |> Maybe.map .currentTime
-                            in
-                            Just
-                                { screen = model.screen
-                                , pending = model.pending
-                                , savedAt = model.now
-                                , songResumeTime = songResumeTime
-                                , videoResumeTime = videoResumeTime
-                                }
-
-                        else
-                            model.savedState
-
-                    stopSongCmd =
-                        case model.activeSongId of
-                            Just sid ->
-                                stopMusic sid
+                _ ->
+                    let
+                        connected =
+                            parseDevices json
+                    in
+                    if connected || model.ignoreDisconnect then
+                        case model.savedState of
+                            Just _ ->
+                                ( { model | connected = True, screen = BeginScreen }, Cmd.none )
 
                             Nothing ->
-                                Cmd.none
-                in
-                ( clearPending
-                    { model
-                        | connected = False
-                        , screen = ConnectScreen
-                        , jeopardyPlaying = model.jeopardyPlaying || needsJeopardy
-                        , savedState = newSavedState
-                        , activeSongId = Nothing
-                    }
-                , Cmd.batch
-                    [ stopSongCmd
-                    , if needsJeopardy then
-                        loadMusic "jeopardy-theme.mp3"
+                                let
+                                    newScreen =
+                                        case model.screen of
+                                            ConnectScreen ->
+                                                BeginScreen
 
-                      else
-                        Cmd.none
-                    ]
-                )
+                                            other ->
+                                                other
+
+                                    shouldStart =
+                                        not model.jeopardyPlaying
+                                            && (newScreen == ConnectScreen || newScreen == BeginScreen)
+                                in
+                                ( { model | connected = True, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
+                                , if shouldStart then loadMusic "jeopardy-theme.mp3" else Cmd.none
+                                )
+
+                    else
+                        let
+                            needsJeopardy =
+                                case model.screen of
+                                    BlankScreen _ ->
+                                        True
+
+                                    QuestionScreen _ _ ->
+                                        True
+
+                                    WrongAnswerScreen _ ->
+                                        True
+
+                                    IQTestScreen _ ->
+                                        True
+
+                                    IQTestCountdownScreen _ ->
+                                        True
+
+                                    IQTestActiveScreen _ ->
+                                        True
+
+                                    FakeFlashCaughtScreen _ ->
+                                        True
+
+                                    VideoScreen _ _ ->
+                                        True
+
+                                    _ ->
+                                        False
+
+                            newSavedState =
+                                if needsJeopardy then
+                                    let
+                                        songResumeTime =
+                                            model.activeSongId
+                                                |> Maybe.andThen
+                                                    (\sid ->
+                                                        model.trackInfo
+                                                            |> List.filter (\t -> t.id == sid)
+                                                            |> List.head
+                                                    )
+                                                |> Maybe.map .currentTime
+
+                                        videoResumeTime =
+                                            model.trackInfo
+                                                |> List.filter (\t -> t.id == "video")
+                                                |> List.head
+                                                |> Maybe.map .currentTime
+                                    in
+                                    Just
+                                        { screen = model.screen
+                                        , pending = model.pending
+                                        , savedAt = model.now
+                                        , songResumeTime = songResumeTime
+                                        , videoResumeTime = videoResumeTime
+                                        }
+
+                                else
+                                    model.savedState
+
+                            stopSongCmd =
+                                case model.activeSongId of
+                                    Just sid ->
+                                        stopMusic sid
+
+                                    Nothing ->
+                                        Cmd.none
+                        in
+                        ( clearPending
+                            { model
+                                | connected = False
+                                , screen = ConnectScreen
+                                , jeopardyPlaying = model.jeopardyPlaying || needsJeopardy
+                                , savedState = newSavedState
+                                , activeSongId = Nothing
+                            }
+                        , Cmd.batch
+                            [ stopSongCmd
+                            , if needsJeopardy then
+                                loadMusic "jeopardy-theme.mp3"
+
+                              else
+                                Cmd.none
+                            ]
+                        )
 
         BeginPressed ->
             case model.savedState of
@@ -1176,6 +1258,145 @@ updateImpl msg model =
                 , playMusic { id = info.id, volume = 1.0, startTime = Maybe.withDefault 0 model.pendingStartTime }
                 )
 
+        WsClientReady wsId ->
+            ( { model | wsClientId = Just wsId, screen = WsLoadingScreen }, Cmd.none )
+
+        WsDataReceived json ->
+            case model.screen of
+                WsLoadingScreen ->
+                    if String.trim json == "{}" then
+                        ( { model | screen = ConnectScreen, jeopardyPlaying = True }
+                        , loadMusic "jeopardy-theme.mp3"
+                        )
+
+                    else
+                        case Decode.decodeString decodeModel json of
+                            Ok newModel ->
+                                let
+                                    songResumeTime =
+                                        newModel.activeSongId
+                                            |> Maybe.andThen
+                                                (\sid ->
+                                                    newModel.trackInfo
+                                                        |> List.filter (\t -> t.id == sid)
+                                                        |> List.head
+                                                        |> Maybe.map .currentTime
+                                                )
+
+                                    videoResumeTime =
+                                        newModel.trackInfo
+                                            |> List.filter (\t -> t.id == "video")
+                                            |> List.head
+                                            |> Maybe.map .currentTime
+
+                                    songCmd =
+                                        case newModel.screen of
+                                            BlankScreen idx ->
+                                                let
+                                                    hasPlaySongPending =
+                                                        List.any
+                                                            (\e ->
+                                                                case e.msg of
+                                                                    PlaySong i ->
+                                                                        i == idx
+
+                                                                    _ ->
+                                                                        False
+                                                            )
+                                                            newModel.pending
+                                                in
+                                                if hasPlaySongPending then
+                                                    Cmd.none
+
+                                                else
+                                                    getQuestion idx
+                                                        |> Maybe.map (\q -> loadMusic q.song)
+                                                        |> Maybe.withDefault Cmd.none
+
+                                            _ ->
+                                                Cmd.none
+
+                                    jeopardyCmd =
+                                        if newModel.jeopardyPlaying then
+                                            loadMusic "jeopardy-theme.mp3"
+
+                                        else
+                                            Cmd.none
+
+                                    videoCmd =
+                                        videoResumeTime
+                                            |> Maybe.map seekVideo
+                                            |> Maybe.withDefault Cmd.none
+
+                                    logCmd =
+                                        logToFile
+                                            ("WS restore: screen="
+                                                ++ (case newModel.screen of
+                                                        VideoScreen _ s -> "VideoScreen " ++ s
+                                                        BlankScreen i -> "BlankScreen " ++ String.fromInt i
+                                                        QuestionScreen i _ -> "QuestionScreen " ++ String.fromInt i
+                                                        _ -> "other"
+                                                   )
+                                                ++ " videoResumeTime="
+                                                ++ (case videoResumeTime of
+                                                        Just t -> String.fromFloat t
+                                                        Nothing -> "Nothing"
+                                                   )
+                                                ++ " trackInfoIds="
+                                                ++ String.join "," (List.map .id newModel.trackInfo)
+                                            )
+                                in
+                                ( { newModel
+                                    | wsClientId = model.wsClientId
+                                    , dingIds = model.dingIds
+                                    , activeSongId = Nothing
+                                    , jeopardyId = Nothing
+                                    , pendingStartTime = songResumeTime
+                                  }
+                                , Cmd.batch [ logCmd, songCmd, jeopardyCmd, videoCmd ]
+                                )
+
+                            Err _ ->
+                                ( model, Cmd.none )
+
+                _ ->
+                    case Decode.decodeString decodeModel json of
+                        Ok newModel ->
+                            ( { newModel | wsClientId = model.wsClientId, dingIds = model.dingIds }, Cmd.none )
+
+                        Err _ ->
+                            ( model, Cmd.none )
+
+        WsDisconnected _ ->
+            let
+                _ = Debug.log "WebSocket disconnected"
+            in
+            case model.screen of
+                WsConnectingScreen ->
+                    ( model |> schedule 3000 WsReconnect, Cmd.none )
+
+                WsLoadingScreen ->
+                    ( { model | screen = WsErrorScreen, wsClientId = Nothing } |> schedule 3000 WsReconnect, Cmd.none )
+
+                _ ->
+                    ( { model | wsClientId = Nothing }, Cmd.none )
+
+        WsReconnect ->
+            case model.screen of
+                WsErrorScreen ->
+                    ( { model | screen = WsConnectingScreen }, initWebSocketClient wsUrl )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        WsSyncTick ->
+            case model.wsClientId of
+                Just wsId ->
+                    ( model, sendToWs { wsId = wsId, data = Encode.encode 0 (encodeModel model) } )
+
+                Nothing ->
+                    ( model, Cmd.none )
+
         NoOp ->
             ( model, Cmd.none )
 
@@ -1288,9 +1509,653 @@ isCounterBig phase =
             False
 
 
+-- ── JSON Encoders ────────────────────────────────────────────────────────────
+
+
+encodeMaybeString : Maybe String -> Encode.Value
+encodeMaybeString =
+    Maybe.map Encode.string >> Maybe.withDefault Encode.null
+
+
+encodeMaybeFloat : Maybe Float -> Encode.Value
+encodeMaybeFloat =
+    Maybe.map Encode.float >> Maybe.withDefault Encode.null
+
+
+encodeTrackInfo : TrackInfo -> Encode.Value
+encodeTrackInfo t =
+    Encode.object
+        [ ( "id", Encode.string t.id )
+        , ( "currentTime", Encode.float t.currentTime )
+        , ( "duration", Encode.float t.duration )
+        ]
+
+
+encodeFakeFlashPhase : FakeFlashPhase -> Encode.Value
+encodeFakeFlashPhase phase =
+    Encode.string
+        (case phase of
+            FfDelay -> "FfDelay"
+            FfText1In -> "FfText1In"
+            FfText1Hold -> "FfText1Hold"
+            FfText1Out -> "FfText1Out"
+            FfText2In -> "FfText2In"
+            FfText2Hold -> "FfText2Hold"
+            FfText2Out -> "FfText2Out"
+            FfCounterIn -> "FfCounterIn"
+            FfTickNumerator -> "FfTickNumerator"
+            FfTickDelay -> "FfTickDelay"
+            FfTickDenominator -> "FfTickDenominator"
+            FfCounterOut -> "FfCounterOut"
+        )
+
+
+encodeIQTestScreenState : IQTestScreenState -> Encode.Value
+encodeIQTestScreenState s =
+    Encode.object
+        [ ( "questionIdx", Encode.int s.questionIdx )
+        , ( "totalDings", Encode.int s.totalDings )
+        , ( "fakeFlashUsed", Encode.bool s.fakeFlashUsed )
+        , ( "in50PercentPhase", Encode.bool s.in50PercentPhase )
+        ]
+
+
+encodeIQTestInit : IQTestInit -> Encode.Value
+encodeIQTestInit s =
+    Encode.object
+        [ ( "delay", Encode.float s.delay )
+        , ( "nextRandom", Encode.bool s.nextRandom )
+        , ( "fakeFlashPoint", Encode.int s.fakeFlashPoint )
+        ]
+
+
+encodeIQTestCountdownState : IQTestCountdownState -> Encode.Value
+encodeIQTestCountdownState s =
+    Encode.object
+        [ ( "questionIdx", Encode.int s.questionIdx )
+        , ( "totalDings", Encode.int s.totalDings )
+        , ( "fakeFlashUsed", Encode.bool s.fakeFlashUsed )
+        , ( "in50PercentPhase", Encode.bool s.in50PercentPhase )
+        , ( "countdown", Encode.int s.countdown )
+        , ( "initData", encodeIQTestInit s.initData )
+        ]
+
+
+encodeIQTestState : IQTestState -> Encode.Value
+encodeIQTestState s =
+    Encode.object
+        [ ( "questionIdx", Encode.int s.questionIdx )
+        , ( "dingCount", Encode.int s.dingCount )
+        , ( "totalDings", Encode.int s.totalDings )
+        , ( "isFlashing", Encode.bool s.isFlashing )
+        , ( "dingActive", Encode.bool s.dingActive )
+        , ( "fakeFlashActive", Encode.bool s.fakeFlashActive )
+        , ( "loudPlaying", Encode.bool s.loudPlaying )
+        , ( "fakeFlashUsed", Encode.bool s.fakeFlashUsed )
+        , ( "fakeFlashPoint", Encode.int s.fakeFlashPoint )
+        , ( "nextRandom", Encode.bool s.nextRandom )
+        , ( "in50PercentPhase", Encode.bool s.in50PercentPhase )
+        ]
+
+
+encodeFakeFlashCaughtState : FakeFlashCaughtState -> Encode.Value
+encodeFakeFlashCaughtState s =
+    Encode.object
+        [ ( "questionIdx", Encode.int s.questionIdx )
+        , ( "originalTotal", Encode.int s.originalTotal )
+        , ( "displayNumerator", Encode.int s.displayNumerator )
+        , ( "displayDenominator", Encode.int s.displayDenominator )
+        , ( "phase", encodeFakeFlashPhase s.phase )
+        ]
+
+
+encodeScreen : Screen -> Encode.Value
+encodeScreen scr =
+    case scr of
+        WsConnectingScreen ->
+            Encode.object [ ( "tag", Encode.string "WsConnectingScreen" ) ]
+
+        WsErrorScreen ->
+            Encode.object [ ( "tag", Encode.string "WsErrorScreen" ) ]
+
+        WsLoadingScreen ->
+            Encode.object [ ( "tag", Encode.string "WsLoadingScreen" ) ]
+
+        ConnectScreen ->
+            Encode.object [ ( "tag", Encode.string "ConnectScreen" ) ]
+
+        BeginScreen ->
+            Encode.object [ ( "tag", Encode.string "BeginScreen" ) ]
+
+        BlankScreen idx ->
+            Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int idx ) ]
+
+        VideoScreen idx s ->
+            Encode.object [ ( "tag", Encode.string "VideoScreen" ), ( "idx", Encode.int idx ), ( "s", Encode.string s ) ]
+
+        QuestionScreen idx s ->
+            Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int idx ), ( "s", Encode.string s ) ]
+
+        WrongAnswerScreen idx ->
+            Encode.object [ ( "tag", Encode.string "WrongAnswerScreen" ), ( "idx", Encode.int idx ) ]
+
+        IQTestScreen state ->
+            Encode.object [ ( "tag", Encode.string "IQTestScreen" ), ( "state", encodeIQTestScreenState state ) ]
+
+        IQTestCountdownScreen state ->
+            Encode.object [ ( "tag", Encode.string "IQTestCountdownScreen" ), ( "state", encodeIQTestCountdownState state ) ]
+
+        IQTestActiveScreen state ->
+            Encode.object [ ( "tag", Encode.string "IQTestActiveScreen" ), ( "state", encodeIQTestState state ) ]
+
+        FakeFlashCaughtScreen state ->
+            Encode.object [ ( "tag", Encode.string "FakeFlashCaughtScreen" ), ( "state", encodeFakeFlashCaughtState state ) ]
+
+        WinScreen ->
+            Encode.object [ ( "tag", Encode.string "WinScreen" ) ]
+
+        TimedOutScreen ->
+            Encode.object [ ( "tag", Encode.string "TimedOutScreen" ) ]
+
+
+encodeMsg : Msg -> Encode.Value
+encodeMsg msg =
+    case msg of
+        Tick t ->
+            Encode.object [ ( "tag", Encode.string "Tick" ), ( "t", Encode.float t ) ]
+
+        PlaySong idx ->
+            Encode.object [ ( "tag", Encode.string "PlaySong" ), ( "idx", Encode.int idx ) ]
+
+        ShowQuestion idx ->
+            Encode.object [ ( "tag", Encode.string "ShowQuestion" ), ( "idx", Encode.int idx ) ]
+
+        TrackEnded filename ->
+            Encode.object [ ( "tag", Encode.string "TrackEnded" ), ( "filename", Encode.string filename ) ]
+
+        ScheduleNextDing s ->
+            Encode.object [ ( "tag", Encode.string "ScheduleNextDing" ), ( "delay", Encode.float s.delay ), ( "nextRandom", Encode.bool s.nextRandom ) ]
+
+        IQTestStarted s ->
+            Encode.object [ ( "tag", Encode.string "IQTestStarted" ), ( "initData", encodeIQTestInit s ) ]
+
+        DingFlashEnd ->
+            Encode.object [ ( "tag", Encode.string "DingFlashEnd" ) ]
+
+        DingWindowExpired ->
+            Encode.object [ ( "tag", Encode.string "DingWindowExpired" ) ]
+
+        FakeFlashWindowExpired ->
+            Encode.object [ ( "tag", Encode.string "FakeFlashWindowExpired" ) ]
+
+        FakeFlashCounterTick ->
+            Encode.object [ ( "tag", Encode.string "FakeFlashCounterTick" ) ]
+
+        FakeFlashNextPhase ->
+            Encode.object [ ( "tag", Encode.string "FakeFlashNextPhase" ) ]
+
+        CountdownTick ->
+            Encode.object [ ( "tag", Encode.string "CountdownTick" ) ]
+
+        StartLoudMusic ->
+            Encode.object [ ( "tag", Encode.string "StartLoudMusic" ) ]
+
+        DingOccurred ->
+            Encode.object [ ( "tag", Encode.string "DingOccurred" ) ]
+
+        WsReconnect ->
+            Encode.object [ ( "tag", Encode.string "WsReconnect" ) ]
+
+        _ ->
+            Encode.object [ ( "tag", Encode.string "NoOp" ) ]
+
+
+encodePendingEvent : PendingEvent -> Encode.Value
+encodePendingEvent e =
+    Encode.object
+        [ ( "fireAt", Encode.float e.fireAt )
+        , ( "msg", encodeMsg e.msg )
+        ]
+
+
+encodePausedState : PausedState -> Encode.Value
+encodePausedState s =
+    Encode.object
+        [ ( "screen", encodeScreen s.screen )
+        , ( "pending", Encode.list encodePendingEvent s.pending )
+        , ( "savedAt", Encode.float s.savedAt )
+        , ( "songResumeTime", encodeMaybeFloat s.songResumeTime )
+        , ( "videoResumeTime", encodeMaybeFloat s.videoResumeTime )
+        ]
+
+
+encodeModel : Model -> Encode.Value
+encodeModel model =
+    Encode.object
+        [ ( "connected", Encode.bool model.connected )
+        , ( "screen", encodeScreen model.screen )
+        , ( "trackInfo", Encode.list encodeTrackInfo model.trackInfo )
+        , ( "jeopardyPlaying", Encode.bool model.jeopardyPlaying )
+        , ( "jeopardyId", encodeMaybeString model.jeopardyId )
+        , ( "now", Encode.float model.now )
+        , ( "pending", Encode.list encodePendingEvent model.pending )
+        , ( "ignoreDisconnect", Encode.bool model.ignoreDisconnect )
+        , ( "activeSongId", encodeMaybeString model.activeSongId )
+        , ( "savedState", model.savedState |> Maybe.map encodePausedState |> Maybe.withDefault Encode.null )
+        , ( "dingIds", Encode.list Encode.string model.dingIds )
+        , ( "nextDingIdx", Encode.int model.nextDingIdx )
+        , ( "pendingStartTime", encodeMaybeFloat model.pendingStartTime )
+        , ( "wsClientId", encodeMaybeString model.wsClientId )
+        , ( "timerEndsAt", Encode.float model.timerEndsAt )
+        ]
+
+
+-- ── JSON Decoders ─────────────────────────────────────────────────────────────
+
+
+decodeTrackInfo : Decoder TrackInfo
+decodeTrackInfo =
+    Decode.map3 TrackInfo
+        (Decode.field "id" Decode.string)
+        (Decode.field "currentTime" Decode.float)
+        (Decode.field "duration" Decode.float)
+
+
+decodeFakeFlashPhase : Decoder FakeFlashPhase
+decodeFakeFlashPhase =
+    Decode.string
+        |> Decode.andThen
+            (\s ->
+                case s of
+                    "FfDelay" -> Decode.succeed FfDelay
+                    "FfText1In" -> Decode.succeed FfText1In
+                    "FfText1Hold" -> Decode.succeed FfText1Hold
+                    "FfText1Out" -> Decode.succeed FfText1Out
+                    "FfText2In" -> Decode.succeed FfText2In
+                    "FfText2Hold" -> Decode.succeed FfText2Hold
+                    "FfText2Out" -> Decode.succeed FfText2Out
+                    "FfCounterIn" -> Decode.succeed FfCounterIn
+                    "FfTickNumerator" -> Decode.succeed FfTickNumerator
+                    "FfTickDelay" -> Decode.succeed FfTickDelay
+                    "FfTickDenominator" -> Decode.succeed FfTickDenominator
+                    "FfCounterOut" -> Decode.succeed FfCounterOut
+                    _ -> Decode.fail ("Unknown FakeFlashPhase: " ++ s)
+            )
+
+
+decodeIQTestScreenState : Decoder IQTestScreenState
+decodeIQTestScreenState =
+    Decode.map4
+        (\qi td ffu i50 -> { questionIdx = qi, totalDings = td, fakeFlashUsed = ffu, in50PercentPhase = i50 })
+        (Decode.field "questionIdx" Decode.int)
+        (Decode.field "totalDings" Decode.int)
+        (Decode.field "fakeFlashUsed" Decode.bool)
+        (Decode.field "in50PercentPhase" Decode.bool)
+
+
+decodeIQTestInit : Decoder IQTestInit
+decodeIQTestInit =
+    Decode.map3
+        (\d nr fp -> { delay = d, nextRandom = nr, fakeFlashPoint = fp })
+        (Decode.field "delay" Decode.float)
+        (Decode.field "nextRandom" Decode.bool)
+        (Decode.field "fakeFlashPoint" Decode.int)
+
+
+decodeIQTestCountdownState : Decoder IQTestCountdownState
+decodeIQTestCountdownState =
+    Decode.map6
+        (\qi td ffu i50 cd initData ->
+            { questionIdx = qi, totalDings = td, fakeFlashUsed = ffu
+            , in50PercentPhase = i50, countdown = cd, initData = initData
+            }
+        )
+        (Decode.field "questionIdx" Decode.int)
+        (Decode.field "totalDings" Decode.int)
+        (Decode.field "fakeFlashUsed" Decode.bool)
+        (Decode.field "in50PercentPhase" Decode.bool)
+        (Decode.field "countdown" Decode.int)
+        (Decode.field "initData" decodeIQTestInit)
+
+
+decodeIQTestState : Decoder IQTestState
+decodeIQTestState =
+    Decode.map8
+        (\qi dc td isF dA ffA lP ffU ->
+            \ffP nr i50 ->
+                { questionIdx = qi, dingCount = dc, totalDings = td, isFlashing = isF
+                , dingActive = dA, fakeFlashActive = ffA, loudPlaying = lP, fakeFlashUsed = ffU
+                , fakeFlashPoint = ffP, nextRandom = nr, in50PercentPhase = i50
+                }
+        )
+        (Decode.field "questionIdx" Decode.int)
+        (Decode.field "dingCount" Decode.int)
+        (Decode.field "totalDings" Decode.int)
+        (Decode.field "isFlashing" Decode.bool)
+        (Decode.field "dingActive" Decode.bool)
+        (Decode.field "fakeFlashActive" Decode.bool)
+        (Decode.field "loudPlaying" Decode.bool)
+        (Decode.field "fakeFlashUsed" Decode.bool)
+        |> Decode.andThen
+            (\partial ->
+                Decode.map3 partial
+                    (Decode.field "fakeFlashPoint" Decode.int)
+                    (Decode.field "nextRandom" Decode.bool)
+                    (Decode.field "in50PercentPhase" Decode.bool)
+            )
+
+
+decodeFakeFlashCaughtState : Decoder FakeFlashCaughtState
+decodeFakeFlashCaughtState =
+    Decode.map5
+        (\qi ot dn dd ph ->
+            { questionIdx = qi, originalTotal = ot, displayNumerator = dn, displayDenominator = dd, phase = ph }
+        )
+        (Decode.field "questionIdx" Decode.int)
+        (Decode.field "originalTotal" Decode.int)
+        (Decode.field "displayNumerator" Decode.int)
+        (Decode.field "displayDenominator" Decode.int)
+        (Decode.field "phase" decodeFakeFlashPhase)
+
+
+decodeScreen : Decoder Screen
+decodeScreen =
+    Decode.field "tag" Decode.string
+        |> Decode.andThen
+            (\tag ->
+                case tag of
+                    "WsConnectingScreen" ->
+                        Decode.succeed WsConnectingScreen
+
+                    "WsErrorScreen" ->
+                        Decode.succeed WsErrorScreen
+
+                    "WsLoadingScreen" ->
+                        Decode.succeed WsLoadingScreen
+
+                    "ConnectScreen" ->
+                        Decode.succeed ConnectScreen
+
+                    "BeginScreen" ->
+                        Decode.succeed BeginScreen
+
+                    "BlankScreen" ->
+                        Decode.map BlankScreen (Decode.field "idx" Decode.int)
+
+                    "VideoScreen" ->
+                        Decode.map2 VideoScreen
+                            (Decode.field "idx" Decode.int)
+                            (Decode.field "s" Decode.string)
+
+                    "QuestionScreen" ->
+                        Decode.map2 QuestionScreen
+                            (Decode.field "idx" Decode.int)
+                            (Decode.field "s" Decode.string)
+
+                    "WrongAnswerScreen" ->
+                        Decode.map WrongAnswerScreen (Decode.field "idx" Decode.int)
+
+                    "IQTestScreen" ->
+                        Decode.map IQTestScreen (Decode.field "state" decodeIQTestScreenState)
+
+                    "IQTestCountdownScreen" ->
+                        Decode.map IQTestCountdownScreen (Decode.field "state" decodeIQTestCountdownState)
+
+                    "IQTestActiveScreen" ->
+                        Decode.map IQTestActiveScreen (Decode.field "state" decodeIQTestState)
+
+                    "FakeFlashCaughtScreen" ->
+                        Decode.map FakeFlashCaughtScreen (Decode.field "state" decodeFakeFlashCaughtState)
+
+                    "WinScreen" ->
+                        Decode.succeed WinScreen
+
+                    "TimedOutScreen" ->
+                        Decode.succeed TimedOutScreen
+
+                    _ ->
+                        Decode.fail ("Unknown screen: " ++ tag)
+            )
+
+
+decodeMsg : Decoder Msg
+decodeMsg =
+    Decode.field "tag" Decode.string
+        |> Decode.andThen
+            (\tag ->
+                case tag of
+                    "Tick" ->
+                        Decode.map Tick (Decode.field "t" Decode.float)
+
+                    "PlaySong" ->
+                        Decode.map PlaySong (Decode.field "idx" Decode.int)
+
+                    "ShowQuestion" ->
+                        Decode.map ShowQuestion (Decode.field "idx" Decode.int)
+
+                    "TrackEnded" ->
+                        Decode.map TrackEnded (Decode.field "filename" Decode.string)
+
+                    "ScheduleNextDing" ->
+                        Decode.map2 (\d nr -> ScheduleNextDing { delay = d, nextRandom = nr })
+                            (Decode.field "delay" Decode.float)
+                            (Decode.field "nextRandom" Decode.bool)
+
+                    "IQTestStarted" ->
+                        Decode.map IQTestStarted (Decode.field "initData" decodeIQTestInit)
+
+                    "DingFlashEnd" ->
+                        Decode.succeed DingFlashEnd
+
+                    "DingWindowExpired" ->
+                        Decode.succeed DingWindowExpired
+
+                    "FakeFlashWindowExpired" ->
+                        Decode.succeed FakeFlashWindowExpired
+
+                    "FakeFlashCounterTick" ->
+                        Decode.succeed FakeFlashCounterTick
+
+                    "FakeFlashNextPhase" ->
+                        Decode.succeed FakeFlashNextPhase
+
+                    "CountdownTick" ->
+                        Decode.succeed CountdownTick
+
+                    "StartLoudMusic" ->
+                        Decode.succeed StartLoudMusic
+
+                    "DingOccurred" ->
+                        Decode.succeed DingOccurred
+
+                    "WsReconnect" ->
+                        Decode.succeed WsReconnect
+
+                    _ ->
+                        Decode.succeed NoOp
+            )
+
+
+decodePendingEvent : Decoder PendingEvent
+decodePendingEvent =
+    Decode.map2 PendingEvent
+        (Decode.field "fireAt" Decode.float)
+        (Decode.field "msg" decodeMsg)
+
+
+decodePausedState : Decoder PausedState
+decodePausedState =
+    Decode.map5
+        (\scr pending savedAt songResumeTime videoResumeTime ->
+            { screen = scr, pending = pending, savedAt = savedAt
+            , songResumeTime = songResumeTime, videoResumeTime = videoResumeTime
+            }
+        )
+        (Decode.field "screen" decodeScreen)
+        (Decode.field "pending" (Decode.list decodePendingEvent))
+        (Decode.field "savedAt" Decode.float)
+        (Decode.field "songResumeTime" (Decode.nullable Decode.float))
+        (Decode.field "videoResumeTime" (Decode.nullable Decode.float))
+
+
+decodeModel : Decoder Model
+decodeModel =
+    Decode.map8
+        (\conn scr ti jp ji n pend ign ->
+            \asi ss di ndi pst wci tea ->
+                { connected = conn
+                , screen = scr
+                , trackInfo = ti
+                , jeopardyPlaying = jp
+                , jeopardyId = ji
+                , now = n
+                , pending = pend
+                , ignoreDisconnect = ign
+                , activeSongId = asi
+                , savedState = ss
+                , dingIds = di
+                , nextDingIdx = ndi
+                , pendingStartTime = pst
+                , wsClientId = wci
+                , timerEndsAt = tea
+                }
+        )
+        (Decode.field "connected" Decode.bool)
+        (Decode.field "screen" decodeScreen)
+        (Decode.field "trackInfo" (Decode.list decodeTrackInfo))
+        (Decode.field "jeopardyPlaying" Decode.bool)
+        (Decode.field "jeopardyId" (Decode.nullable Decode.string))
+        (Decode.field "now" Decode.float)
+        (Decode.field "pending" (Decode.list decodePendingEvent))
+        (Decode.field "ignoreDisconnect" Decode.bool)
+        |> Decode.andThen
+            (\partial ->
+                Decode.map7 partial
+                    (Decode.field "activeSongId" (Decode.nullable Decode.string))
+                    (Decode.field "savedState" (Decode.nullable decodePausedState))
+                    (Decode.field "dingIds" (Decode.list Decode.string))
+                    (Decode.field "nextDingIdx" Decode.int)
+                    (Decode.field "pendingStartTime" (Decode.nullable Decode.float))
+                    (Decode.field "wsClientId" (Decode.nullable Decode.string))
+                    (Decode.field "timerEndsAt" Decode.float)
+            )
+
+
+formatTimer : Float -> String
+formatTimer ms =
+    let
+        totalSecs =
+            floor (ms / 1000)
+
+        days =
+            totalSecs // 86400
+
+        hours =
+            (totalSecs - days * 86400) // 3600
+
+        minutes =
+            (totalSecs - days * 86400 - hours * 3600) // 60
+
+        secs =
+            modBy 60 totalSecs
+    in
+    String.fromInt days
+        ++ "d "
+        ++ String.fromInt hours
+        ++ "h "
+        ++ String.fromInt minutes
+        ++ "m "
+        ++ String.fromInt secs
+        ++ "s"
+
+
+timerBar : Model -> Html Msg
+timerBar model =
+    let
+        showTimer =
+            case model.screen of
+                WsConnectingScreen ->
+                    False
+
+                WsErrorScreen ->
+                    False
+
+                WsLoadingScreen ->
+                    False
+
+                _ ->
+                    True
+
+        remaining =
+            max 0 (model.timerEndsAt - model.now)
+    in
+    if showTimer then
+        div
+            [ style "position" "fixed"
+            , style "top" "0"
+            , style "left" "0"
+            , style "right" "0"
+            , style "background-color" "rgba(0,0,0,0.18)"
+            , style "color" "white"
+            , style "font-size" "14px"
+            , style "font-weight" "bold"
+            , style "text-align" "center"
+            , style "padding" "6px 0"
+            , style "letter-spacing" "0.05em"
+            , style "pointer-events" "none"
+            ]
+            [ text (formatTimer remaining ++ " remaining") ]
+
+    else
+        text ""
+
+
 view : Model -> Html Msg
 view model =
+    div []
+        [ viewScreen model
+        , timerBar model
+        ]
+
+
+viewScreen : Model -> Html Msg
+viewScreen model =
     case model.screen of
+        WsConnectingScreen ->
+            screen
+                [ p
+                    [ style "font-size" "26px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    ]
+                    [ text "Connecting to server..." ]
+                ]
+
+        WsErrorScreen ->
+            screen
+                [ p
+                    [ style "font-size" "26px"
+                    , style "color" "#c0392b"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    , style "max-width" "480px"
+                    , style "line-height" "1.5"
+                    ]
+                    [ text "Something is wrong with the internet connection. Reconnecting..." ]
+                ]
+
+        WsLoadingScreen ->
+            screen
+                [ p
+                    [ style "font-size" "26px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    ]
+                    [ text "Loading..." ]
+                ]
+
         ConnectScreen ->
             screen
                 [ headphones
@@ -1722,6 +2587,18 @@ view model =
                     [ text "You Win!" ]
                 ]
 
+        TimedOutScreen ->
+            screen
+                [ p
+                    [ style "font-size" "42px"
+                    , style "color" "#c0392b"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    , style "font-weight" "bold"
+                    ]
+                    [ text "You ran out of time." ]
+                ]
+
 
 pKeyDecoder : Decoder Msg
 pKeyDecoder =
@@ -1776,6 +2653,10 @@ subscriptions model =
         , trackEnded TrackEnded
         , musicLoaded MusicLoaded
         , musicError MusicError
+        , wsClientReady WsClientReady
+        , receiveFromWs WsDataReceived
+        , wsClientFailed WsDisconnected
+        , Time.every 1000 (\_ -> WsSyncTick)
         , keyboardSub
         , debugToggleSub
         , Browser.Events.onAnimationFrame (\posix -> Tick (toFloat (Time.posixToMillis posix)))

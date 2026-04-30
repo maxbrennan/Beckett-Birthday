@@ -94,15 +94,26 @@ app.ports.playMusic.subscribe(({ id, volume, startTime }) => {
 })
 
 app.ports.seekVideo.subscribe((time) => {
+  console.log(`seekVideo: requested time=${time}`)
   const trySeek = (retriesLeft) => {
     const videoEl = document.getElementById('playing-video')
-    if (videoEl && videoEl.readyState >= 1) {
+    if (!videoEl) {
+      if (retriesLeft > 0) setTimeout(() => trySeek(retriesLeft - 1), 50)
+      else console.log('seekVideo: element never found')
+      return
+    }
+    if (videoEl.readyState >= 1) {
+      console.log(`seekVideo: seeking to ${time} (readyState=${videoEl.readyState})`)
       videoEl.currentTime = time
-    } else if (retriesLeft > 0) {
-      setTimeout(() => trySeek(retriesLeft - 1), 50)
+    } else {
+      console.log(`seekVideo: waiting for loadedmetadata (readyState=${videoEl.readyState})`)
+      videoEl.addEventListener('loadedmetadata', () => {
+        console.log(`seekVideo: loadedmetadata fired, seeking to ${time}`)
+        videoEl.currentTime = time
+      }, { once: true })
     }
   }
-  setTimeout(() => trySeek(20), 0)
+  setTimeout(() => trySeek(40), 0)
 })
 
 app.ports.stopMusic.subscribe((id) => {
@@ -112,4 +123,50 @@ app.ports.stopMusic.subscribe((id) => {
   audioMap.delete(id)
   entry.element.onended = null
   entry.element.pause()
+})
+
+// WebSocket management
+const wsMap = new Map()
+let nextWsId = 0
+const generateWsId = () => String(nextWsId++)
+
+app.ports.initWebSocketClient.subscribe((url) => {
+  console.log(`Initializing WebSocket client with URL: ${url}`)
+  const id = generateWsId()
+  const ws = new WebSocket(url)
+  let failedFired = false
+
+  const fireFailed = (reason) => {
+    if (!failedFired) {
+      console.log(`WebSocket ${id} failed: ${reason}`)
+      failedFired = true
+      wsMap.delete(id)
+      app.ports.wsClientFailed.send(reason)
+    }
+  }
+
+  ws.onopen = () => {
+    console.log(`WebSocket ${id} connected successfully`)
+    wsMap.set(id, ws)
+    app.ports.wsClientReady.send(id)
+  }
+
+  ws.onmessage = (event) => {
+    app.ports.receiveFromWs.send(event.data)
+  }
+
+  ws.onclose = () => {
+    fireFailed('closed')
+  }
+
+  ws.onerror = () => {
+    fireFailed('error')
+  }
+})
+
+app.ports.sendToWs.subscribe(({ wsId, data }) => {
+  const ws = wsMap.get(wsId)
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(data)
+  }
 })
