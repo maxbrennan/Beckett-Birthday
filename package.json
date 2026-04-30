@@ -7,7 +7,8 @@
     "build:elm": "elm make src/Main.elm --output=elm.js",
     "build": "npm run build:c && npm run build:elm",
     "start": "npm run build && electron --trace-warnings .",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "reset": "node reset.js"
   },
   "build": {
     "files": [
@@ -25,6 +26,7 @@
   "devDependencies": {
     "concurrently": "^9.2.1",
     "electron": "^34.5.8",
-    "electron-builder": "^26.8.1"
+    "electron-builder": "^26.8.1",
+    "ws": "^8.20.0"
   }
 }

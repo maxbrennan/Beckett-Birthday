@@ -51,7 +51,7 @@ port wsClientFailed : (String -> msg) -> Sub msg
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
 debug : Bool
 debug =
-    True
+    False
 
 
 -- Total correct ding presses required to pass the IQ test.
@@ -2566,7 +2566,7 @@ viewScreen model =
                     , style "margin" "0"
                     , style "font-weight" "bold"
                     ]
-                    [ text "You Win!" ]
+                    [ text "Text \"creeper... awwww man\" to Max to claim your reward!" ]
                 ]
 
         TimedOutScreen ->

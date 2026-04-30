@@ -5329,7 +5329,7 @@ var $author$project$Main$WsDisconnected = function (a) {
 };
 var $author$project$Main$WsSyncTick = {$: 'WsSyncTick'};
 var $elm$core$Platform$Sub$batch = _Platform_batch;
-var $author$project$Main$debug = true;
+var $author$project$Main$debug = false;
 var $elm$time$Time$Every = F2(
 	function (a, b) {
 		return {$: 'Every', a: a, b: b};
@@ -9731,7 +9731,7 @@ var $author$project$Main$viewScreen = function (model) {
 							]),
 						_List_fromArray(
 							[
-								$elm$html$Html$text('You Win!')
+								$elm$html$Html$text('Text \"creeper... awwww man\" to Max to claim your reward!')
 							]))
 					]));
 		default:

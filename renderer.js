@@ -1,6 +1,7 @@
 const { execFile } = require('child_process')
 const { existsSync, appendFileSync, writeFileSync } = require('fs')
 const path = require('path')
+const Ws = require('ws')
 
 const binary = path.join(__dirname, 'src', 'list_audio_devices')
 const app = Elm.Main.init({ node: document.getElementById('app') })
@@ -126,40 +127,58 @@ const generateWsId = () => String(nextWsId++)
 app.ports.initWebSocketClient.subscribe((url) => {
   console.log(`Initializing WebSocket client with URL: ${url}`)
   const id = generateWsId()
-  const ws = new WebSocket(url)
+  const ws = new Ws(url)
   let failedFired = false
+  let isAlive = false
+  let heartbeatTimer = null
 
   const fireFailed = (reason) => {
     if (!failedFired) {
       console.log(`WebSocket ${id} failed: ${reason}`)
       failedFired = true
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
       wsMap.delete(id)
+      try { ws.terminate() } catch (_) {}
       app.ports.wsClientFailed.send(reason)
     }
   }
 
-  ws.onopen = () => {
+  ws.on('open', () => {
     console.log(`WebSocket ${id} connected successfully`)
+    isAlive = true
     wsMap.set(id, ws)
     app.ports.wsClientReady.send(id)
-  }
 
-  ws.onmessage = (event) => {
-    app.ports.receiveFromWs.send(event.data)
-  }
+    heartbeatTimer = setInterval(() => {
+      if (!isAlive) {
+        fireFailed('heartbeat timeout')
+        return
+      }
+      isAlive = false
+      ws.ping()
+    }, 3000)
+  })
 
-  ws.onclose = () => {
+  ws.on('pong', () => {
+    isAlive = true
+  })
+
+  ws.on('message', (data) => {
+    app.ports.receiveFromWs.send(data.toString())
+  })
+
+  ws.on('close', () => {
     fireFailed('closed')
-  }
+  })
 
-  ws.onerror = () => {
+  ws.on('error', () => {
     fireFailed('error')
-  }
+  })
 })
 
 app.ports.sendToWs.subscribe(({ wsId, data }) => {
   const ws = wsMap.get(wsId)
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (ws && ws.readyState === Ws.OPEN) {
     ws.send(data)
   }
 })
