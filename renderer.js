@@ -2,15 +2,8 @@ const { execFile } = require('child_process')
 const { existsSync, appendFileSync, writeFileSync } = require('fs')
 const path = require('path')
 
-const logPath = path.join(__dirname, 'debug.log')
-writeFileSync(logPath, '', 'utf8')
-
 const binary = path.join(__dirname, 'src', 'list_audio_devices')
 const app = Elm.Main.init({ node: document.getElementById('app') })
-
-app.ports.logToFile.subscribe((entry) => {
-  appendFileSync(logPath, entry + '\n', 'utf8')
-})
 
 // id -> { element: Audio, filename: String }
 const audioMap = new Map()

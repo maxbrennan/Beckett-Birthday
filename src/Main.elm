@@ -30,8 +30,6 @@ port musicLoaded : ({ id : String, filename : String } -> msg) -> Sub msg
 
 port musicError : (String -> msg) -> Sub msg
 
-port logToFile : String -> Cmd msg
-
 port seekVideo : Float -> Cmd msg
 
 wsUrl : String
@@ -470,8 +468,8 @@ iqFail model state =
                 IQTestScreen
                     { questionIdx = state.questionIdx
                     , totalDings = state.totalDings
-                    , fakeFlashUsed = state.fakeFlashUsed
-                    , in50PercentPhase = state.in50PercentPhase
+                    , fakeFlashUsed = False
+                    , in50PercentPhase = False
                     }
         }
     , Cmd.none
@@ -519,13 +517,9 @@ update msg model =
                 _ ->
                     True
 
-        entry =
-            "=== " ++ Debug.toString msg ++ " ===\n"
-                ++ "BEFORE: " ++ Debug.toString model ++ "\n"
-                ++ "AFTER:  " ++ Debug.toString newModel ++ "\n"
     in
     if shouldLog then
-        ( newModel, Cmd.batch [ cmd, logToFile entry ] )
+        ( newModel, cmd )
 
     else
         ( newModel, cmd )
@@ -1327,24 +1321,7 @@ updateImpl msg model =
                                         videoResumeTime
                                             |> Maybe.map seekVideo
                                             |> Maybe.withDefault Cmd.none
-
-                                    logCmd =
-                                        logToFile
-                                            ("WS restore: screen="
-                                                ++ (case newModel.screen of
-                                                        VideoScreen _ s -> "VideoScreen " ++ s
-                                                        BlankScreen i -> "BlankScreen " ++ String.fromInt i
-                                                        QuestionScreen i _ -> "QuestionScreen " ++ String.fromInt i
-                                                        _ -> "other"
-                                                   )
-                                                ++ " videoResumeTime="
-                                                ++ (case videoResumeTime of
-                                                        Just t -> String.fromFloat t
-                                                        Nothing -> "Nothing"
-                                                   )
-                                                ++ " trackInfoIds="
-                                                ++ String.join "," (List.map .id newModel.trackInfo)
-                                            )
+                                
                                 in
                                 ( { newModel
                                     | wsClientId = model.wsClientId
@@ -1353,7 +1330,7 @@ updateImpl msg model =
                                     , jeopardyId = Nothing
                                     , pendingStartTime = songResumeTime
                                   }
-                                , Cmd.batch [ logCmd, songCmd, jeopardyCmd, videoCmd ]
+                                , Cmd.batch [ songCmd, jeopardyCmd, videoCmd ]
                                 )
 
                             Err _ ->
@@ -1376,15 +1353,20 @@ updateImpl msg model =
                     ( model |> schedule 3000 WsReconnect, Cmd.none )
 
                 WsLoadingScreen ->
-                    ( { model | screen = WsErrorScreen, wsClientId = Nothing } |> schedule 3000 WsReconnect, Cmd.none )
+                    ( { model | screen = WsConnectingScreen, wsClientId = Nothing } |> schedule 3000 WsReconnect, Cmd.none )
 
                 _ ->
-                    ( { model | wsClientId = Nothing }, Cmd.none )
+                    ( { model | wsClientId = Nothing, screen = WsConnectingScreen }
+                    , initWebSocketClient wsUrl
+                    )
 
         WsReconnect ->
             case model.screen of
                 WsErrorScreen ->
                     ( { model | screen = WsConnectingScreen }, initWebSocketClient wsUrl )
+
+                WsConnectingScreen ->
+                    ( model, initWebSocketClient wsUrl )
 
                 _ ->
                     ( model, Cmd.none )

@@ -6236,7 +6236,6 @@ var $author$project$Main$WinScreen = {$: 'WinScreen'};
 var $author$project$Main$WrongAnswerScreen = function (a) {
 	return {$: 'WrongAnswerScreen', a: a};
 };
-var $author$project$Main$WsErrorScreen = {$: 'WsErrorScreen'};
 var $author$project$Main$WsLoadingScreen = {$: 'WsLoadingScreen'};
 var $author$project$Main$WsReconnect = {$: 'WsReconnect'};
 var $elm$core$Maybe$andThen = F2(
@@ -6375,6 +6374,7 @@ var $author$project$Main$decodePendingEvent = A3(
 	$author$project$Main$PendingEvent,
 	A2($elm$json$Json$Decode$field, 'fireAt', $elm$json$Json$Decode$float),
 	A2($elm$json$Json$Decode$field, 'msg', $author$project$Main$decodeMsg));
+var $author$project$Main$WsErrorScreen = {$: 'WsErrorScreen'};
 var $author$project$Main$decodeFakeFlashPhase = A2(
 	$elm$json$Json$Decode$andThen,
 	function (s) {
@@ -7365,7 +7365,6 @@ var $elm$core$List$filter = F2(
 			list);
 	});
 var $elm$browser$Browser$Dom$focus = _Browser_call('focus');
-var $elm$core$String$fromFloat = _String_fromNumber;
 var $elm$core$Basics$ge = _Utils_ge;
 var $elm$random$Random$Generate = function (a) {
 	return {$: 'Generate', a: a};
@@ -7525,7 +7524,7 @@ var $author$project$Main$iqFail = F2(
 					model,
 					{
 						screen: $author$project$Main$IQTestScreen(
-							{fakeFlashUsed: state.fakeFlashUsed, in50PercentPhase: state.in50PercentPhase, questionIdx: state.questionIdx, totalDings: state.totalDings})
+							{fakeFlashUsed: false, in50PercentPhase: false, questionIdx: state.questionIdx, totalDings: state.totalDings})
 					})),
 			$elm$core$Platform$Cmd$none);
 	});
@@ -7623,7 +7622,6 @@ var $author$project$Main$isVideo = function (filename) {
 	return A2($elm$core$String$endsWith, '.mp4', filename);
 };
 var $elm$core$Debug$log = _Debug_log;
-var $author$project$Main$logToFile = _Platform_outgoingPort('logToFile', $elm$json$Json$Encode$string);
 var $elm$core$String$filter = _String_filter;
 var $elm$core$String$toLower = _String_toLower;
 var $elm$core$String$words = _String_words;
@@ -7750,7 +7748,6 @@ var $author$project$Main$sendToWs = _Platform_outgoingPort(
 	});
 var $author$project$Main$stopMusic = _Platform_outgoingPort('stopMusic', $elm$json$Json$Encode$string);
 var $author$project$Main$timeLimitMs = $author$project$Main$debug ? 600000 : ((((7 * 24) * 60) * 60) * 1000);
-var $elm$core$Debug$toString = _Debug_toString;
 var $elm$core$String$trim = _String_trim;
 var $author$project$Main$update = F2(
 	function (msg, model) {
@@ -7781,18 +7778,10 @@ var $author$project$Main$update = F2(
 					return true;
 			}
 		}();
-		var _v63 = A2($author$project$Main$updateImpl, msg, model);
-		var newModel = _v63.a;
-		var cmd = _v63.b;
-		var entry = '=== ' + ($elm$core$Debug$toString(msg) + (' ===\n' + ('BEFORE: ' + ($elm$core$Debug$toString(model) + ('\n' + ('AFTER:  ' + ($elm$core$Debug$toString(newModel) + '\n')))))));
-		return shouldLog ? _Utils_Tuple2(
-			newModel,
-			$elm$core$Platform$Cmd$batch(
-				_List_fromArray(
-					[
-						cmd,
-						$author$project$Main$logToFile(entry)
-					]))) : _Utils_Tuple2(newModel, cmd);
+		var _v61 = A2($author$project$Main$updateImpl, msg, model);
+		var newModel = _v61.a;
+		var cmd = _v61.b;
+		return shouldLog ? _Utils_Tuple2(newModel, cmd) : _Utils_Tuple2(newModel, cmd);
 	});
 var $author$project$Main$updateImpl = F2(
 	function (msg, model) {
@@ -8741,15 +8730,15 @@ var $author$project$Main$updateImpl = F2(
 								},
 								newModel.activeSongId);
 							var songCmd = function () {
-								var _v50 = newModel.screen;
-								if (_v50.$ === 'BlankScreen') {
-									var idx = _v50.a;
+								var _v48 = newModel.screen;
+								if (_v48.$ === 'BlankScreen') {
+									var idx = _v48.a;
 									var hasPlaySongPending = A2(
 										$elm$core$List$any,
 										function (e) {
-											var _v51 = e.msg;
-											if (_v51.$ === 'PlaySong') {
-												var i = _v51.a;
+											var _v49 = e.msg;
+											if (_v49.$ === 'PlaySong') {
+												var i = _v49.a;
 												return _Utils_eq(i, idx);
 											} else {
 												return false;
@@ -8769,38 +8758,6 @@ var $author$project$Main$updateImpl = F2(
 									return $elm$core$Platform$Cmd$none;
 								}
 							}();
-							var logCmd = $author$project$Main$logToFile(
-								'WS restore: screen=' + (function () {
-									var _v48 = newModel.screen;
-									switch (_v48.$) {
-										case 'VideoScreen':
-											var s = _v48.b;
-											return 'VideoScreen ' + s;
-										case 'BlankScreen':
-											var i = _v48.a;
-											return 'BlankScreen ' + $elm$core$String$fromInt(i);
-										case 'QuestionScreen':
-											var i = _v48.a;
-											return 'QuestionScreen ' + $elm$core$String$fromInt(i);
-										default:
-											return 'other';
-									}
-								}() + (' videoResumeTime=' + (function () {
-									if (videoResumeTime.$ === 'Just') {
-										var t = videoResumeTime.a;
-										return $elm$core$String$fromFloat(t);
-									} else {
-										return 'Nothing';
-									}
-								}() + (' trackInfoIds=' + A2(
-									$elm$core$String$join,
-									',',
-									A2(
-										$elm$core$List$map,
-										function ($) {
-											return $.id;
-										},
-										newModel.trackInfo)))))));
 							var jeopardyCmd = newModel.jeopardyPlaying ? $author$project$Main$loadMusic('jeopardy-theme.mp3') : $elm$core$Platform$Cmd$none;
 							return _Utils_Tuple2(
 								_Utils_update(
@@ -8808,15 +8765,15 @@ var $author$project$Main$updateImpl = F2(
 									{activeSongId: $elm$core$Maybe$Nothing, dingIds: model.dingIds, jeopardyId: $elm$core$Maybe$Nothing, pendingStartTime: songResumeTime, wsClientId: model.wsClientId}),
 								$elm$core$Platform$Cmd$batch(
 									_List_fromArray(
-										[logCmd, songCmd, jeopardyCmd, videoCmd])));
+										[songCmd, jeopardyCmd, videoCmd])));
 						} else {
 							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 						}
 					}
 				} else {
-					var _v52 = A2($elm$json$Json$Decode$decodeString, $author$project$Main$decodeModel, json);
-					if (_v52.$ === 'Ok') {
-						var newModel = _v52.a;
+					var _v50 = A2($elm$json$Json$Decode$decodeString, $author$project$Main$decodeModel, json);
+					if (_v50.$ === 'Ok') {
+						var newModel = _v50.a;
 						return _Utils_Tuple2(
 							_Utils_update(
 								newModel,
@@ -8827,9 +8784,9 @@ var $author$project$Main$updateImpl = F2(
 					}
 				}
 			case 'WsDisconnected':
-				var _v53 = $elm$core$Debug$log('WebSocket disconnected');
-				var _v54 = model.screen;
-				switch (_v54.$) {
+				var _v51 = $elm$core$Debug$log('WebSocket disconnected');
+				var _v52 = model.screen;
+				switch (_v52.$) {
 					case 'WsConnectingScreen':
 						return _Utils_Tuple2(
 							A3($author$project$Main$schedule, 3000, $author$project$Main$WsReconnect, model),
@@ -8842,30 +8799,35 @@ var $author$project$Main$updateImpl = F2(
 								$author$project$Main$WsReconnect,
 								_Utils_update(
 									model,
-									{screen: $author$project$Main$WsErrorScreen, wsClientId: $elm$core$Maybe$Nothing})),
+									{screen: $author$project$Main$WsConnectingScreen, wsClientId: $elm$core$Maybe$Nothing})),
 							$elm$core$Platform$Cmd$none);
 					default:
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{wsClientId: $elm$core$Maybe$Nothing}),
-							$elm$core$Platform$Cmd$none);
+								{screen: $author$project$Main$WsConnectingScreen, wsClientId: $elm$core$Maybe$Nothing}),
+							$author$project$Main$initWebSocketClient($author$project$Main$wsUrl));
 				}
 			case 'WsReconnect':
-				var _v55 = model.screen;
-				if (_v55.$ === 'WsErrorScreen') {
-					return _Utils_Tuple2(
-						_Utils_update(
+				var _v53 = model.screen;
+				switch (_v53.$) {
+					case 'WsErrorScreen':
+						return _Utils_Tuple2(
+							_Utils_update(
+								model,
+								{screen: $author$project$Main$WsConnectingScreen}),
+							$author$project$Main$initWebSocketClient($author$project$Main$wsUrl));
+					case 'WsConnectingScreen':
+						return _Utils_Tuple2(
 							model,
-							{screen: $author$project$Main$WsConnectingScreen}),
-						$author$project$Main$initWebSocketClient($author$project$Main$wsUrl));
-				} else {
-					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+							$author$project$Main$initWebSocketClient($author$project$Main$wsUrl));
+					default:
+						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'WsSyncTick':
-				var _v56 = model.wsClientId;
-				if (_v56.$ === 'Just') {
-					var wsId = _v56.a;
+				var _v54 = model.wsClientId;
+				if (_v54.$ === 'Just') {
+					var wsId = _v54.a;
 					return _Utils_Tuple2(
 						model,
 						$author$project$Main$sendToWs(
@@ -8882,16 +8844,16 @@ var $author$project$Main$updateImpl = F2(
 			case 'NoOp':
 				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			default:
-				var _v57 = model.screen;
-				if (_v57.$ === 'FakeFlashCaughtScreen') {
-					var state = _v57.a;
-					var _v58 = state.phase;
-					switch (_v58.$) {
+				var _v55 = model.screen;
+				if (_v55.$ === 'FakeFlashCaughtScreen') {
+					var state = _v55.a;
+					var _v56 = state.phase;
+					switch (_v56.$) {
 						case 'FfTickNumerator':
 							if (state.displayNumerator > 0) {
-								var _v59 = $author$project$Main$pickDing(model);
-								var maybeDingId = _v59.a;
-								var modelAfterDing = _v59.b;
+								var _v57 = $author$project$Main$pickDing(model);
+								var maybeDingId = _v57.a;
+								var modelAfterDing = _v57.b;
 								return _Utils_Tuple2(
 									A3(
 										$author$project$Main$schedule,
@@ -8933,9 +8895,9 @@ var $author$project$Main$updateImpl = F2(
 						case 'FfTickDenominator':
 							var target = state.originalTotal * 2;
 							if (_Utils_cmp(state.displayDenominator, target) < 0) {
-								var _v61 = $author$project$Main$pickDing(model);
-								var maybeDingId = _v61.a;
-								var modelAfterDing = _v61.b;
+								var _v59 = $author$project$Main$pickDing(model);
+								var maybeDingId = _v59.a;
+								var modelAfterDing = _v59.b;
 								return _Utils_Tuple2(
 									A3(
 										$author$project$Main$schedule,
