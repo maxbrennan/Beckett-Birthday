@@ -5327,6 +5327,9 @@ var $author$project$Main$WsDataReceived = function (a) {
 var $author$project$Main$WsDisconnected = function (a) {
 	return {$: 'WsDisconnected', a: a};
 };
+var $author$project$Main$WsPong = function (a) {
+	return {$: 'WsPong', a: a};
+};
 var $author$project$Main$WsSyncTick = {$: 'WsSyncTick'};
 var $elm$core$Platform$Sub$batch = _Platform_batch;
 var $author$project$Main$debug = false;
@@ -6137,6 +6140,8 @@ var $author$project$Main$spaceBarDecoder = A2(
 var $author$project$Main$trackEnded = _Platform_incomingPort('trackEnded', $elm$json$Json$Decode$string);
 var $author$project$Main$wsClientFailed = _Platform_incomingPort('wsClientFailed', $elm$json$Json$Decode$string);
 var $author$project$Main$wsClientReady = _Platform_incomingPort('wsClientReady', $elm$json$Json$Decode$string);
+var $elm$json$Json$Decode$int = _Json_decodeInt;
+var $author$project$Main$wsPong = _Platform_incomingPort('wsPong', $elm$json$Json$Decode$int);
 var $author$project$Main$subscriptions = function (model) {
 	var keyboardSub = function () {
 		var _v1 = model.screen;
@@ -6158,6 +6163,7 @@ var $author$project$Main$subscriptions = function (model) {
 				$author$project$Main$wsClientReady($author$project$Main$WsClientReady),
 				$author$project$Main$receiveFromWs($author$project$Main$WsDataReceived),
 				$author$project$Main$wsClientFailed($author$project$Main$WsDisconnected),
+				$author$project$Main$wsPong($author$project$Main$WsPong),
 				A2(
 				$elm$time$Time$every,
 				1000,
@@ -6176,6 +6182,12 @@ var $author$project$Main$subscriptions = function (model) {
 var $author$project$Main$BeginScreen = {$: 'BeginScreen'};
 var $author$project$Main$BlankScreen = function (a) {
 	return {$: 'BlankScreen', a: a};
+};
+var $author$project$Main$CheckingAnswerScreen = function (a) {
+	return {$: 'CheckingAnswerScreen', a: a};
+};
+var $author$project$Main$ConfirmingAnswerScreen = function (a) {
+	return {$: 'ConfirmingAnswerScreen', a: a};
 };
 var $author$project$Main$ConnectScreen = {$: 'ConnectScreen'};
 var $author$project$Main$CountdownTick = {$: 'CountdownTick'};
@@ -6297,7 +6309,6 @@ var $author$project$Main$PendingEvent = F2(
 	function (fireAt, msg) {
 		return {fireAt: fireAt, msg: msg};
 	});
-var $elm$json$Json$Decode$int = _Json_decodeInt;
 var $author$project$Main$decodeIQTestInit = A4(
 	$elm$json$Json$Decode$map3,
 	F3(
@@ -6472,71 +6483,96 @@ var $author$project$Main$decodeIQTestState = A2(
 		A2($elm$json$Json$Decode$field, 'fakeFlashActive', $elm$json$Json$Decode$bool),
 		A2($elm$json$Json$Decode$field, 'loudPlaying', $elm$json$Json$Decode$bool),
 		A2($elm$json$Json$Decode$field, 'fakeFlashUsed', $elm$json$Json$Decode$bool)));
-var $author$project$Main$decodeScreen = A2(
-	$elm$json$Json$Decode$andThen,
-	function (tag) {
-		switch (tag) {
-			case 'WsConnectingScreen':
-				return $elm$json$Json$Decode$succeed($author$project$Main$WsConnectingScreen);
-			case 'WsErrorScreen':
-				return $elm$json$Json$Decode$succeed($author$project$Main$WsErrorScreen);
-			case 'WsLoadingScreen':
-				return $elm$json$Json$Decode$succeed($author$project$Main$WsLoadingScreen);
-			case 'ConnectScreen':
-				return $elm$json$Json$Decode$succeed($author$project$Main$ConnectScreen);
-			case 'BeginScreen':
-				return $elm$json$Json$Decode$succeed($author$project$Main$BeginScreen);
-			case 'BlankScreen':
-				return A2(
-					$elm$json$Json$Decode$map,
-					$author$project$Main$BlankScreen,
-					A2($elm$json$Json$Decode$field, 'idx', $elm$json$Json$Decode$int));
-			case 'VideoScreen':
-				return A3(
-					$elm$json$Json$Decode$map2,
-					$author$project$Main$VideoScreen,
-					A2($elm$json$Json$Decode$field, 'idx', $elm$json$Json$Decode$int),
-					A2($elm$json$Json$Decode$field, 's', $elm$json$Json$Decode$string));
-			case 'QuestionScreen':
-				return A3(
-					$elm$json$Json$Decode$map2,
-					$author$project$Main$QuestionScreen,
-					A2($elm$json$Json$Decode$field, 'idx', $elm$json$Json$Decode$int),
-					A2($elm$json$Json$Decode$field, 's', $elm$json$Json$Decode$string));
-			case 'WrongAnswerScreen':
-				return A2(
-					$elm$json$Json$Decode$map,
-					$author$project$Main$WrongAnswerScreen,
-					A2($elm$json$Json$Decode$field, 'idx', $elm$json$Json$Decode$int));
-			case 'IQTestScreen':
-				return A2(
-					$elm$json$Json$Decode$map,
-					$author$project$Main$IQTestScreen,
-					A2($elm$json$Json$Decode$field, 'state', $author$project$Main$decodeIQTestScreenState));
-			case 'IQTestCountdownScreen':
-				return A2(
-					$elm$json$Json$Decode$map,
-					$author$project$Main$IQTestCountdownScreen,
-					A2($elm$json$Json$Decode$field, 'state', $author$project$Main$decodeIQTestCountdownState));
-			case 'IQTestActiveScreen':
-				return A2(
-					$elm$json$Json$Decode$map,
-					$author$project$Main$IQTestActiveScreen,
-					A2($elm$json$Json$Decode$field, 'state', $author$project$Main$decodeIQTestState));
-			case 'FakeFlashCaughtScreen':
-				return A2(
-					$elm$json$Json$Decode$map,
-					$author$project$Main$FakeFlashCaughtScreen,
-					A2($elm$json$Json$Decode$field, 'state', $author$project$Main$decodeFakeFlashCaughtState));
-			case 'WinScreen':
-				return $elm$json$Json$Decode$succeed($author$project$Main$WinScreen);
-			case 'TimedOutScreen':
-				return $elm$json$Json$Decode$succeed($author$project$Main$TimedOutScreen);
-			default:
-				return $elm$json$Json$Decode$fail('Unknown screen: ' + tag);
-		}
-	},
-	A2($elm$json$Json$Decode$field, 'tag', $elm$json$Json$Decode$string));
+function $author$project$Main$cyclic$decodeScreen() {
+	return A2(
+		$elm$json$Json$Decode$andThen,
+		function (tag) {
+			switch (tag) {
+				case 'WsConnectingScreen':
+					return $elm$json$Json$Decode$succeed($author$project$Main$WsConnectingScreen);
+				case 'WsErrorScreen':
+					return $elm$json$Json$Decode$succeed($author$project$Main$WsErrorScreen);
+				case 'WsLoadingScreen':
+					return $elm$json$Json$Decode$succeed($author$project$Main$WsLoadingScreen);
+				case 'ConnectScreen':
+					return $elm$json$Json$Decode$succeed($author$project$Main$ConnectScreen);
+				case 'BeginScreen':
+					return $elm$json$Json$Decode$succeed($author$project$Main$BeginScreen);
+				case 'BlankScreen':
+					return A2(
+						$elm$json$Json$Decode$map,
+						$author$project$Main$BlankScreen,
+						A2($elm$json$Json$Decode$field, 'idx', $elm$json$Json$Decode$int));
+				case 'VideoScreen':
+					return A3(
+						$elm$json$Json$Decode$map2,
+						$author$project$Main$VideoScreen,
+						A2($elm$json$Json$Decode$field, 'idx', $elm$json$Json$Decode$int),
+						A2($elm$json$Json$Decode$field, 's', $elm$json$Json$Decode$string));
+				case 'QuestionScreen':
+					return A3(
+						$elm$json$Json$Decode$map2,
+						$author$project$Main$QuestionScreen,
+						A2($elm$json$Json$Decode$field, 'idx', $elm$json$Json$Decode$int),
+						A2($elm$json$Json$Decode$field, 's', $elm$json$Json$Decode$string));
+				case 'WrongAnswerScreen':
+					return A2(
+						$elm$json$Json$Decode$map,
+						$author$project$Main$WrongAnswerScreen,
+						A2($elm$json$Json$Decode$field, 'idx', $elm$json$Json$Decode$int));
+				case 'IQTestScreen':
+					return A2(
+						$elm$json$Json$Decode$map,
+						$author$project$Main$IQTestScreen,
+						A2($elm$json$Json$Decode$field, 'state', $author$project$Main$decodeIQTestScreenState));
+				case 'IQTestCountdownScreen':
+					return A2(
+						$elm$json$Json$Decode$map,
+						$author$project$Main$IQTestCountdownScreen,
+						A2($elm$json$Json$Decode$field, 'state', $author$project$Main$decodeIQTestCountdownState));
+				case 'IQTestActiveScreen':
+					return A2(
+						$elm$json$Json$Decode$map,
+						$author$project$Main$IQTestActiveScreen,
+						A2($elm$json$Json$Decode$field, 'state', $author$project$Main$decodeIQTestState));
+				case 'FakeFlashCaughtScreen':
+					return A2(
+						$elm$json$Json$Decode$map,
+						$author$project$Main$FakeFlashCaughtScreen,
+						A2($elm$json$Json$Decode$field, 'state', $author$project$Main$decodeFakeFlashCaughtState));
+				case 'WinScreen':
+					return $elm$json$Json$Decode$succeed($author$project$Main$WinScreen);
+				case 'TimedOutScreen':
+					return $elm$json$Json$Decode$succeed($author$project$Main$TimedOutScreen);
+				case 'CheckingAnswerScreen':
+					return A2(
+						$elm$json$Json$Decode$map,
+						$author$project$Main$CheckingAnswerScreen,
+						A2(
+							$elm$json$Json$Decode$field,
+							'nextScreen',
+							$author$project$Main$cyclic$decodeScreen()));
+				case 'ConfirmingAnswerScreen':
+					return A2(
+						$elm$json$Json$Decode$map,
+						$author$project$Main$ConfirmingAnswerScreen,
+						A2(
+							$elm$json$Json$Decode$field,
+							'nextScreen',
+							$author$project$Main$cyclic$decodeScreen()));
+				default:
+					return $elm$json$Json$Decode$fail('Unknown screen: ' + tag);
+			}
+		},
+		A2($elm$json$Json$Decode$field, 'tag', $elm$json$Json$Decode$string));
+}
+try {
+	var $author$project$Main$decodeScreen = $author$project$Main$cyclic$decodeScreen();
+	$author$project$Main$cyclic$decodeScreen = function () {
+		return $author$project$Main$decodeScreen;
+	};
+} catch ($) {
+	throw 'Some top-level definitions from `Main` are causing infinite recursion:\n\n  ┌─────┐\n  │    decodeScreen\n  └─────┘\n\nThese errors are very tricky, so read https://elm-lang.org/0.19.1/bad-recursion to learn how to fix it!';}
 var $elm$json$Json$Decode$null = _Json_decodeNull;
 var $elm$json$Json$Decode$oneOf = _Json_oneOf;
 var $elm$json$Json$Decode$nullable = function (decoder) {
@@ -7244,13 +7280,37 @@ var $author$project$Main$encodeScreen = function (scr) {
 						'tag',
 						$elm$json$Json$Encode$string('WinScreen'))
 					]));
-		default:
+		case 'TimedOutScreen':
 			return $elm$json$Json$Encode$object(
 				_List_fromArray(
 					[
 						_Utils_Tuple2(
 						'tag',
 						$elm$json$Json$Encode$string('TimedOutScreen'))
+					]));
+		case 'CheckingAnswerScreen':
+			var nextScreen = scr.a;
+			return $elm$json$Json$Encode$object(
+				_List_fromArray(
+					[
+						_Utils_Tuple2(
+						'tag',
+						$elm$json$Json$Encode$string('CheckingAnswerScreen')),
+						_Utils_Tuple2(
+						'nextScreen',
+						$author$project$Main$encodeScreen(nextScreen))
+					]));
+		default:
+			var nextScreen = scr.a;
+			return $elm$json$Json$Encode$object(
+				_List_fromArray(
+					[
+						_Utils_Tuple2(
+						'tag',
+						$elm$json$Json$Encode$string('ConfirmingAnswerScreen')),
+						_Utils_Tuple2(
+						'nextScreen',
+						$author$project$Main$encodeScreen(nextScreen))
 					]));
 	}
 };
@@ -7778,9 +7838,9 @@ var $author$project$Main$update = F2(
 					return true;
 			}
 		}();
-		var _v61 = A2($author$project$Main$updateImpl, msg, model);
-		var newModel = _v61.a;
-		var cmd = _v61.b;
+		var _v64 = A2($author$project$Main$updateImpl, msg, model);
+		var newModel = _v64.a;
+		var cmd = _v64.b;
 		return shouldLog ? _Utils_Tuple2(newModel, cmd) : _Utils_Tuple2(newModel, cmd);
 	});
 var $author$project$Main$updateImpl = F2(
@@ -7855,6 +7915,10 @@ var $author$project$Main$updateImpl = F2(
 					case 'WsLoadingScreen':
 						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 					case 'TimedOutScreen':
+						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+					case 'CheckingAnswerScreen':
+						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+					case 'ConfirmingAnswerScreen':
 						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 					default:
 						var connected = $author$project$Main$parseDevices(json);
@@ -8227,7 +8291,8 @@ var $author$project$Main$updateImpl = F2(
 											_Utils_update(
 												model,
 												{
-													screen: $author$project$Main$BlankScreen(nextIdx)
+													screen: $author$project$Main$CheckingAnswerScreen(
+														$author$project$Main$BlankScreen(nextIdx))
 												}))),
 									$elm$core$Platform$Cmd$none);
 							} else {
@@ -8235,7 +8300,9 @@ var $author$project$Main$updateImpl = F2(
 									$author$project$Main$clearPending(
 										_Utils_update(
 											model,
-											{screen: $author$project$Main$WinScreen})),
+											{
+												screen: $author$project$Main$CheckingAnswerScreen($author$project$Main$WinScreen)
+											})),
 									$elm$core$Platform$Cmd$none);
 							}
 						} else {
@@ -8243,7 +8310,8 @@ var $author$project$Main$updateImpl = F2(
 								_Utils_update(
 									model,
 									{
-										screen: $author$project$Main$WrongAnswerScreen(idx)
+										screen: $author$project$Main$CheckingAnswerScreen(
+											$author$project$Main$WrongAnswerScreen(idx))
 									}),
 								$elm$core$Platform$Cmd$none);
 						}
@@ -8828,32 +8896,68 @@ var $author$project$Main$updateImpl = F2(
 				var _v54 = model.wsClientId;
 				if (_v54.$ === 'Just') {
 					var wsId = _v54.a;
+					var newModel = function () {
+						var _v55 = model.screen;
+						if (_v55.$ === 'CheckingAnswerScreen') {
+							var nextScreen = _v55.a;
+							return _Utils_update(
+								model,
+								{
+									screen: $author$project$Main$ConfirmingAnswerScreen(nextScreen)
+								});
+						} else {
+							return model;
+						}
+					}();
 					return _Utils_Tuple2(
-						model,
+						newModel,
 						$author$project$Main$sendToWs(
 							{
 								data: A2(
 									$elm$json$Json$Encode$encode,
 									0,
-									$author$project$Main$encodeModel(model)),
+									$author$project$Main$encodeModel(newModel)),
 								wsId: wsId
 							}));
+				} else {
+					var newModel = function () {
+						var _v56 = model.screen;
+						if (_v56.$ === 'CheckingAnswerScreen') {
+							var nextScreen = _v56.a;
+							return _Utils_update(
+								model,
+								{screen: nextScreen});
+						} else {
+							return model;
+						}
+					}();
+					return _Utils_Tuple2(newModel, $elm$core$Platform$Cmd$none);
+				}
+			case 'WsPong':
+				var _v57 = model.screen;
+				if (_v57.$ === 'ConfirmingAnswerScreen') {
+					var nextScreen = _v57.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{screen: nextScreen}),
+						$elm$core$Platform$Cmd$none);
 				} else {
 					return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 				}
 			case 'NoOp':
 				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			default:
-				var _v55 = model.screen;
-				if (_v55.$ === 'FakeFlashCaughtScreen') {
-					var state = _v55.a;
-					var _v56 = state.phase;
-					switch (_v56.$) {
+				var _v58 = model.screen;
+				if (_v58.$ === 'FakeFlashCaughtScreen') {
+					var state = _v58.a;
+					var _v59 = state.phase;
+					switch (_v59.$) {
 						case 'FfTickNumerator':
 							if (state.displayNumerator > 0) {
-								var _v57 = $author$project$Main$pickDing(model);
-								var maybeDingId = _v57.a;
-								var modelAfterDing = _v57.b;
+								var _v60 = $author$project$Main$pickDing(model);
+								var maybeDingId = _v60.a;
+								var modelAfterDing = _v60.b;
 								return _Utils_Tuple2(
 									A3(
 										$author$project$Main$schedule,
@@ -8895,9 +8999,9 @@ var $author$project$Main$updateImpl = F2(
 						case 'FfTickDenominator':
 							var target = state.originalTotal * 2;
 							if (_Utils_cmp(state.displayDenominator, target) < 0) {
-								var _v59 = $author$project$Main$pickDing(model);
-								var maybeDingId = _v59.a;
-								var modelAfterDing = _v59.b;
+								var _v62 = $author$project$Main$pickDing(model);
+								var maybeDingId = _v62.a;
+								var modelAfterDing = _v62.b;
 								return _Utils_Tuple2(
 									A3(
 										$author$project$Main$schedule,
@@ -9734,7 +9838,7 @@ var $author$project$Main$viewScreen = function (model) {
 								$elm$html$Html$text('Text \"creeper... awwww man\" to Max to claim your reward!')
 							]))
 					]));
-		default:
+		case 'TimedOutScreen':
 			return $author$project$Main$screen(
 				_List_fromArray(
 					[
@@ -9751,6 +9855,42 @@ var $author$project$Main$viewScreen = function (model) {
 						_List_fromArray(
 							[
 								$elm$html$Html$text('You ran out of time.')
+							]))
+					]));
+		case 'CheckingAnswerScreen':
+			return $author$project$Main$screen(
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '32px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Checking...')
+							]))
+					]));
+		default:
+			return $author$project$Main$screen(
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								A2($elm$html$Html$Attributes$style, 'font-size', '32px'),
+								A2($elm$html$Html$Attributes$style, 'color', '#2c4a5a'),
+								A2($elm$html$Html$Attributes$style, 'text-align', 'center'),
+								A2($elm$html$Html$Attributes$style, 'margin', '0')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Checking...')
 							]))
 					]));
 	}

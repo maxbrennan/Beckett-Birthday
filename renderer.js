@@ -161,6 +161,7 @@ app.ports.initWebSocketClient.subscribe((url) => {
 
   ws.on('pong', () => {
     isAlive = true
+    app.ports.wsPong.send(0)
   })
 
   ws.on('message', (data) => {

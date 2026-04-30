@@ -47,6 +47,8 @@ port receiveFromWs : (String -> msg) -> Sub msg
 
 port wsClientFailed : (String -> msg) -> Sub msg
 
+port wsPong : (Int -> msg) -> Sub msg
+
 
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
 debug : Bool
@@ -316,6 +318,8 @@ type Screen
     | FakeFlashCaughtScreen FakeFlashCaughtState
     | WinScreen
     | TimedOutScreen
+    | CheckingAnswerScreen Screen
+    | ConfirmingAnswerScreen Screen
 
 
 -- A message scheduled to fire at an absolute timestamp (ms since Unix epoch).
@@ -375,6 +379,7 @@ type Msg
     | WsSyncTick
     | WsDisconnected String
     | WsReconnect
+    | WsPong Int
     | NoOp
 
 
@@ -578,6 +583,12 @@ updateImpl msg model =
                     ( model, Cmd.none )
 
                 TimedOutScreen ->
+                    ( model, Cmd.none )
+
+                CheckingAnswerScreen _ ->
+                    ( model, Cmd.none )
+
+                ConfirmingAnswerScreen _ ->
                     ( model, Cmd.none )
 
                 _ ->
@@ -887,17 +898,17 @@ updateImpl msg model =
                                 in
                                 case getQuestion nextIdx of
                                     Just _ ->
-                                        ( { model | screen = BlankScreen nextIdx }
+                                        ( { model | screen = CheckingAnswerScreen (BlankScreen nextIdx) }
                                             |> clearPending
                                             |> schedule 1000 (PlaySong nextIdx)
                                         , Cmd.none
                                         )
 
                                     Nothing ->
-                                        ( clearPending { model | screen = WinScreen }, Cmd.none )
+                                        ( clearPending { model | screen = CheckingAnswerScreen WinScreen }, Cmd.none )
 
                             else
-                                ( { model | screen = WrongAnswerScreen idx }, Cmd.none )
+                                ( { model | screen = CheckingAnswerScreen (WrongAnswerScreen idx) }, Cmd.none )
 
                         Nothing ->
                             ( model, Cmd.none )
@@ -1374,9 +1385,35 @@ updateImpl msg model =
         WsSyncTick ->
             case model.wsClientId of
                 Just wsId ->
-                    ( model, sendToWs { wsId = wsId, data = Encode.encode 0 (encodeModel model) } )
+                    let
+                        newModel =
+                            case model.screen of
+                                CheckingAnswerScreen nextScreen ->
+                                    { model | screen = ConfirmingAnswerScreen nextScreen }
+
+                                _ ->
+                                    model
+                    in
+                    ( newModel, sendToWs { wsId = wsId, data = Encode.encode 0 (encodeModel newModel) } )
 
                 Nothing ->
+                    let
+                        newModel =
+                            case model.screen of
+                                CheckingAnswerScreen nextScreen ->
+                                    { model | screen = nextScreen }
+
+                                _ ->
+                                    model
+                    in
+                    ( newModel, Cmd.none )
+
+        WsPong _ ->
+            case model.screen of
+                ConfirmingAnswerScreen nextScreen ->
+                    ( { model | screen = nextScreen }, Cmd.none )
+
+                _ ->
                     ( model, Cmd.none )
 
         NoOp ->
@@ -1639,6 +1676,12 @@ encodeScreen scr =
         TimedOutScreen ->
             Encode.object [ ( "tag", Encode.string "TimedOutScreen" ) ]
 
+        CheckingAnswerScreen nextScreen ->
+            Encode.object [ ( "tag", Encode.string "CheckingAnswerScreen" ), ( "nextScreen", encodeScreen nextScreen ) ]
+
+        ConfirmingAnswerScreen nextScreen ->
+            Encode.object [ ( "tag", Encode.string "ConfirmingAnswerScreen" ), ( "nextScreen", encodeScreen nextScreen ) ]
+
 
 encodeMsg : Msg -> Encode.Value
 encodeMsg msg =
@@ -1894,6 +1937,12 @@ decodeScreen =
 
                     "TimedOutScreen" ->
                         Decode.succeed TimedOutScreen
+
+                    "CheckingAnswerScreen" ->
+                        Decode.map CheckingAnswerScreen (Decode.field "nextScreen" decodeScreen)
+
+                    "ConfirmingAnswerScreen" ->
+                        Decode.map ConfirmingAnswerScreen (Decode.field "nextScreen" decodeScreen)
 
                     _ ->
                         Decode.fail ("Unknown screen: " ++ tag)
@@ -2581,6 +2630,28 @@ viewScreen model =
                     [ text "You ran out of time." ]
                 ]
 
+        CheckingAnswerScreen _ ->
+            screen
+                [ p
+                    [ style "font-size" "32px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    ]
+                    [ text "Checking..." ]
+                ]
+
+        ConfirmingAnswerScreen _ ->
+            screen
+                [ p
+                    [ style "font-size" "32px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    ]
+                    [ text "Checking..." ]
+                ]
+
 
 pKeyDecoder : Decoder Msg
 pKeyDecoder =
@@ -2638,6 +2709,7 @@ subscriptions model =
         , wsClientReady WsClientReady
         , receiveFromWs WsDataReceived
         , wsClientFailed WsDisconnected
+        , wsPong WsPong
         , Time.every 1000 (\_ -> WsSyncTick)
         , keyboardSub
         , debugToggleSub

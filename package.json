@@ -1,12 +1,13 @@
 {
   "name": "beckett-birthday",
+  "productName": "Beckett Birthday",
   "version": "1.0.0",
   "main": "electron.js",
   "scripts": {
-    "build:c": "cc src/list_audio_devices.c -framework CoreAudio -framework Foundation -o src/list_audio_devices",
+    "build:c": "cc src/list_audio_devices.c -framework CoreAudio -framework Foundation -arch x86_64 -arch arm64 -o src/list_audio_devices",
     "build:elm": "elm make src/Main.elm --output=elm.js",
     "build": "npm run build:c && npm run build:elm",
-    "start": "npm run build && electron --trace-warnings .",
+    "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder",
     "reset": "node reset.js"
   },
@@ -19,14 +20,26 @@
       "index.html",
       "assets/**/*"
     ],
+    "asarUnpack": [
+      "src/list_audio_devices"
+    ],
     "mac": {
-      "target": "dmg"
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ]
     }
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
-    "electron": "^34.5.8",
-    "electron-builder": "^26.8.1",
-    "ws": "^8.20.0"
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1"
   }
 }
