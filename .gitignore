@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Elm
+elm-stuff/
+elm.js
+
+# Node
+node_modules/
+
+# Build output
+dist/
+
+# Compiled binary (built from source)
+src/list_audio_devices
+
+# Runtime logs
+debug.log

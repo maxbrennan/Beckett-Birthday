@@ -59,7 +59,7 @@ debug =
 
 loggingEnabled : Bool
 loggingEnabled =
-    True
+    False
 
 
 -- Total correct ding presses required to pass the IQ test.
@@ -484,7 +484,7 @@ iqFail model state =
                     { questionIdx = state.questionIdx
                     , totalDings = state.totalDings
                     , fakeFlashUsed = False
-                    , in50PercentPhase = False
+                    , in50PercentPhase = state.in50PercentPhase
                     }
         }
     , Cmd.none
@@ -1172,7 +1172,7 @@ updateImpl msg model =
                                 state.questionIdx + 1
                         in
                         if completed then
-                            ( clearPending { model | screen = BlankScreen nextIdx }
+                            ( clearPending { model | screen = BlankScreen nextIdx, hasSeenFakeFlashPunishment = False }
                                 |> schedule 1000 (PlaySong nextIdx)
                             , Cmd.none
                             )

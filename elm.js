@@ -7584,7 +7584,7 @@ var $author$project$Main$iqFail = F2(
 					model,
 					{
 						screen: $author$project$Main$IQTestScreen(
-							{fakeFlashUsed: false, in50PercentPhase: false, questionIdx: state.questionIdx, totalDings: state.totalDings})
+							{fakeFlashUsed: false, in50PercentPhase: state.in50PercentPhase, questionIdx: state.questionIdx, totalDings: state.totalDings})
 					})),
 			$elm$core$Platform$Cmd$none);
 	});
@@ -7683,7 +7683,7 @@ var $author$project$Main$isVideo = function (filename) {
 };
 var $elm$core$Debug$log = _Debug_log;
 var $author$project$Main$logToFile = _Platform_outgoingPort('logToFile', $elm$json$Json$Encode$string);
-var $author$project$Main$loggingEnabled = true;
+var $author$project$Main$loggingEnabled = false;
 var $elm$core$String$filter = _String_filter;
 var $elm$core$String$toLower = _String_toLower;
 var $elm$core$String$words = _String_words;
@@ -8616,6 +8616,7 @@ var $author$project$Main$updateImpl = F2(
 											_Utils_update(
 												model,
 												{
+													hasSeenFakeFlashPunishment: false,
 													screen: $author$project$Main$BlankScreen(nextIdx)
 												}))),
 									$elm$core$Platform$Cmd$none);
