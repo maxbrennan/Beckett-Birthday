@@ -24,6 +24,7 @@
       "src/list_audio_devices"
     ],
     "mac": {
+      "icon": "assets/icon.icns",
       "target": [
         {
           "target": "dmg",

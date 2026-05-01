@@ -4,7 +4,16 @@ const path = require('path')
 const Ws = require('ws')
 
 const binary = path.join(__dirname, 'src', 'list_audio_devices')
+const logPath = path.join(__dirname, 'debug.log')
 const app = Elm.Main.init({ node: document.getElementById('app') })
+
+app.ports.logToFile.subscribe((entry) => {
+  appendFileSync(logPath, entry + '\n', 'utf8')
+})
+
+const silenceLoop = new Audio('assets/silence.mp3')
+silenceLoop.loop = true
+silenceLoop.play()
 
 // id -> { element: Audio, filename: String }
 const audioMap = new Map()

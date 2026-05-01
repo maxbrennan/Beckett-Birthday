@@ -32,6 +32,8 @@ port musicError : (String -> msg) -> Sub msg
 
 port seekVideo : Float -> Cmd msg
 
+port logToFile : String -> Cmd msg
+
 wsUrl : String
 wsUrl =
     "ws://72.211.182.145:5270"
@@ -54,6 +56,10 @@ port wsPong : (Int -> msg) -> Sub msg
 debug : Bool
 debug =
     False
+
+loggingEnabled : Bool
+loggingEnabled =
+    True
 
 
 -- Total correct ding presses required to pass the IQ test.
@@ -120,7 +126,7 @@ iqFlashDuration =
 -- Duration (ms) of the window in which a space-bar press counts as a ding response.
 iqWindowDuration : Float
 iqWindowDuration =
-    1000
+    2000
 
 
 -- Volume (0–1) for the ding sound effect.
@@ -136,7 +142,7 @@ counterTickMs =
 
 
 -- Total time allowed to complete the quiz.
--- Debug: 1 minute  |  Production: 7 days
+-- Debug: 10 minutes  |  Production: 7 days
 timeLimitMs : Float
 timeLimitMs =
     if debug then
@@ -338,6 +344,8 @@ type alias Model =
     , now : Float
     , pending : List PendingEvent
     , ignoreDisconnect : Bool
+    , disconnectCount : Int
+    , hasSeenFakeFlashPunishment : Bool
     , activeSongId : Maybe String
     , savedState : Maybe PausedState
     , dingIds : List String
@@ -393,6 +401,8 @@ init _ =
       , now = 0
       , pending = []
       , ignoreDisconnect = False
+      , disconnectCount = 0
+      , hasSeenFakeFlashPunishment = False
       , activeSongId = Nothing
       , savedState = Nothing
       , dingIds = []
@@ -516,15 +526,22 @@ update msg model =
                 WsReconnect ->
                     False
 
+                WsPong _ ->
+                    False
+
                 NoOp ->
                     False
 
                 _ ->
                     True
 
+        entry =
+            "=== " ++ Debug.toString msg ++ " ===\n"
+                ++ "BEFORE: " ++ Debug.toString model ++ "\n"
+                ++ "AFTER:  " ++ Debug.toString newModel ++ "\n"
     in
-    if shouldLog then
-        ( newModel, cmd )
+    if shouldLog && loggingEnabled then
+        ( newModel, Cmd.batch [ cmd, logToFile entry ] )
 
     else
         ( newModel, cmd )
@@ -599,7 +616,7 @@ updateImpl msg model =
                     if connected || model.ignoreDisconnect then
                         case model.savedState of
                             Just _ ->
-                                ( { model | connected = True, screen = BeginScreen }, Cmd.none )
+                                ( { model | connected = True, disconnectCount = 0, screen = BeginScreen }, Cmd.none )
 
                             Nothing ->
                                 let
@@ -615,9 +632,12 @@ updateImpl msg model =
                                         not model.jeopardyPlaying
                                             && (newScreen == ConnectScreen || newScreen == BeginScreen)
                                 in
-                                ( { model | connected = True, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
+                                ( { model | connected = True, disconnectCount = 0, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
                                 , if shouldStart then loadMusic "jeopardy-theme.mp3" else Cmd.none
                                 )
+
+                    else if model.disconnectCount + 1 < 10 then
+                        ( { model | disconnectCount = model.disconnectCount + 1 }, Cmd.none )
 
                     else
                         let
@@ -691,6 +711,7 @@ updateImpl msg model =
                         ( clearPending
                             { model
                                 | connected = False
+                                , disconnectCount = 0
                                 , screen = ConnectScreen
                                 , jeopardyPlaying = model.jeopardyPlaying || needsJeopardy
                                 , savedState = newSavedState
@@ -795,8 +816,23 @@ updateImpl msg model =
                     )
 
         PlaySong idx ->
-            case model.screen of
-                BlankScreen blankIdx ->
+            let
+                innerBlankIdx s =
+                    case s of
+                        BlankScreen i ->
+                            Just i
+
+                        CheckingAnswerScreen inner ->
+                            innerBlankIdx inner
+
+                        ConfirmingAnswerScreen inner ->
+                            innerBlankIdx inner
+
+                        _ ->
+                            Nothing
+            in
+            case innerBlankIdx model.screen of
+                Just blankIdx ->
                     if blankIdx == idx then
                         case getQuestion idx of
                             Just q ->
@@ -812,7 +848,7 @@ updateImpl msg model =
                     else
                         ( model, Cmd.none )
 
-                _ ->
+                Nothing ->
                     ( model, Cmd.none )
 
         TrackEnded name ->
@@ -1091,10 +1127,11 @@ updateImpl msg model =
             case model.screen of
                 IQTestActiveScreen state ->
                     if state.fakeFlashActive then
-                        if not state.fakeFlashUsed then
+                        if not model.hasSeenFakeFlashPunishment then
                             ( clearPending
                                 { model
-                                    | screen =
+                                    | hasSeenFakeFlashPunishment = True
+                                    , screen =
                                         FakeFlashCaughtScreen
                                             { questionIdx = state.questionIdx
                                             , originalTotal = state.totalDings
@@ -1340,6 +1377,7 @@ updateImpl msg model =
                                     , activeSongId = Nothing
                                     , jeopardyId = Nothing
                                     , pendingStartTime = songResumeTime
+                                    , hasSeenFakeFlashPunishment = model.hasSeenFakeFlashPunishment
                                   }
                                 , Cmd.batch [ songCmd, jeopardyCmd, videoCmd ]
                                 )
@@ -1348,12 +1386,7 @@ updateImpl msg model =
                                 ( model, Cmd.none )
 
                 _ ->
-                    case Decode.decodeString decodeModel json of
-                        Ok newModel ->
-                            ( { newModel | wsClientId = model.wsClientId, dingIds = model.dingIds }, Cmd.none )
-
-                        Err _ ->
-                            ( model, Cmd.none )
+                    ( model, Cmd.none )
 
         WsDisconnected _ ->
             let
@@ -2042,6 +2075,8 @@ decodeModel =
                 , now = n
                 , pending = pend
                 , ignoreDisconnect = ign
+                , disconnectCount = 0
+                , hasSeenFakeFlashPunishment = False
                 , activeSongId = asi
                 , savedState = ss
                 , dingIds = di
