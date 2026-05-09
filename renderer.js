@@ -56,7 +56,6 @@ app.ports.loadMusic.subscribe(async (filename) => {
   audio.preload = 'auto'
 
   audioMap.set(id, { element: audio, filename })
-  // TODO send back result or error via a single port
   app.ports.musicLoaded.send({ id, filename })
 })
 
@@ -83,9 +82,8 @@ app.ports.playMusic.subscribe(({ id, volume, startTime }) => {
   }
 })
 
-// TODO handle add elementId to elm
-app.ports.setVideoTimestamp.subscribe(({ elemendId, time }) => {
-  const videoEl = document.getElementById(elemendId)
+app.ports.setVideoTimestamp.subscribe(({ elementId, time }) => {
+  const videoEl = document.getElementById(elementId)
   if (!videoEl) {
     // TODO send error to elm
     console.log('seekVideo: element never found')

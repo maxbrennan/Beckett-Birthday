@@ -147,11 +147,6 @@ timeLimitMs =
     else
         7 * 24 * 60 * 60 * 1000
 
--- If true, the app will ignore disconnects of the audio output device. This overrides pressing P in debug mode
-ignoreAudioDisconnects : Bool
-ignoreAudioDisconnects =
-    True
-
 
 type alias Question =
     { song : String
@@ -201,30 +196,6 @@ capitalize s =
 isVideo : String -> Bool
 isVideo filename =
     String.endsWith ".mp4" filename
-
-
-isMatchDecoder : Decoder Bool
-isMatchDecoder =
-    Decode.map4
-        (\m t a r -> m == "Apple Inc." && t == "Bluetooth" && a && r)
-        (Decode.field "manufacturer" Decode.string)
-        (Decode.field "transport" Decode.string)
-        (Decode.field "is_alive" Decode.bool)
-        (Decode.field "is_running" Decode.bool)
-
-
-parseDevices : String -> Bool
-parseDevices json =
-    let
-        decoder =
-            Decode.list (Decode.oneOf [ isMatchDecoder, Decode.succeed False ])
-    in
-    case Decode.decodeString decoder json of
-        Ok results ->
-            List.length (List.filter identity results) == 1
-
-        Err _ ->
-            False
 
 
 type alias TrackInfo =
@@ -313,7 +284,6 @@ type Screen
     = WsConnectingScreen
     | WsErrorScreen
     | WsLoadingScreen
-    | ConnectScreen
     | BeginScreen
     | BlankScreen Int
     | VideoScreen Int String
@@ -337,15 +307,12 @@ type alias PendingEvent =
 
 
 type alias Model =
-    { connected : Bool
-    , screen : Screen
+    { screen : Screen
     , trackInfo : List TrackInfo
-    , jeopardyPlaying : Bool
+    , jeopardyPlaying : Bool -- TODO double check if necessary
     , jeopardyId : Maybe String
     , now : Float
     , pending : List PendingEvent
-    , ignoreDisconnect : Bool
-    , disconnectCount : Int
     , hasSeenFakeFlashPunishment : Bool
     , activeSongId : Maybe String
     , savedState : Maybe PausedState
@@ -359,7 +326,6 @@ type alias Model =
 
 type Msg
     = Tick Float
-    | DevicesReceived String
     | BeginPressed
     | PlaySong Int
     | TrackEnded String
@@ -381,7 +347,6 @@ type Msg
     | FakeFlashNextPhase
     | FakeFlashCounterTick
     | FakeFlashWindowExpired
-    | ToggleIgnoreDisconnect
     | MusicLoaded { id : String, filename : String }
     | WsClientReady String
     | WsDataReceived String
@@ -394,15 +359,12 @@ type Msg
 
 init : () -> ( Model, Cmd Msg )
 init _ =
-    ( { connected = False
-      , screen = WsConnectingScreen
+    ( { screen = WsConnectingScreen
       , trackInfo = []
       , jeopardyPlaying = False
       , jeopardyId = Nothing
       , now = 0
       , pending = []
-      , ignoreDisconnect = False
-      , disconnectCount = 0
       , hasSeenFakeFlashPunishment = False
       , activeSongId = Nothing
       , savedState = Nothing
@@ -503,9 +465,6 @@ update msg model =
                 Tick _ ->
                     False
 
-                DevicesReceived _ ->
-                    False
-
                 TrackInfoReceived _ ->
                     False
 
@@ -592,142 +551,7 @@ updateImpl msg model =
                 else
                     ( finalModel, finalCmd )
 
-        DevicesReceived json ->
-            case model.screen of
-                WsConnectingScreen ->
-                    ( model, Cmd.none )
-
-                WsLoadingScreen ->
-                    ( model, Cmd.none )
-
-                TimedOutScreen ->
-                    ( model, Cmd.none )
-
-                CheckingAnswerScreen _ ->
-                    ( model, Cmd.none )
-
-                ConfirmingAnswerScreen _ ->
-                    ( model, Cmd.none )
-
-                _ ->
-                    let
-                        connected =
-                            parseDevices json
-                    in
-                    if connected || model.ignoreDisconnect || ignoreAudioDisconnects then
-                        case model.savedState of
-                            Just _ ->
-                                ( { model | connected = True, disconnectCount = 0, screen = BeginScreen }, Cmd.none )
-
-                            Nothing ->
-                                let
-                                    newScreen =
-                                        case model.screen of
-                                            ConnectScreen ->
-                                                BeginScreen
-
-                                            other ->
-                                                other
-
-                                    shouldStart =
-                                        not model.jeopardyPlaying
-                                            && (newScreen == ConnectScreen || newScreen == BeginScreen)
-                                in
-                                ( { model | connected = True, disconnectCount = 0, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
-                                , if shouldStart then loadMusic "assets/jeopardy-theme.mp3" else Cmd.none
-                                )
-
-                    else if model.disconnectCount + 1 < 10 then
-                        ( { model | disconnectCount = model.disconnectCount + 1 }, Cmd.none )
-
-                    else
-                        let
-                            needsJeopardy =
-                                case model.screen of
-                                    BlankScreen _ ->
-                                        True
-
-                                    QuestionScreen _ _ ->
-                                        True
-
-                                    WrongAnswerScreen _ ->
-                                        True
-
-                                    IQTestScreen _ ->
-                                        True
-
-                                    IQTestCountdownScreen _ ->
-                                        True
-
-                                    IQTestActiveScreen _ ->
-                                        True
-
-                                    FakeFlashCaughtScreen _ ->
-                                        True
-
-                                    VideoScreen _ _ ->
-                                        True
-
-                                    _ ->
-                                        False
-
-                            newSavedState =
-                                if needsJeopardy then
-                                    let
-                                        songResumeTime =
-                                            model.activeSongId
-                                                |> Maybe.andThen
-                                                    (\sid ->
-                                                        model.trackInfo
-                                                            |> List.filter (\t -> t.id == sid)
-                                                            |> List.head
-                                                    )
-                                                |> Maybe.map .currentTime
-
-                                        videoResumeTime =
-                                            model.trackInfo
-                                                |> List.filter (\t -> t.id == "video")
-                                                |> List.head
-                                                |> Maybe.map .currentTime
-                                    in
-                                    Just
-                                        { screen = model.screen
-                                        , pending = model.pending
-                                        , savedAt = model.now
-                                        , songResumeTime = songResumeTime
-                                        , videoResumeTime = videoResumeTime
-                                        }
-
-                                else
-                                    model.savedState
-
-                            stopSongCmd =
-                                case model.activeSongId of
-                                    Just sid ->
-                                        pauseMusic sid
-
-                                    Nothing ->
-                                        Cmd.none
-                        in
-                        ( clearPending
-                            { model
-                                | connected = False
-                                , disconnectCount = 0
-                                , screen = ConnectScreen
-                                , jeopardyPlaying = model.jeopardyPlaying || needsJeopardy
-                                , savedState = newSavedState
-                                , activeSongId = Nothing
-                            }
-                        , Cmd.batch
-                            [ stopSongCmd
-                            , if needsJeopardy then
-                                loadMusic "assets/jeopardy-theme.mp3"
-
-                              else
-                                Cmd.none
-                            ]
-                        )
-
+        
         BeginPressed ->
             case model.savedState of
                 Just saved ->
@@ -855,11 +679,6 @@ updateImpl msg model =
         TrackEnded name ->
             if name == "jeopardy-theme.mp3" then
                 case model.screen of
-                    ConnectScreen ->
-                        ( { model | jeopardyPlaying = True, jeopardyId = Nothing }
-                        , loadMusic "assets/jeopardy-theme.mp3"
-                        )
-
                     BeginScreen ->
                         ( { model | jeopardyPlaying = True, jeopardyId = Nothing }
                         , loadMusic "assets/jeopardy-theme.mp3"
@@ -1280,13 +1099,6 @@ updateImpl msg model =
                 _ ->
                     ( model, Cmd.none )
 
-        ToggleIgnoreDisconnect ->
-            if debug then
-                ( { model | ignoreDisconnect = not model.ignoreDisconnect }, Cmd.none )
-
-            else
-                ( model, Cmd.none )
-
         MusicLoaded info ->
             if info.filename == "jeopardy-theme.mp3" then
                 ( { model | jeopardyId = Just info.id }
@@ -1308,7 +1120,7 @@ updateImpl msg model =
             case model.screen of
                 WsLoadingScreen ->
                     if String.trim json == "{}" then
-                        ( { model | screen = ConnectScreen, jeopardyPlaying = True }
+                        ( { model | screen = BeginScreen, jeopardyPlaying = True }
                         , loadMusic "assets/jeopardy-theme.mp3"
                         )
 
@@ -1674,9 +1486,6 @@ encodeScreen scr =
         WsLoadingScreen ->
             Encode.object [ ( "tag", Encode.string "WsLoadingScreen" ) ]
 
-        ConnectScreen ->
-            Encode.object [ ( "tag", Encode.string "ConnectScreen" ) ]
-
         BeginScreen ->
             Encode.object [ ( "tag", Encode.string "BeginScreen" ) ]
 
@@ -1791,14 +1600,12 @@ encodePausedState s =
 encodeModel : Model -> Encode.Value
 encodeModel model =
     Encode.object
-        [ ( "connected", Encode.bool model.connected )
-        , ( "screen", encodeScreen model.screen )
+        [ ( "screen", encodeScreen model.screen )
         , ( "trackInfo", Encode.list encodeTrackInfo model.trackInfo )
         , ( "jeopardyPlaying", Encode.bool model.jeopardyPlaying )
         , ( "jeopardyId", encodeMaybeString model.jeopardyId )
         , ( "now", Encode.float model.now )
         , ( "pending", Encode.list encodePendingEvent model.pending )
-        , ( "ignoreDisconnect", Encode.bool model.ignoreDisconnect )
         , ( "activeSongId", encodeMaybeString model.activeSongId )
         , ( "savedState", model.savedState |> Maybe.map encodePausedState |> Maybe.withDefault Encode.null )
         , ( "dingIds", Encode.list Encode.string model.dingIds )
@@ -1932,9 +1739,6 @@ decodeScreen =
                     "WsLoadingScreen" ->
                         Decode.succeed WsLoadingScreen
 
-                    "ConnectScreen" ->
-                        Decode.succeed ConnectScreen
-
                     "BeginScreen" ->
                         Decode.succeed BeginScreen
 
@@ -2066,18 +1870,15 @@ decodePausedState =
 decodeModel : Decoder Model
 decodeModel =
     Decode.map8
-        (\conn scr ti jp ji n pend ign ->
-            \asi ss di ndi pst wci tea ->
-                { connected = conn
-                , screen = scr
+        (\scr ti jp ji n pend hsf asi ->
+            \ss di ndi pst wci tea ->
+                { screen = scr
                 , trackInfo = ti
                 , jeopardyPlaying = jp
                 , jeopardyId = ji
                 , now = n
                 , pending = pend
-                , ignoreDisconnect = ign
-                , disconnectCount = 0
-                , hasSeenFakeFlashPunishment = False
+                , hasSeenFakeFlashPunishment = hsf
                 , activeSongId = asi
                 , savedState = ss
                 , dingIds = di
@@ -2087,18 +1888,17 @@ decodeModel =
                 , timerEndsAt = tea
                 }
         )
-        (Decode.field "connected" Decode.bool)
         (Decode.field "screen" decodeScreen)
         (Decode.field "trackInfo" (Decode.list decodeTrackInfo))
         (Decode.field "jeopardyPlaying" Decode.bool)
         (Decode.field "jeopardyId" (Decode.nullable Decode.string))
         (Decode.field "now" Decode.float)
         (Decode.field "pending" (Decode.list decodePendingEvent))
-        (Decode.field "ignoreDisconnect" Decode.bool)
+        (Decode.field "hasSeenFakeFlashPunishment" Decode.bool)
+        (Decode.field "activeSongId" (Decode.nullable Decode.string))
         |> Decode.andThen
             (\partial ->
-                Decode.map7 partial
-                    (Decode.field "activeSongId" (Decode.nullable Decode.string))
+                Decode.map6 partial
                     (Decode.field "savedState" (Decode.nullable decodePausedState))
                     (Decode.field "dingIds" (Decode.list Decode.string))
                     (Decode.field "nextDingIdx" Decode.int)
@@ -2221,20 +2021,6 @@ viewScreen model =
                     , style "margin" "0"
                     ]
                     [ text "Loading..." ]
-                ]
-
-        ConnectScreen ->
-            screen
-                [ headphones
-                , p
-                    [ style "font-size" "26px"
-                    , style "color" "#2c4a5a"
-                    , style "text-align" "center"
-                    , style "margin" "0"
-                    , style "max-width" "480px"
-                    , style "line-height" "1.5"
-                    ]
-                    [ text "Connect your AirPods Max 2 and turn up the volume." ]
                 ]
 
         BeginScreen ->
@@ -2689,22 +2475,6 @@ viewScreen model =
                 ]
 
 
-pKeyDecoder : Decoder Msg
-pKeyDecoder =
-    Decode.map3 (\key repeat tagName -> ( key, repeat, tagName ))
-        (Decode.field "key" Decode.string)
-        (Decode.field "repeat" Decode.bool)
-        (Decode.at [ "target", "tagName" ] Decode.string)
-        |> Decode.andThen
-            (\( key, repeat, tagName ) ->
-                if (key == "p" || key == "P") && not repeat && tagName /= "INPUT" && tagName /= "TEXTAREA" then
-                    Decode.succeed ToggleIgnoreDisconnect
-
-                else
-                    Decode.fail "not p"
-            )
-
-
 spaceBarDecoder : Decoder Msg
 spaceBarDecoder =
     Decode.field "key" Decode.string
@@ -2729,12 +2499,6 @@ subscriptions model =
                 _ ->
                     Sub.none
 
-        debugToggleSub =
-            if debug then
-                Browser.Events.onKeyDown pKeyDecoder
-
-            else
-                Sub.none
     in
     Sub.batch
         [ receiveTrackInfo TrackInfoReceived
@@ -2745,7 +2509,6 @@ subscriptions model =
         , wsClientFailed WsDisconnected
         , Time.every 1000 (\_ -> WsSyncTick)
         , keyboardSub
-        , debugToggleSub
         , Browser.Events.onAnimationFrame (\posix -> Tick (toFloat (Time.posixToMillis posix)))
         ]
 
