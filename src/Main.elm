@@ -14,23 +14,21 @@ import Task
 import Time
 
 
-port receiveDevices : (String -> msg) -> Sub msg
-
 port loadMusic : String -> Cmd msg
 
 port playMusic : { id : String, volume : Float, startTime : Float } -> Cmd msg
 
-port stopMusic : String -> Cmd msg
+port pauseMusic : String -> Cmd msg
 
 port receiveTrackInfo : (List { id : String, currentTime : Float, duration : Float } -> msg) -> Sub msg
-
-port trackEnded : (String -> msg) -> Sub msg
 
 port musicLoaded : ({ id : String, filename : String } -> msg) -> Sub msg
 
 port musicError : (String -> msg) -> Sub msg
 
-port seekVideo : Float -> Cmd msg
+-- Expects a String representing the element ID of the video player,
+-- and a timestamp in seconds to seek to.
+port setVideoTimestamp : { elementId : String, time : Float } -> Cmd msg
 
 port logToFile : String -> Cmd msg
 
@@ -48,8 +46,6 @@ port sendToWs : { wsId : String, data : String } -> Cmd msg
 port receiveFromWs : (String -> msg) -> Sub msg
 
 port wsClientFailed : (String -> msg) -> Sub msg
-
-port wsPong : (Int -> msg) -> Sub msg
 
 
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
@@ -150,6 +146,11 @@ timeLimitMs =
 
     else
         7 * 24 * 60 * 60 * 1000
+
+-- If true, the app will ignore disconnects of the audio output device. This overrides pressing P in debug mode
+ignoreAudioDisconnects : Bool
+ignoreAudioDisconnects =
+    True
 
 
 type alias Question =
@@ -413,14 +414,14 @@ init _ =
       }
     , Cmd.batch
         [ initWebSocketClient wsUrl
-        , loadMusic "ding.mp3"
-        , loadMusic "ding.mp3"
-        , loadMusic "ding.mp3"
-        , loadMusic "ding.mp3"
-        , loadMusic "ding.mp3"
-        , loadMusic "ding.mp3"
-        , loadMusic "ding.mp3"
-        , loadMusic "ding.mp3"
+        , loadMusic "assets/ding.mp3"
+        , loadMusic "assets/ding.mp3"
+        , loadMusic "assets/ding.mp3"
+        , loadMusic "assets/ding.mp3"
+        , loadMusic "assets/ding.mp3"
+        , loadMusic "assets/ding.mp3"
+        , loadMusic "assets/ding.mp3"
+        , loadMusic "assets/ding.mp3"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -611,10 +612,9 @@ updateImpl msg model =
                 _ ->
                     let
                         connected =
-                            --parseDevices json
-                            True
+                            parseDevices json
                     in
-                    if connected || model.ignoreDisconnect then
+                    if connected || model.ignoreDisconnect || ignoreAudioDisconnects then
                         case model.savedState of
                             Just _ ->
                                 ( { model | connected = True, disconnectCount = 0, screen = BeginScreen }, Cmd.none )
@@ -634,7 +634,7 @@ updateImpl msg model =
                                             && (newScreen == ConnectScreen || newScreen == BeginScreen)
                                 in
                                 ( { model | connected = True, disconnectCount = 0, screen = newScreen, jeopardyPlaying = model.jeopardyPlaying || shouldStart }
-                                , if shouldStart then loadMusic "jeopardy-theme.mp3" else Cmd.none
+                                , if shouldStart then loadMusic "assets/jeopardy-theme.mp3" else Cmd.none
                                 )
 
                     else if model.disconnectCount + 1 < 10 then
@@ -704,7 +704,7 @@ updateImpl msg model =
                             stopSongCmd =
                                 case model.activeSongId of
                                     Just sid ->
-                                        stopMusic sid
+                                        pauseMusic sid
 
                                     Nothing ->
                                         Cmd.none
@@ -721,7 +721,7 @@ updateImpl msg model =
                         , Cmd.batch
                             [ stopSongCmd
                             , if needsJeopardy then
-                                loadMusic "jeopardy-theme.mp3"
+                                loadMusic "assets/jeopardy-theme.mp3"
 
                               else
                                 Cmd.none
@@ -756,7 +756,7 @@ updateImpl msg model =
                                     case getQuestion idx of
                                         Just q ->
                                             if not (isVideo q.song) then
-                                                loadMusic q.song
+                                                loadMusic ("assets/" ++ q.song)
 
                                             else
                                                 Cmd.none
@@ -772,11 +772,11 @@ updateImpl msg model =
                                 Just t ->
                                     case restoredScreen of
                                         VideoScreen _ _ ->
-                                            seekVideo t
+                                            setVideoTimestamp { elementId = "playing-video", time = t }
 
                                         IQTestActiveScreen state ->
                                             if state.loudPlaying then
-                                                seekVideo t
+                                                setVideoTimestamp { elementId = "playing-video", time = t }
 
                                             else
                                                 Cmd.none
@@ -790,7 +790,7 @@ updateImpl msg model =
                         stopJeopardyCmd =
                             case model.jeopardyId of
                                 Just jid ->
-                                    stopMusic jid
+                                    pauseMusic jid
 
                                 Nothing ->
                                     Cmd.none
@@ -812,7 +812,7 @@ updateImpl msg model =
                         |> clearPending
                         |> schedule 1000 (PlaySong 0)
                     , case model.jeopardyId of
-                        Just jid -> stopMusic jid
+                        Just jid -> pauseMusic jid
                         Nothing -> Cmd.none
                     )
 
@@ -841,7 +841,7 @@ updateImpl msg model =
                                     ( { model | screen = VideoScreen idx q.song }, Cmd.none )
 
                                 else
-                                    ( model, loadMusic q.song )
+                                    ( model, loadMusic ("assets/" ++ q.song) )
 
                             Nothing ->
                                 ( model, Cmd.none )
@@ -857,12 +857,12 @@ updateImpl msg model =
                 case model.screen of
                     ConnectScreen ->
                         ( { model | jeopardyPlaying = True, jeopardyId = Nothing }
-                        , loadMusic "jeopardy-theme.mp3"
+                        , loadMusic "assets/jeopardy-theme.mp3"
                         )
 
                     BeginScreen ->
                         ( { model | jeopardyPlaying = True, jeopardyId = Nothing }
-                        , loadMusic "jeopardy-theme.mp3"
+                        , loadMusic "assets/jeopardy-theme.mp3"
                         )
 
                     _ ->
@@ -1309,7 +1309,7 @@ updateImpl msg model =
                 WsLoadingScreen ->
                     if String.trim json == "{}" then
                         ( { model | screen = ConnectScreen, jeopardyPlaying = True }
-                        , loadMusic "jeopardy-theme.mp3"
+                        , loadMusic "assets/jeopardy-theme.mp3"
                         )
 
                     else
@@ -1353,7 +1353,7 @@ updateImpl msg model =
 
                                                 else
                                                     getQuestion idx
-                                                        |> Maybe.map (\q -> loadMusic q.song)
+                                                        |> Maybe.map (\q -> loadMusic ("assets/" ++ q.song))
                                                         |> Maybe.withDefault Cmd.none
 
                                             _ ->
@@ -1361,14 +1361,14 @@ updateImpl msg model =
 
                                     jeopardyCmd =
                                         if newModel.jeopardyPlaying then
-                                            loadMusic "jeopardy-theme.mp3"
+                                            loadMusic "assets/jeopardy-theme.mp3"
 
                                         else
                                             Cmd.none
 
                                     videoCmd =
                                         videoResumeTime
-                                            |> Maybe.map seekVideo
+                                            |> Maybe.map (\t -> setVideoTimestamp { elementId = "playing-video", time = t })
                                             |> Maybe.withDefault Cmd.none
                                 
                                 in
@@ -2737,22 +2737,19 @@ subscriptions model =
                 Sub.none
     in
     Sub.batch
-        [ receiveDevices DevicesReceived
-        , receiveTrackInfo TrackInfoReceived
-        , trackEnded TrackEnded
+        [ receiveTrackInfo TrackInfoReceived
         , musicLoaded MusicLoaded
         , musicError MusicError
         , wsClientReady WsClientReady
         , receiveFromWs WsDataReceived
         , wsClientFailed WsDisconnected
-        , wsPong WsPong
         , Time.every 1000 (\_ -> WsSyncTick)
         , keyboardSub
         , debugToggleSub
         , Browser.Events.onAnimationFrame (\posix -> Tick (toFloat (Time.posixToMillis posix)))
         ]
 
-
+-- TODO extract logic from TrackEnded and WsPong messages
 main : Program () Model Msg
 main =
     Browser.element

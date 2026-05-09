@@ -1,9 +1,8 @@
 const { execFile } = require('child_process')
-const { existsSync, appendFileSync, writeFileSync } = require('fs')
+const { existsSync, appendFileSync, writeFileSync, promises } = require('fs')
 const path = require('path')
 const Ws = require('ws')
 
-const binary = path.join(__dirname, 'src', 'list_audio_devices')
 const logPath = path.join(__dirname, 'debug.log')
 const app = Elm.Main.init({ node: document.getElementById('app') })
 
@@ -11,18 +10,10 @@ app.ports.logToFile.subscribe((entry) => {
   appendFileSync(logPath, entry + '\n', 'utf8')
 })
 
-const silenceLoop = new Audio('assets/silence.mp3')
-silenceLoop.loop = true
-silenceLoop.play()
-
 // id -> { element: Audio, filename: String }
 const audioMap = new Map()
 let nextId = 0
 const generateId = () => String(nextId++)
-
-function resolveAsset(filename) {
-  return path.join(__dirname, 'assets', filename)
-}
 
 setInterval(() => {
   const tracks = []
@@ -52,24 +43,20 @@ setInterval(() => {
   })
 }, 100)
 
-app.ports.loadMusic.subscribe((filename) => {
-  if (!existsSync(resolveAsset(filename))) {
+app.ports.loadMusic.subscribe(async (filename) => {
+  try {
+    await promises.access(resolveAsset(filename))
+  } catch (err) {
     app.ports.musicError.send(`File not found: ${filename}`)
     return
   }
 
   const id = generateId()
-  const audio = new Audio(`assets/${filename}`)
+  const audio = new Audio(`${filename}`)
   audio.preload = 'auto'
 
-  audio.onended = () => {
-    if (filename !== 'ding.mp3') {
-      audioMap.delete(id)
-    }
-    app.ports.trackEnded.send(filename)
-  }
-
   audioMap.set(id, { element: audio, filename })
+  // TODO send back result or error via a single port
   app.ports.musicLoaded.send({ id, filename })
 })
 
@@ -96,35 +83,21 @@ app.ports.playMusic.subscribe(({ id, volume, startTime }) => {
   }
 })
 
-app.ports.seekVideo.subscribe((time) => {
-  console.log(`seekVideo: requested time=${time}`)
-  const trySeek = (retriesLeft) => {
-    const videoEl = document.getElementById('playing-video')
-    if (!videoEl) {
-      if (retriesLeft > 0) setTimeout(() => trySeek(retriesLeft - 1), 50)
-      else console.log('seekVideo: element never found')
-      return
-    }
-    if (videoEl.readyState >= 1) {
-      console.log(`seekVideo: seeking to ${time} (readyState=${videoEl.readyState})`)
-      videoEl.currentTime = time
-    } else {
-      console.log(`seekVideo: waiting for loadedmetadata (readyState=${videoEl.readyState})`)
-      videoEl.addEventListener('loadedmetadata', () => {
-        console.log(`seekVideo: loadedmetadata fired, seeking to ${time}`)
-        videoEl.currentTime = time
-      }, { once: true })
-    }
+// TODO handle add elementId to elm
+app.ports.setVideoTimestamp.subscribe(({ elemendId, time }) => {
+  const videoEl = document.getElementById(elemendId)
+  if (!videoEl) {
+    // TODO send error to elm
+    console.log('seekVideo: element never found')
+    return
   }
-  setTimeout(() => trySeek(40), 0)
+  videoEl.currentTime = time
 })
 
-app.ports.stopMusic.subscribe((id) => {
+app.ports.pauseMusic.subscribe((id) => {
   const entry = audioMap.get(id)
   if (!entry) return
 
-  audioMap.delete(id)
-  entry.element.onended = null
   entry.element.pause()
 })
 
@@ -137,40 +110,18 @@ app.ports.initWebSocketClient.subscribe((url) => {
   console.log(`Initializing WebSocket client with URL: ${url}`)
   const id = generateWsId()
   const ws = new Ws(url)
-  let failedFired = false
-  let isAlive = false
-  let heartbeatTimer = null
 
   const fireFailed = (reason) => {
-    if (!failedFired) {
-      console.log(`WebSocket ${id} failed: ${reason}`)
-      failedFired = true
-      if (heartbeatTimer) clearInterval(heartbeatTimer)
-      wsMap.delete(id)
-      try { ws.terminate() } catch (_) {}
-      app.ports.wsClientFailed.send(reason)
-    }
+    console.log(`WebSocket ${id} failed: ${reason}`)
+    wsMap.delete(id)
+    try { ws.terminate() } catch (_) {}
+    app.ports.wsClientFailed.send(reason)
   }
 
   ws.on('open', () => {
     console.log(`WebSocket ${id} connected successfully`)
-    isAlive = true
     wsMap.set(id, ws)
     app.ports.wsClientReady.send(id)
-
-    heartbeatTimer = setInterval(() => {
-      if (!isAlive) {
-        fireFailed('heartbeat timeout')
-        return
-      }
-      isAlive = false
-      ws.ping()
-    }, 3000)
-  })
-
-  ws.on('pong', () => {
-    isAlive = true
-    app.ports.wsPong.send(0)
   })
 
   ws.on('message', (data) => {
