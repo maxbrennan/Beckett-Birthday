@@ -7584,7 +7584,7 @@ var $author$project$Main$iqFail = F2(
 					model,
 					{
 						screen: $author$project$Main$IQTestScreen(
-							{fakeFlashUsed: false, in50PercentPhase: state.in50PercentPhase, questionIdx: state.questionIdx, totalDings: state.totalDings})
+							{fakeFlashUsed: state.fakeFlashUsed, in50PercentPhase: state.in50PercentPhase, questionIdx: state.questionIdx, totalDings: state.totalDings})
 					})),
 			$elm$core$Platform$Cmd$none);
 	});
@@ -7700,33 +7700,6 @@ var $author$project$Main$normalize = function (s) {
 						_Utils_chr(' '));
 				},
 				$elm$core$String$toLower(s))));
-};
-var $author$project$Main$isMatchDecoder = A5(
-	$elm$json$Json$Decode$map4,
-	F4(
-		function (m, t, a, r) {
-			return (m === 'Apple Inc.') && ((t === 'Bluetooth') && (a && r));
-		}),
-	A2($elm$json$Json$Decode$field, 'manufacturer', $elm$json$Json$Decode$string),
-	A2($elm$json$Json$Decode$field, 'transport', $elm$json$Json$Decode$string),
-	A2($elm$json$Json$Decode$field, 'is_alive', $elm$json$Json$Decode$bool),
-	A2($elm$json$Json$Decode$field, 'is_running', $elm$json$Json$Decode$bool));
-var $author$project$Main$parseDevices = function (json) {
-	var decoder = $elm$json$Json$Decode$list(
-		$elm$json$Json$Decode$oneOf(
-			_List_fromArray(
-				[
-					$author$project$Main$isMatchDecoder,
-					$elm$json$Json$Decode$succeed(false)
-				])));
-	var _v0 = A2($elm$json$Json$Decode$decodeString, decoder, json);
-	if (_v0.$ === 'Ok') {
-		var results = _v0.a;
-		return $elm$core$List$length(
-			A2($elm$core$List$filter, $elm$core$Basics$identity, results)) === 1;
-	} else {
-		return false;
-	}
 };
 var $elm$core$List$partition = F2(
 	function (pred, list) {
@@ -7934,7 +7907,7 @@ var $author$project$Main$updateImpl = F2(
 					case 'ConfirmingAnswerScreen':
 						return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 					default:
-						var connected = $author$project$Main$parseDevices(json);
+						var connected = true;
 						if (connected || model.ignoreDisconnect) {
 							var _v7 = model.savedState;
 							if (_v7.$ === 'Just') {

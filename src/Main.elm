@@ -483,7 +483,7 @@ iqFail model state =
                 IQTestScreen
                     { questionIdx = state.questionIdx
                     , totalDings = state.totalDings
-                    , fakeFlashUsed = False
+                    , fakeFlashUsed = state.fakeFlashUsed
                     , in50PercentPhase = state.in50PercentPhase
                     }
         }
@@ -611,7 +611,8 @@ updateImpl msg model =
                 _ ->
                     let
                         connected =
-                            parseDevices json
+                            --parseDevices json
+                            True
                     in
                     if connected || model.ignoreDisconnect then
                         case model.savedState of

@@ -1,7 +1,7 @@
 {
   "name": "beckett-birthday",
   "productName": "Beckett Birthday",
-  "version": "1.0.0",
+  "version": "2.0.2",
   "main": "electron.js",
   "scripts": {
     "build:c": "cc src/list_audio_devices.c -framework CoreAudio -framework Foundation -arch x86_64 -arch arm64 -o src/list_audio_devices",
