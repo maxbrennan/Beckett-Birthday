@@ -53,10 +53,6 @@ debug : Bool
 debug =
     False
 
-loggingEnabled : Bool
-loggingEnabled =
-    False
-
 
 -- Total correct ding presses required to pass the IQ test.
 -- Debug: 10  |  Production: 100
@@ -353,7 +349,6 @@ type Msg
     | WsSyncTick
     | WsDisconnected String
     | WsReconnect
-    | WsPong Int
     | NoOp
 
 
@@ -456,59 +451,6 @@ iqFail model state =
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
-    let
-        ( newModel, cmd ) =
-            updateImpl msg model
-
-        shouldLog =
-            case msg of
-                Tick _ ->
-                    False
-
-                TrackInfoReceived _ ->
-                    False
-
-                MusicLoaded info ->
-                    info.filename /= "ding.mp3"
-
-                WsClientReady _ ->
-                    False
-
-                WsDataReceived _ ->
-                    False
-
-                WsSyncTick ->
-                    False
-
-                WsDisconnected _ ->
-                    False
-
-                WsReconnect ->
-                    False
-
-                WsPong _ ->
-                    False
-
-                NoOp ->
-                    False
-
-                _ ->
-                    True
-
-        entry =
-            "=== " ++ Debug.toString msg ++ " ===\n"
-                ++ "BEFORE: " ++ Debug.toString model ++ "\n"
-                ++ "AFTER:  " ++ Debug.toString newModel ++ "\n"
-    in
-    if shouldLog && loggingEnabled then
-        ( newModel, Cmd.batch [ cmd, logToFile entry ] )
-
-    else
-        ( newModel, cmd )
-
-
-updateImpl : Msg -> Model -> ( Model, Cmd Msg )
-updateImpl msg model =
     case msg of
         -- Advance the clock. Fire any events whose fireAt has passed.
         -- The first Tick (model.now == 0) just initialises the clock without firing.
@@ -1254,13 +1196,13 @@ updateImpl msg model =
                     in
                     ( newModel, Cmd.none )
 
-        WsPong _ ->
-            case model.screen of
-                ConfirmingAnswerScreen nextScreen ->
-                    ( { model | screen = nextScreen }, Cmd.none )
+        -- WsPong _ ->
+        --     case model.screen of
+        --         ConfirmingAnswerScreen nextScreen ->
+        --             ( { model | screen = nextScreen }, Cmd.none )
 
-                _ ->
-                    ( model, Cmd.none )
+        --         _ ->
+        --             ( model, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )

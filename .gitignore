@@ -10,6 +10,3 @@ node_modules/
 
 # Build output
 dist/
-
-# Runtime logs
-debug.log

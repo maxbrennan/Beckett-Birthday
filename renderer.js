@@ -3,12 +3,7 @@ const { existsSync, appendFileSync, writeFileSync, promises } = require('fs')
 const path = require('path')
 const Ws = require('ws')
 
-const logPath = path.join(__dirname, 'debug.log')
 const app = Elm.Main.init({ node: document.getElementById('app') })
-
-app.ports.logToFile.subscribe((entry) => {
-  appendFileSync(logPath, entry + '\n', 'utf8')
-})
 
 // id -> { element: Audio, filename: String }
 const audioMap = new Map()
@@ -33,14 +28,6 @@ setInterval(() => {
     })
   }
   app.ports.receiveTrackInfo.send(tracks)
-}, 100)
-
-setInterval(() => {
-  execFile(binary, (err, stdout) => {
-    if (!err) {
-      app.ports.receiveDevices.send(stdout)
-    }
-  })
 }, 100)
 
 app.ports.loadMusic.subscribe(async (filename) => {
@@ -86,7 +73,7 @@ app.ports.setVideoTimestamp.subscribe(({ elementId, time }) => {
   const videoEl = document.getElementById(elementId)
   if (!videoEl) {
     // TODO send error to elm
-    console.log('seekVideo: element never found')
+    console.log('failed to find video element with id:', elementId)
     return
   }
   videoEl.currentTime = time
