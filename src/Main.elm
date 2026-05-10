@@ -34,7 +34,7 @@ port logToFile : String -> Cmd msg
 
 wsUrl : String
 wsUrl =
-    "ws://72.211.182.145:5270"
+    "ws://localhost:5270"
 
 
 port initWebSocketClient : String -> Cmd msg

@@ -4,24 +4,21 @@
   "version": "2.0.2",
   "main": "electron.js",
   "scripts": {
-    "build:c": "cc src/list_audio_devices.c -framework CoreAudio -framework Foundation -arch x86_64 -arch arm64 -o src/list_audio_devices",
-    "build:elm": "elm make src/Main.elm --output=elm.js",
-    "build": "npm run build:c && npm run build:elm",
-    "start": "npm run build && electron .",
-    "dist": "npm run build && electron-builder",
+    "build:server": "elm make src/Server.elm --output=elm-server.js",
+    "build:client": "elm make src/Main.elm --output=elm-client.js",
+    "start:server": "npm run build:server && node server.js",
+    "start:client": "npm run build:client && electron .",
+    "start": "npm run start:server & npm run start:client",
+    "dist": "npm run build:client && electron-builder",
     "reset": "node reset.js"
   },
   "build": {
     "files": [
       "renderer.js",
-      "elm.js",
-      "src/list_audio_devices",
+      "elm-client.js",
       "electron.js",
       "index.html",
       "assets/**/*"
-    ],
-    "asarUnpack": [
-      "src/list_audio_devices"
     ],
     "mac": {
       "icon": "assets/icon.icns",
