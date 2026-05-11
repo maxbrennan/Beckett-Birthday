@@ -1,6 +1,7 @@
 const Ws = require('ws')
 
 const app = Elm.Main.init({ node: document.getElementById('app') })
+let received = false
 
 app.ports.setDomProperty.subscribe(({ elementId, property, value }) => {
   const el = document.getElementById(elementId)
@@ -15,14 +16,14 @@ app.ports.setDomProperty.subscribe(({ elementId, property, value }) => {
   }
 })
 
-app.ports.getDomProperty.subscribe(({ elementId, property }) => {
-  const el = document.getElementById(elementId)
-  if (!el) {
-    app.ports.domPropertyError.send(`Element not found: ${elementId}`)
-    return
-  }
-  app.ports.receiveDomProperty.send({ elementId, property, value: el[property] })
-})
+// app.ports.getDomProperty.subscribe(({ elementId, property }) => {
+//   const el = document.getElementById(elementId)
+//   if (!el) {
+//     app.ports.domPropertyError.send(`Element not found: ${elementId}`)
+//     return
+//   }
+//   app.ports.receiveDomProperty.send({ elementId, property, value: el[property] })
+// })
 
 app.ports.pauseMusic.subscribe((elementId) => {
   const el = document.getElementById(elementId)
@@ -54,6 +55,10 @@ app.ports.initWebSocketClient.subscribe((url) => {
 
   ws.on('message', (data) => {
     app.ports.receiveFromWs.send(data.toString())
+    if (!received) {
+      console.log(`WebSocket ${id} received first message: ${data.toString()}`)
+      received = true
+    }
   })
 
   ws.on('close', () => {

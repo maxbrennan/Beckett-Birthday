@@ -6,7 +6,7 @@
   "scripts": {
     "build:server": "elm make src/Server.elm --output=elm-server.js",
     "build:client": "elm make src/Main.elm --output=elm-client.js",
-    "start:server": "npm run build:server && node server.js",
+    "start:server": "npm run build:server && node server.js &",
     "start:client": "npm run build:client && electron .",
     "start": "npm run start:server & npm run start:client",
     "dist": "npm run build:client && electron-builder",

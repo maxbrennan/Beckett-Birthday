@@ -455,28 +455,16 @@ update msg model =
             case model.savedState of
                 Just saved ->
                     let
+                        -- Update pending events to fire at the same intervals from now as they would have from the savedAt time.
                         rebasedPending =
                             List.map
                                 (\e -> { e | fireAt = model.now + max 500 (e.fireAt - saved.savedAt) })
                                 saved.pending
 
-                        restoredScreen =
-                            case saved.screen of
-                                IQTestActiveScreen state ->
-                                    IQTestActiveScreen
-                                        { state
-                                            | dingActive = False
-                                            , fakeFlashActive = False
-                                            , isFlashing = False
-                                        }
-
-                                other ->
-                                    other
-
                         videoCmd =
                             case saved.videoResumeTime of
                                 Just t ->
-                                    case restoredScreen of
+                                    case saved.screen of
                                         VideoScreen _ _ ->
                                             setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t }
 
@@ -494,7 +482,7 @@ update msg model =
                                     Cmd.none
                     in
                     ( { model
-                        | screen = restoredScreen
+                        | screen = saved.screen
                         , pending = rebasedPending
                         , savedState = Nothing
                         , jeopardyPlaying = False
@@ -1383,6 +1371,7 @@ encodeModel model =
         , ( "now", Encode.float model.now )
         , ( "pending", Encode.list encodePendingEvent model.pending )
         , ( "savedState", model.savedState |> Maybe.map encodePausedState |> Maybe.withDefault Encode.null )
+        , ( "hasSeenFakeFlashPunishment", Encode.bool model.hasSeenFakeFlashPunishment )
         , ( "dingKey", Encode.int model.dingKey )
         , ( "pendingStartTime", encodeMaybeFloat model.pendingStartTime )
         , ( "wsClientId", encodeMaybeString model.wsClientId )
