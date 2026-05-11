@@ -1,89 +1,32 @@
-const { execFile } = require('child_process')
-const { existsSync, appendFileSync, writeFileSync, promises } = require('fs')
-const path = require('path')
 const Ws = require('ws')
 
 const app = Elm.Main.init({ node: document.getElementById('app') })
 
-// id -> { element: Audio, filename: String }
-const audioMap = new Map()
-let nextId = 0
-const generateId = () => String(nextId++)
-
-setInterval(() => {
-  const tracks = []
-  for (const [id, entry] of audioMap) {
-    tracks.push({
-      id,
-      currentTime: entry.element.currentTime,
-      duration: entry.element.duration || 0,
-    })
+app.ports.setDomProperty.subscribe(({ elementId, property, value }) => {
+  const el = document.getElementById(elementId)
+  if (!el) {
+    app.ports.domPropertyError.send(`Element not found: ${elementId}`)
+    return
   }
-  const videoEl = document.getElementById('playing-video')
-  if (videoEl) {
-    tracks.push({
-      id: 'video',
-      currentTime: videoEl.currentTime,
-      duration: videoEl.duration || 0,
-    })
-  }
-  app.ports.receiveTrackInfo.send(tracks)
-}, 100)
-
-app.ports.loadMusic.subscribe(async (filename) => {
   try {
-    await promises.access(resolveAsset(filename))
-  } catch (err) {
-    app.ports.musicError.send(`File not found: ${filename}`)
-    return
-  }
-
-  const id = generateId()
-  const audio = new Audio(`${filename}`)
-  audio.preload = 'auto'
-
-  audioMap.set(id, { element: audio, filename })
-  app.ports.musicLoaded.send({ id, filename })
-})
-
-app.ports.playMusic.subscribe(({ id, volume, startTime }) => {
-  const entry = audioMap.get(id)
-  if (!entry) {
-    app.ports.musicError.send(`No audio loaded with id: ${id}`)
-    return
-  }
-  const audio = entry.element
-  audio.volume = volume
-  const doPlay = () => {
-    if (startTime > 0 && startTime >= audio.duration) {
-      app.ports.musicError.send(`Invalid start time ${startTime} for ${entry.filename}`)
-      return
-    }
-    audio.currentTime = startTime
-    audio.play()
-  }
-  if (startTime === 0 || audio.readyState >= 1) {
-    doPlay()
-  } else {
-    audio.addEventListener('loadedmetadata', doPlay, { once: true })
+    el[property] = value
+  } catch (e) {
+    app.ports.domPropertyError.send(`Failed to set ${property} on ${elementId}: ${e.message}`)
   }
 })
 
-app.ports.setVideoTimestamp.subscribe(({ elementId, time }) => {
-  const videoEl = document.getElementById(elementId)
-  if (!videoEl) {
-    // TODO send error to elm
-    console.log('failed to find video element with id:', elementId)
+app.ports.getDomProperty.subscribe(({ elementId, property }) => {
+  const el = document.getElementById(elementId)
+  if (!el) {
+    app.ports.domPropertyError.send(`Element not found: ${elementId}`)
     return
   }
-  videoEl.currentTime = time
+  app.ports.receiveDomProperty.send({ elementId, property, value: el[property] })
 })
 
-app.ports.pauseMusic.subscribe((id) => {
-  const entry = audioMap.get(id)
-  if (!entry) return
-
-  entry.element.pause()
+app.ports.pauseMusic.subscribe((elementId) => {
+  const el = document.getElementById(elementId)
+  if (el) el.pause()
 })
 
 // WebSocket management

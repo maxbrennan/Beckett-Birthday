@@ -4,9 +4,10 @@ import Browser
 import Browser.Dom
 import Browser.Events
 import Char
-import Html exposing (Html, button, div, img, input, p, text, video)
-import Html.Attributes exposing (autoplay, id, loop, placeholder, src, style, type_, value)
+import Html exposing (Html, audio, button, div, img, input, p, text, video)
+import Html.Attributes exposing (autoplay, id, loop, placeholder, property, src, style, type_, value)
 import Html.Events exposing (on, onClick, onInput)
+import Html.Keyed
 import Json.Decode as Decode exposing (Decoder)
 import Json.Encode as Encode
 import Random
@@ -14,21 +15,15 @@ import Task
 import Time
 
 
-port loadMusic : String -> Cmd msg
-
-port playMusic : { id : String, volume : Float, startTime : Float } -> Cmd msg
-
 port pauseMusic : String -> Cmd msg
 
-port receiveTrackInfo : (List { id : String, currentTime : Float, duration : Float } -> msg) -> Sub msg
+port setDomProperty : { elementId : String, property : String, value : Encode.Value } -> Cmd msg
 
-port musicLoaded : ({ id : String, filename : String } -> msg) -> Sub msg
+port domPropertyError : (String -> msg) -> Sub msg
 
-port musicError : (String -> msg) -> Sub msg
+port getDomProperty : { elementId : String, property : String } -> Cmd msg
 
--- Expects a String representing the element ID of the video player,
--- and a timestamp in seconds to seek to.
-port setVideoTimestamp : { elementId : String, time : Float } -> Cmd msg
+port receiveDomProperty : ({ elementId : String, property : String, value : Decode.Value } -> msg) -> Sub msg
 
 port logToFile : String -> Cmd msg
 
@@ -194,13 +189,6 @@ isVideo filename =
     String.endsWith ".mp4" filename
 
 
-type alias TrackInfo =
-    { id : String
-    , currentTime : Float
-    , duration : Float
-    }
-
-
 type alias DingSchedule =
     { delay : Float, nextRandom : Bool }
 
@@ -304,16 +292,12 @@ type alias PendingEvent =
 
 type alias Model =
     { screen : Screen
-    , trackInfo : List TrackInfo
-    , jeopardyPlaying : Bool -- TODO double check if necessary
-    , jeopardyId : Maybe String
+    , jeopardyPlaying : Bool
     , now : Float
     , pending : List PendingEvent
     , hasSeenFakeFlashPunishment : Bool
-    , activeSongId : Maybe String
     , savedState : Maybe PausedState
-    , dingIds : List String
-    , nextDingIdx : Int
+    , dingKey : Int
     , pendingStartTime : Maybe Float
     , wsClientId : Maybe String
     , timerEndsAt : Float
@@ -326,8 +310,6 @@ type Msg
     | PlaySong Int
     | TrackEnded String
     | ShowQuestion Int
-    | TrackInfoReceived (List TrackInfo)
-    | MusicError String
     | AnswerChanged String
     | AnswerSubmitted
     | ContinuePressed
@@ -343,7 +325,9 @@ type Msg
     | FakeFlashNextPhase
     | FakeFlashCounterTick
     | FakeFlashWindowExpired
-    | MusicLoaded { id : String, filename : String }
+    | SongMetadataLoaded
+    | DomPropertyReceived { elementId : String, property : String, value : Decode.Value }
+    | DomPropertyError String
     | WsClientReady String
     | WsDataReceived String
     | WsSyncTick
@@ -355,47 +339,20 @@ type Msg
 init : () -> ( Model, Cmd Msg )
 init _ =
     ( { screen = WsConnectingScreen
-      , trackInfo = []
       , jeopardyPlaying = False
-      , jeopardyId = Nothing
       , now = 0
       , pending = []
       , hasSeenFakeFlashPunishment = False
-      , activeSongId = Nothing
       , savedState = Nothing
-      , dingIds = []
-      , nextDingIdx = 0
+      , dingKey = 0
       , pendingStartTime = Nothing
       , wsClientId = Nothing
       , timerEndsAt = 0
       }
     , Cmd.batch
         [ initWebSocketClient wsUrl
-        , loadMusic "assets/ding.mp3"
-        , loadMusic "assets/ding.mp3"
-        , loadMusic "assets/ding.mp3"
-        , loadMusic "assets/ding.mp3"
-        , loadMusic "assets/ding.mp3"
-        , loadMusic "assets/ding.mp3"
-        , loadMusic "assets/ding.mp3"
-        , loadMusic "assets/ding.mp3"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
-    )
-
-
--- Round-robin through preloaded ding audio elements to avoid restart glitches.
-pickDing : Model -> ( Maybe String, Model )
-pickDing model =
-    let
-        n =
-            List.length model.dingIds
-
-        idx =
-            modBy (max 1 n) model.nextDingIdx
-    in
-    ( List.drop idx model.dingIds |> List.head
-    , { model | nextDingIdx = modBy (max 1 n) (model.nextDingIdx + 1) }
     )
 
 
@@ -516,33 +473,16 @@ update msg model =
                                 other ->
                                     other
 
-                        audioCmd =
-                            case restoredScreen of
-                                BlankScreen idx ->
-                                    case getQuestion idx of
-                                        Just q ->
-                                            if not (isVideo q.song) then
-                                                loadMusic ("assets/" ++ q.song)
-
-                                            else
-                                                Cmd.none
-
-                                        Nothing ->
-                                            Cmd.none
-
-                                _ ->
-                                    Cmd.none
-
                         videoCmd =
                             case saved.videoResumeTime of
                                 Just t ->
                                     case restoredScreen of
                                         VideoScreen _ _ ->
-                                            setVideoTimestamp { elementId = "playing-video", time = t }
+                                            setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t }
 
                                         IQTestActiveScreen state ->
                                             if state.loudPlaying then
-                                                setVideoTimestamp { elementId = "playing-video", time = t }
+                                                setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t }
 
                                             else
                                                 Cmd.none
@@ -552,34 +492,22 @@ update msg model =
 
                                 Nothing ->
                                     Cmd.none
-
-                        stopJeopardyCmd =
-                            case model.jeopardyId of
-                                Just jid ->
-                                    pauseMusic jid
-
-                                Nothing ->
-                                    Cmd.none
                     in
                     ( { model
                         | screen = restoredScreen
                         , pending = rebasedPending
                         , savedState = Nothing
                         , jeopardyPlaying = False
-                        , jeopardyId = Nothing
-                        , activeSongId = Nothing
                         , pendingStartTime = saved.songResumeTime
                       }
-                    , Cmd.batch [ stopJeopardyCmd, audioCmd, videoCmd ]
+                    , Cmd.batch [ pauseMusic "jeopardy-audio", videoCmd ]
                     )
 
                 Nothing ->
-                    ( { model | screen = BlankScreen 0, jeopardyPlaying = False, jeopardyId = Nothing, savedState = Nothing, activeSongId = Nothing }
+                    ( { model | screen = BlankScreen 0, jeopardyPlaying = False, savedState = Nothing }
                         |> clearPending
                         |> schedule 1000 (PlaySong 0)
-                    , case model.jeopardyId of
-                        Just jid -> pauseMusic jid
-                        Nothing -> Cmd.none
+                    , pauseMusic "jeopardy-audio"
                     )
 
         PlaySong idx ->
@@ -607,7 +535,7 @@ update msg model =
                                     ( { model | screen = VideoScreen idx q.song }, Cmd.none )
 
                                 else
-                                    ( model, loadMusic ("assets/" ++ q.song) )
+                                    ( model, Cmd.none )
 
                             Nothing ->
                                 ( model, Cmd.none )
@@ -622,39 +550,33 @@ update msg model =
             if name == "jeopardy-theme.mp3" then
                 case model.screen of
                     BeginScreen ->
-                        ( { model | jeopardyPlaying = True, jeopardyId = Nothing }
-                        , loadMusic "assets/jeopardy-theme.mp3"
-                        )
+                        ( model, Cmd.none )
 
                     _ ->
-                        ( { model | jeopardyPlaying = False, jeopardyId = Nothing }, Cmd.none )
+                        ( { model | jeopardyPlaying = False }, Cmd.none )
 
             else
-                let
-                    baseModel =
-                        { model | activeSongId = Nothing }
-                in
                 case model.screen of
                     BlankScreen idx ->
                         case getQuestion idx of
                             Just q ->
                                 if q.song == name then
-                                    ( schedule 1000 (ShowQuestion idx) baseModel, Cmd.none )
+                                    ( schedule 1000 (ShowQuestion idx) model, Cmd.none )
 
                                 else
-                                    ( baseModel, Cmd.none )
+                                    ( model, Cmd.none )
 
                             Nothing ->
-                                ( baseModel, Cmd.none )
+                                ( model, Cmd.none )
 
                     VideoScreen idx _ ->
-                        ( { baseModel | screen = BlankScreen idx }
+                        ( { model | screen = BlankScreen idx }
                             |> schedule 1000 (ShowQuestion idx)
                         , Cmd.none
                         )
 
                     _ ->
-                        ( baseModel, Cmd.none )
+                        ( model, Cmd.none )
 
         ShowQuestion idx ->
             case model.screen of
@@ -669,12 +591,6 @@ update msg model =
 
                 _ ->
                     ( model, Cmd.none )
-
-        TrackInfoReceived infos ->
-            ( { model | trackInfo = infos }, Cmd.none )
-
-        MusicError _ ->
-            ( model, Cmd.none )
 
         AnswerChanged typed ->
             case model.screen of
@@ -833,19 +749,13 @@ update msg model =
                         )
 
                     else
-                        let
-                            ( maybeDingId, modelAfterDing ) =
-                                pickDing model
-                        in
-                        ( { modelAfterDing | screen = IQTestActiveScreen { state | isFlashing = True, dingActive = True } }
+                        ( { model
+                            | screen = IQTestActiveScreen { state | isFlashing = True, dingActive = True }
+                            , dingKey = model.dingKey + 1
+                          }
                             |> schedule iqFlashDuration DingFlashEnd
                             |> schedule iqWindowDuration DingWindowExpired
-                        , case maybeDingId of
-                            Just id ->
-                                playMusic { id = id, volume = iqDingVolume, startTime = 0 }
-
-                            Nothing ->
-                                Cmd.none
+                        , Cmd.none
                         )
 
                 _ ->
@@ -1041,20 +951,6 @@ update msg model =
                 _ ->
                     ( model, Cmd.none )
 
-        MusicLoaded info ->
-            if info.filename == "jeopardy-theme.mp3" then
-                ( { model | jeopardyId = Just info.id }
-                , playMusic { id = info.id, volume = 1.0, startTime = 0 }
-                )
-
-            else if info.filename == "ding.mp3" then
-                ( { model | dingIds = model.dingIds ++ [ info.id ] }, Cmd.none )
-
-            else
-                ( { model | activeSongId = Just info.id, pendingStartTime = Nothing }
-                , playMusic { id = info.id, volume = 1.0, startTime = Maybe.withDefault 0 model.pendingStartTime }
-                )
-
         WsClientReady wsId ->
             ( { model | wsClientId = Just wsId, screen = WsLoadingScreen }, Cmd.none )
 
@@ -1062,79 +958,24 @@ update msg model =
             case model.screen of
                 WsLoadingScreen ->
                     if String.trim json == "{}" then
-                        ( { model | screen = BeginScreen, jeopardyPlaying = True }
-                        , loadMusic "assets/jeopardy-theme.mp3"
-                        )
+                        ( { model | screen = BeginScreen, jeopardyPlaying = True }, Cmd.none )
 
                     else
                         case Decode.decodeString decodeModel json of
                             Ok newModel ->
                                 let
-                                    songResumeTime =
-                                        newModel.activeSongId
-                                            |> Maybe.andThen
-                                                (\sid ->
-                                                    newModel.trackInfo
-                                                        |> List.filter (\t -> t.id == sid)
-                                                        |> List.head
-                                                        |> Maybe.map .currentTime
-                                                )
-
-                                    videoResumeTime =
-                                        newModel.trackInfo
-                                            |> List.filter (\t -> t.id == "video")
-                                            |> List.head
-                                            |> Maybe.map .currentTime
-
-                                    songCmd =
-                                        case newModel.screen of
-                                            BlankScreen idx ->
-                                                let
-                                                    hasPlaySongPending =
-                                                        List.any
-                                                            (\e ->
-                                                                case e.msg of
-                                                                    PlaySong i ->
-                                                                        i == idx
-
-                                                                    _ ->
-                                                                        False
-                                                            )
-                                                            newModel.pending
-                                                in
-                                                if hasPlaySongPending then
-                                                    Cmd.none
-
-                                                else
-                                                    getQuestion idx
-                                                        |> Maybe.map (\q -> loadMusic ("assets/" ++ q.song))
-                                                        |> Maybe.withDefault Cmd.none
-
-                                            _ ->
-                                                Cmd.none
-
-                                    jeopardyCmd =
-                                        if newModel.jeopardyPlaying then
-                                            loadMusic "assets/jeopardy-theme.mp3"
-
-                                        else
-                                            Cmd.none
-
                                     videoCmd =
-                                        videoResumeTime
-                                            |> Maybe.map (\t -> setVideoTimestamp { elementId = "playing-video", time = t })
+                                        newModel.savedState
+                                            |> Maybe.andThen .videoResumeTime
+                                            |> Maybe.map (\t -> setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t })
                                             |> Maybe.withDefault Cmd.none
-                                
                                 in
                                 ( { newModel
                                     | wsClientId = model.wsClientId
-                                    , dingIds = model.dingIds
-                                    , activeSongId = Nothing
-                                    , jeopardyId = Nothing
-                                    , pendingStartTime = songResumeTime
+                                    , dingKey = model.dingKey
                                     , hasSeenFakeFlashPunishment = model.hasSeenFakeFlashPunishment
                                   }
-                                , Cmd.batch [ songCmd, jeopardyCmd, videoCmd ]
+                                , videoCmd
                                 )
 
                             Err _ ->
@@ -1207,24 +1048,34 @@ update msg model =
         NoOp ->
             ( model, Cmd.none )
 
+        SongMetadataLoaded ->
+            case model.pendingStartTime of
+                Just t ->
+                    ( { model | pendingStartTime = Nothing }
+                    , setDomProperty { elementId = "quiz-audio", property = "currentTime", value = Encode.float t }
+                    )
+
+                Nothing ->
+                    ( model, Cmd.none )
+
+        DomPropertyReceived _ ->
+            ( model, Cmd.none )
+
+        DomPropertyError _ ->
+            ( model, Cmd.none )
+
         FakeFlashCounterTick ->
             case model.screen of
                 FakeFlashCaughtScreen state ->
                     case state.phase of
                         FfTickNumerator ->
                             if state.displayNumerator > 0 then
-                                let
-                                    ( maybeDingId, modelAfterDing ) =
-                                        pickDing model
-                                in
-                                ( { modelAfterDing | screen = FakeFlashCaughtScreen { state | displayNumerator = state.displayNumerator - 1 } }
+                                ( { model
+                                    | screen = FakeFlashCaughtScreen { state | displayNumerator = state.displayNumerator - 1 }
+                                    , dingKey = model.dingKey + 1
+                                  }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , case maybeDingId of
-                                    Just id ->
-                                        playMusic { id = id, volume = 0.15, startTime = 0 }
-
-                                    Nothing ->
-                                        Cmd.none
+                                , setDomProperty { elementId = "ding-audio", property = "volume", value = Encode.float 0.15 }
                                 )
 
                             else
@@ -1239,18 +1090,12 @@ update msg model =
                                     state.originalTotal * 2
                             in
                             if state.displayDenominator < target then
-                                let
-                                    ( maybeDingId, modelAfterDing ) =
-                                        pickDing model
-                                in
-                                ( { modelAfterDing | screen = FakeFlashCaughtScreen { state | displayDenominator = state.displayDenominator + 1 } }
+                                ( { model
+                                    | screen = FakeFlashCaughtScreen { state | displayDenominator = state.displayDenominator + 1 }
+                                    , dingKey = model.dingKey + 1
+                                  }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , case maybeDingId of
-                                    Just id ->
-                                        playMusic { id = id, volume = 0.3, startTime = 0 }
-
-                                    Nothing ->
-                                        Cmd.none
+                                , setDomProperty { elementId = "ding-audio", property = "volume", value = Encode.float 0.3 }
                                 )
 
                             else
@@ -1327,15 +1172,6 @@ encodeMaybeString =
 encodeMaybeFloat : Maybe Float -> Encode.Value
 encodeMaybeFloat =
     Maybe.map Encode.float >> Maybe.withDefault Encode.null
-
-
-encodeTrackInfo : TrackInfo -> Encode.Value
-encodeTrackInfo t =
-    Encode.object
-        [ ( "id", Encode.string t.id )
-        , ( "currentTime", Encode.float t.currentTime )
-        , ( "duration", Encode.float t.duration )
-        ]
 
 
 encodeFakeFlashPhase : FakeFlashPhase -> Encode.Value
@@ -1543,15 +1379,11 @@ encodeModel : Model -> Encode.Value
 encodeModel model =
     Encode.object
         [ ( "screen", encodeScreen model.screen )
-        , ( "trackInfo", Encode.list encodeTrackInfo model.trackInfo )
         , ( "jeopardyPlaying", Encode.bool model.jeopardyPlaying )
-        , ( "jeopardyId", encodeMaybeString model.jeopardyId )
         , ( "now", Encode.float model.now )
         , ( "pending", Encode.list encodePendingEvent model.pending )
-        , ( "activeSongId", encodeMaybeString model.activeSongId )
         , ( "savedState", model.savedState |> Maybe.map encodePausedState |> Maybe.withDefault Encode.null )
-        , ( "dingIds", Encode.list Encode.string model.dingIds )
-        , ( "nextDingIdx", Encode.int model.nextDingIdx )
+        , ( "dingKey", Encode.int model.dingKey )
         , ( "pendingStartTime", encodeMaybeFloat model.pendingStartTime )
         , ( "wsClientId", encodeMaybeString model.wsClientId )
         , ( "timerEndsAt", Encode.float model.timerEndsAt )
@@ -1559,14 +1391,6 @@ encodeModel model =
 
 
 -- ── JSON Decoders ─────────────────────────────────────────────────────────────
-
-
-decodeTrackInfo : Decoder TrackInfo
-decodeTrackInfo =
-    Decode.map3 TrackInfo
-        (Decode.field "id" Decode.string)
-        (Decode.field "currentTime" Decode.float)
-        (Decode.field "duration" Decode.float)
 
 
 decodeFakeFlashPhase : Decoder FakeFlashPhase
@@ -1812,39 +1636,31 @@ decodePausedState =
 decodeModel : Decoder Model
 decodeModel =
     Decode.map8
-        (\scr ti jp ji n pend hsf asi ->
-            \ss di ndi pst wci tea ->
+        (\scr jp n pend hsf ss dk pst ->
+            \wci tea ->
                 { screen = scr
-                , trackInfo = ti
                 , jeopardyPlaying = jp
-                , jeopardyId = ji
                 , now = n
                 , pending = pend
                 , hasSeenFakeFlashPunishment = hsf
-                , activeSongId = asi
                 , savedState = ss
-                , dingIds = di
-                , nextDingIdx = ndi
+                , dingKey = dk
                 , pendingStartTime = pst
                 , wsClientId = wci
                 , timerEndsAt = tea
                 }
         )
         (Decode.field "screen" decodeScreen)
-        (Decode.field "trackInfo" (Decode.list decodeTrackInfo))
         (Decode.field "jeopardyPlaying" Decode.bool)
-        (Decode.field "jeopardyId" (Decode.nullable Decode.string))
         (Decode.field "now" Decode.float)
         (Decode.field "pending" (Decode.list decodePendingEvent))
         (Decode.field "hasSeenFakeFlashPunishment" Decode.bool)
-        (Decode.field "activeSongId" (Decode.nullable Decode.string))
+        (Decode.field "savedState" (Decode.nullable decodePausedState))
+        (Decode.field "dingKey" Decode.int)
+        (Decode.field "pendingStartTime" (Decode.nullable Decode.float))
         |> Decode.andThen
             (\partial ->
-                Decode.map6 partial
-                    (Decode.field "savedState" (Decode.nullable decodePausedState))
-                    (Decode.field "dingIds" (Decode.list Decode.string))
-                    (Decode.field "nextDingIdx" Decode.int)
-                    (Decode.field "pendingStartTime" (Decode.nullable Decode.float))
+                Decode.map2 partial
                     (Decode.field "wsClientId" (Decode.nullable Decode.string))
                     (Decode.field "timerEndsAt" Decode.float)
             )
@@ -1919,10 +1735,81 @@ timerBar model =
         text ""
 
 
+currentQuizSong : Model -> Maybe String
+currentQuizSong model =
+    case model.screen of
+        BlankScreen idx ->
+            getQuestion idx
+                |> Maybe.andThen
+                    (\q ->
+                        if isVideo q.song then
+                            Nothing
+
+                        else
+                            Just q.song
+                    )
+
+        _ ->
+            Nothing
+
+
+viewAudio : Model -> Html Msg
+viewAudio model =
+    let
+        jeopardyAudio =
+            if model.jeopardyPlaying then
+                audio
+                    [ id "jeopardy-audio"
+                    , src "assets/jeopardy-theme.mp3"
+                    , autoplay True
+                    , loop True
+                    ]
+                    []
+
+            else
+                text ""
+
+        quizAudio =
+            case currentQuizSong model of
+                Just songSrc ->
+                    audio
+                        [ id "quiz-audio"
+                        , src ("assets/" ++ songSrc)
+                        , autoplay True
+                        , on "loadedmetadata" (Decode.succeed SongMetadataLoaded)
+                        , on "ended" (Decode.succeed (TrackEnded songSrc))
+                        ]
+                        []
+
+                Nothing ->
+                    text ""
+
+        dingAudio =
+            if model.dingKey > 0 then
+                Html.Keyed.node "div"
+                    []
+                    [ ( "ding-" ++ String.fromInt model.dingKey
+                      , audio
+                            [ id "ding-audio"
+                            , src "assets/ding.mp3"
+                            , autoplay True
+                            , property "volume" (Encode.float 0.8)
+                            ]
+                            []
+                      )
+                    ]
+
+            else
+                text ""
+    in
+    div [] [ jeopardyAudio, quizAudio, dingAudio ]
+
+
 view : Model -> Html Msg
 view model =
     div []
         [ viewScreen model
+        , viewAudio model
         , timerBar model
         ]
 
@@ -2443,15 +2330,14 @@ subscriptions model =
 
     in
     Sub.batch
-        [ receiveTrackInfo TrackInfoReceived
-        , musicLoaded MusicLoaded
-        , musicError MusicError
-        , wsClientReady WsClientReady
+        [ wsClientReady WsClientReady
         , receiveFromWs WsDataReceived
         , wsClientFailed WsDisconnected
         , Time.every 1000 (\_ -> WsSyncTick)
         , keyboardSub
         , Browser.Events.onAnimationFrame (\posix -> Tick (toFloat (Time.posixToMillis posix)))
+        , receiveDomProperty DomPropertyReceived
+        , domPropertyError DomPropertyError
         ]
 
 -- TODO extract logic from TrackEnded and WsPong messages
