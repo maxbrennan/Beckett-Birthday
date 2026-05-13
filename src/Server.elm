@@ -24,8 +24,13 @@ update msg model =
         ClientConnected clientId ->
             ( model, sendToClient { clientId = clientId, payload = model.state } )
 
-        MessageReceived { payload } ->
-            ( { model | state = payload }, Cmd.none )
+        MessageReceived { clientId, payload } ->
+            ( { model | state = payload }
+            , sendToClient
+                { clientId = clientId
+                , payload = Encode.object [ ( "tag", Encode.string "ack" ) ]
+                }
+            )
 
 
 subscriptions : Model -> Sub Msg

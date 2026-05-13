@@ -46,7 +46,7 @@ port wsClientFailed : (String -> msg) -> Sub msg
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
 debug : Bool
 debug =
-    False
+    True
 
 
 -- Total correct ding presses required to pass the IQ test.
@@ -969,6 +969,13 @@ update msg model =
                             Err _ ->
                                 ( model, Cmd.none )
 
+                ConfirmingAnswerScreen nextScreen ->
+                    if isAck json then
+                        ( { model | screen = nextScreen }, Cmd.none )
+
+                    else
+                        ( model, Cmd.none )
+
                 _ ->
                     ( model, Cmd.none )
 
@@ -1024,14 +1031,6 @@ update msg model =
                                     model
                     in
                     ( newModel, Cmd.none )
-
-        -- WsPong _ ->
-        --     case model.screen of
-        --         ConfirmingAnswerScreen nextScreen ->
-        --             ( { model | screen = nextScreen }, Cmd.none )
-
-        --         _ ->
-        --             ( model, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )
@@ -1160,6 +1159,13 @@ encodeMaybeString =
 encodeMaybeFloat : Maybe Float -> Encode.Value
 encodeMaybeFloat =
     Maybe.map Encode.float >> Maybe.withDefault Encode.null
+
+
+isAck : String -> Bool
+isAck json =
+    Decode.decodeString (Decode.field "tag" Decode.string) json
+        |> Result.map ((==) "ack")
+        |> Result.withDefault False
 
 
 encodeFakeFlashPhase : FakeFlashPhase -> Encode.Value
@@ -1782,7 +1788,7 @@ viewAudio model =
                             [ id "ding-audio"
                             , src "assets/ding.mp3"
                             , autoplay True
-                            , property "volume" (Encode.float 0.8)
+                            , property "volume" (Encode.float iqDingVolume)
                             ]
                             []
                       )
