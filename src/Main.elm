@@ -155,15 +155,15 @@ type alias Question =
 
 questions : List Question
 questions =
-    [ { song = "golden.mp3", answers = [ "Golden" ] }
-    , { song = "im-just-ken.mp3", answers = [ "I'm Just Ken" ] }
-    , { song = "espresso.mp3", answers = [ "Espresso" ] }
+    [ { song = "texas.mp3", answers = [ "Choosin' Texas", "Choosing Texas" ] }
+    , { song = "golden.mp3", answers = [ "Golden" ] }
+    , { song = "cigarettes.mp3", answers = [ "20 Cigarettes" , "Twenty Cigarettes" ] } -- todo
     , { song = "revenge.mp4", answers = [ "Revenge", "Revenge Parody", "Revenge a Minecraft Parody" ] }
-    , { song = "chest-pain.mp3", answers = [ "Chest Pain", "I Love", "Chest Pain I Love" ] }
-    , { song = "i-saw-your-face.mp3", answers = [ "I Saw Your Face" ] }
-    , { song = "dracula.mp3", answers = [ "Dracula" ] }
-    , { song = "borderline.mp3", answers = [ "Borderline" ] }
-    , { song = "cant-stop.mp3", answers = [ "Can't Stop" ] }
+    , { song = "so-easy.mp3", answers = [ "So Easy", "To Fall in Love", "So Easy (To Fall in Love)" ] }
+    , { song = "california-gurls.mp3", answers = [ "California Gurls", "California Girls" ] }
+    , { song = "espresso.mp3", answers = [ "Espresso" ] }
+    , { song = "baby-shark.mp3", answers = [ "Baby Shark Hip Hop Version", "Baby Shark Hip Hop", "Hip Hop Baby Shark", "Baby Shark Hip Hop Remix" ] } -- todo
+    , { song = "anything-but-love.mp3", answers = [ "Anything But Love" ] } -- todo
     , { song = "korean.mp3", answers = [ "천 번 차이는 남자" ] }
     ]
 
@@ -177,7 +177,8 @@ normalize : String -> String
 normalize s =
     s
         |> String.toLower
-        |> String.filter (\c -> Char.isAlpha c || c == ' ')
+        |> String.replace "-" " "
+        |> String.filter (\c -> Char.isAlphaNum c || c == ' ')
         |> String.words
         |> String.join " "
 
