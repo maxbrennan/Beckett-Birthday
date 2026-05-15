@@ -29,7 +29,7 @@ port logToFile : String -> Cmd msg
 
 wsUrl : String
 wsUrl =
-    "ws://localhost:5270"
+    "ws://72.211.182.145:5270"
 
 
 port initWebSocketClient : String -> Cmd msg
@@ -46,7 +46,7 @@ port wsClientFailed : (String -> msg) -> Sub msg
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
 debug : Bool
 debug =
-    True
+    False
 
 
 -- Total correct ding presses required to pass the IQ test.
