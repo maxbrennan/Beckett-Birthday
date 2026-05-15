@@ -122,6 +122,14 @@ iqDingVolume =
     0.8
 
 
+-- Number of preloaded ding-audio slots cycled round-robin so rapid
+-- back-to-back triggers (e.g. the fake-flash countdown at 80 ms cadence)
+-- can play without cutting each other off.
+dingSlotCount : Int
+dingSlotCount =
+    8
+
+
 -- Milliseconds per tick for the counter animation on the fake-flash penalty screen.
 counterTickMs : Float
 counterTickMs =
@@ -295,7 +303,6 @@ type alias Model =
     , jeopardyPlaying : Bool
     , now : Float
     , pending : List PendingEvent
-    , hasSeenFakeFlashPunishment : Bool
     , savedState : Maybe PausedState
     , dingKey : Int
     , pendingStartTime : Maybe Float
@@ -342,7 +349,6 @@ init _ =
       , jeopardyPlaying = False
       , now = 0
       , pending = []
-      , hasSeenFakeFlashPunishment = False
       , savedState = Nothing
       , dingKey = 0
       , pendingStartTime = Nothing
@@ -787,11 +793,10 @@ update msg model =
             case model.screen of
                 IQTestActiveScreen state ->
                     if state.fakeFlashActive then
-                        if not model.hasSeenFakeFlashPunishment then
+                        if not state.fakeFlashUsed then
                             ( clearPending
                                 { model
-                                    | hasSeenFakeFlashPunishment = True
-                                    , screen =
+                                    | screen =
                                         FakeFlashCaughtScreen
                                             { questionIdx = state.questionIdx
                                             , originalTotal = state.totalDings
@@ -832,7 +837,7 @@ update msg model =
                                 state.questionIdx + 1
                         in
                         if completed then
-                            ( clearPending { model | screen = BlankScreen nextIdx, hasSeenFakeFlashPunishment = False }
+                            ( clearPending { model | screen = BlankScreen nextIdx }
                                 |> schedule 1000 (PlaySong nextIdx)
                             , Cmd.none
                             )
@@ -961,7 +966,6 @@ update msg model =
                                 ( { newModel
                                     | wsClientId = model.wsClientId
                                     , dingKey = model.dingKey
-                                    , hasSeenFakeFlashPunishment = model.hasSeenFakeFlashPunishment
                                   }
                                 , videoCmd
                                 )
@@ -1057,12 +1061,16 @@ update msg model =
                     case state.phase of
                         FfTickNumerator ->
                             if state.displayNumerator > 0 then
+                                let
+                                    targetId =
+                                        "ding-audio-" ++ String.fromInt (modBy dingSlotCount model.dingKey)
+                                in
                                 ( { model
                                     | screen = FakeFlashCaughtScreen { state | displayNumerator = state.displayNumerator - 1 }
                                     , dingKey = model.dingKey + 1
                                   }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , setDomProperty { elementId = "ding-audio", property = "volume", value = Encode.float 0.15 }
+                                , setDomProperty { elementId = targetId, property = "volume", value = Encode.float 0.15 }
                                 )
 
                             else
@@ -1077,12 +1085,16 @@ update msg model =
                                     state.originalTotal * 2
                             in
                             if state.displayDenominator < target then
+                                let
+                                    targetId =
+                                        "ding-audio-" ++ String.fromInt (modBy dingSlotCount model.dingKey)
+                                in
                                 ( { model
                                     | screen = FakeFlashCaughtScreen { state | displayDenominator = state.displayDenominator + 1 }
                                     , dingKey = model.dingKey + 1
                                   }
                                     |> schedule counterTickMs FakeFlashCounterTick
-                                , setDomProperty { elementId = "ding-audio", property = "volume", value = Encode.float 0.3 }
+                                , setDomProperty { elementId = targetId, property = "volume", value = Encode.float 0.3 }
                                 )
 
                             else
@@ -1166,6 +1178,18 @@ isAck json =
     Decode.decodeString (Decode.field "tag" Decode.string) json
         |> Result.map ((==) "ack")
         |> Result.withDefault False
+
+
+-- For slot index s and the current model.dingKey, returns the largest n ≤ dingKey
+-- such that (n - 1) mod dingSlotCount == s. Returns 0 if the slot has not yet
+-- been triggered (dingKey ≤ s).
+lastTriggerForSlot : Int -> Int -> Int
+lastTriggerForSlot slotIndex dingKey =
+    if dingKey <= slotIndex then
+        0
+
+    else
+        dingKey - modBy dingSlotCount (dingKey - 1 - slotIndex)
 
 
 encodeFakeFlashPhase : FakeFlashPhase -> Encode.Value
@@ -1377,7 +1401,6 @@ encodeModel model =
         , ( "now", Encode.float model.now )
         , ( "pending", Encode.list encodePendingEvent model.pending )
         , ( "savedState", model.savedState |> Maybe.map encodePausedState |> Maybe.withDefault Encode.null )
-        , ( "hasSeenFakeFlashPunishment", Encode.bool model.hasSeenFakeFlashPunishment )
         , ( "dingKey", Encode.int model.dingKey )
         , ( "pendingStartTime", encodeMaybeFloat model.pendingStartTime )
         , ( "wsClientId", encodeMaybeString model.wsClientId )
@@ -1630,14 +1653,13 @@ decodePausedState =
 
 decodeModel : Decoder Model
 decodeModel =
-    Decode.map8
-        (\scr jp n pend hsf ss dk pst ->
+    Decode.map7
+        (\scr jp n pend ss dk pst ->
             \wci tea ->
                 { screen = scr
                 , jeopardyPlaying = jp
                 , now = n
                 , pending = pend
-                , hasSeenFakeFlashPunishment = hsf
                 , savedState = ss
                 , dingKey = dk
                 , pendingStartTime = pst
@@ -1649,7 +1671,6 @@ decodeModel =
         (Decode.field "jeopardyPlaying" Decode.bool)
         (Decode.field "now" Decode.float)
         (Decode.field "pending" (Decode.list decodePendingEvent))
-        (Decode.field "hasSeenFakeFlashPunishment" Decode.bool)
         (Decode.field "savedState" (Decode.nullable decodePausedState))
         (Decode.field "dingKey" Decode.int)
         (Decode.field "pendingStartTime" (Decode.nullable Decode.float))
@@ -1740,12 +1761,29 @@ currentQuizSong model =
                         if isVideo q.song then
                             Nothing
 
+                        else if hasPendingPlaySong idx model.pending then
+                            Nothing
+
                         else
                             Just q.song
                     )
 
         _ ->
             Nothing
+
+
+hasPendingPlaySong : Int -> List PendingEvent -> Bool
+hasPendingPlaySong idx pending =
+    List.any
+        (\e ->
+            case e.msg of
+                PlaySong i ->
+                    i == idx
+
+                _ ->
+                    False
+        )
+        pending
 
 
 viewAudio : Model -> Html Msg
@@ -1780,22 +1818,31 @@ viewAudio model =
                     text ""
 
         dingAudio =
-            if model.dingKey > 0 then
-                Html.Keyed.node "div"
-                    []
-                    [ ( "ding-" ++ String.fromInt model.dingKey
-                      , audio
-                            [ id "ding-audio"
-                            , src "assets/ding.mp3"
-                            , autoplay True
-                            , property "volume" (Encode.float iqDingVolume)
-                            ]
-                            []
-                      )
-                    ]
+            Html.Keyed.node "div"
+                []
+                (List.range 0 (dingSlotCount - 1)
+                    |> List.filterMap
+                        (\s ->
+                            let
+                                lastTrigger =
+                                    lastTriggerForSlot s model.dingKey
+                            in
+                            if lastTrigger == 0 then
+                                Nothing
 
-            else
-                text ""
+                            else
+                                Just
+                                    ( "ding-slot-" ++ String.fromInt s ++ "-" ++ String.fromInt lastTrigger
+                                    , audio
+                                        [ id ("ding-audio-" ++ String.fromInt s)
+                                        , src "assets/ding.mp3"
+                                        , autoplay True
+                                        , property "volume" (Encode.float iqDingVolume)
+                                        ]
+                                        []
+                                    )
+                        )
+                )
     in
     div [] [ jeopardyAudio, quizAudio, dingAudio ]
 
@@ -1887,7 +1934,15 @@ viewScreen model =
                         Nothing ->
                             "#a8c8e0"
             in
-            screenBg bg []
+            screenBg bg
+                [ p
+                    [ style "font-size" "32px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    ]
+                    [ text "Listen carefully..." ]
+                ]
 
         VideoScreen _ filename ->
             div
