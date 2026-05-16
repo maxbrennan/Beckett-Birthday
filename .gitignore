@@ -11,6 +11,3 @@ node_modules/
 
 # Build output
 dist/
-
-# Large files
-assets/

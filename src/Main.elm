@@ -157,13 +157,13 @@ questions : List Question
 questions =
     [ { song = "texas.mp3", answers = [ "Choosin' Texas", "Choosing Texas" ] }
     , { song = "golden.mp3", answers = [ "Golden" ] }
-    , { song = "cigarettes.mp3", answers = [ "20 Cigarettes" , "Twenty Cigarettes" ] } -- todo
+    , { song = "cigarettes.mp3", answers = [ "20 Cigarettes" , "Twenty Cigarettes" ] }
     , { song = "revenge.mp4", answers = [ "Revenge", "Revenge Parody", "Revenge a Minecraft Parody" ] }
     , { song = "so-easy.mp3", answers = [ "So Easy", "To Fall in Love", "So Easy (To Fall in Love)" ] }
     , { song = "california-gurls.mp3", answers = [ "California Gurls", "California Girls" ] }
     , { song = "espresso.mp3", answers = [ "Espresso" ] }
-    , { song = "baby-shark.mp3", answers = [ "Baby Shark Hip Hop Version", "Baby Shark Hip Hop", "Hip Hop Baby Shark", "Baby Shark Hip Hop Remix" ] } -- todo
-    , { song = "anything-but-love.mp3", answers = [ "Anything But Love" ] } -- todo
+    , { song = "baby-shark.mp3", answers = [ "Baby Shark Hip Hop Version", "Baby Shark Hip Hop", "Hip Hop Baby Shark", "Baby Shark Hip Hop Remix" ] }
+    , { song = "anything-but-love.mp3", answers = [ "Anything But Love" ] }
     , { song = "korean.mp3", answers = [ "천 번 차이는 남자" ] }
     ]
 
