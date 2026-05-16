@@ -1,7 +1,7 @@
 {
   "name": "clairet-birthday",
   "productName": "Clairet Birthday",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "main": "electron.js",
   "scripts": {
     "build:server": "elm make src/Server.elm --output=elm-server.js",

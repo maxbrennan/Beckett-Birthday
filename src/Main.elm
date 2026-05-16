@@ -57,7 +57,7 @@ iqQuestionCount =
         10
 
     else
-        100
+        50
 
 
 -- Lower bound (as a fraction of iqQuestionCount) for the fake-flash trap position.
