@@ -29,7 +29,7 @@ port logToFile : String -> Cmd msg
 
 wsUrl : String
 wsUrl =
-    "ws://localhost:5270"
+    "ws://72.211.182.145:5271"
 
 
 port initWebSocketClient : String -> Cmd msg
@@ -57,7 +57,7 @@ iqQuestionCount =
         10
 
     else
-        50
+        100
 
 
 -- Lower bound (as a fraction of iqQuestionCount) for the fake-flash trap position.

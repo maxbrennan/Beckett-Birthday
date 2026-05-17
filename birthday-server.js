@@ -9,7 +9,7 @@ const app = Elm.Server.init();
 const clients = new Map();
 let nextId = 0;
 
-const wss = new WebSocket.Server({ host: '0.0.0.0', port: 5270 });
+const wss = new WebSocket.Server({ host: '0.0.0.0', port: 5271 });
 
 wss.on('connection', (ws) => {
     const clientId = String(nextId++);
@@ -72,7 +72,7 @@ wss.on('error', (err) => {
     process.exit(1);
 });
 
-console.log('WebSocket server listening on ws://0.0.0.0:5270');
+console.log('WebSocket server listening on ws://0.0.0.0:5271');
 
 const shutdown = () => { wss.close(() => process.exit(0)); };
 process.on('SIGINT', shutdown);

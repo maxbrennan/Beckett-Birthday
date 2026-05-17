@@ -1,5 +1,6 @@
 port module Server exposing (..)
 
+import Dict
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Platform
@@ -21,6 +22,34 @@ type Msg
 stateFilePath : String
 stateFilePath =
     "state.json"
+
+
+snapshotForJeopardy : Encode.Value -> Encode.Value
+snapshotForJeopardy state =
+    let
+        getField name =
+            Decode.decodeValue (Decode.field name Decode.value) state
+                |> Result.withDefault Encode.null
+
+        savedState =
+            Encode.object
+                [ ( "screen", getField "screen" )
+                , ( "pending", getField "pending" )
+                , ( "savedAt", getField "now" )
+                , ( "songResumeTime", Encode.null )
+                , ( "videoResumeTime", Encode.null )
+                ]
+
+        stateDict =
+            Decode.decodeValue (Decode.dict Decode.value) state
+                |> Result.withDefault Dict.empty
+    in
+    stateDict
+        |> Dict.insert "screen" (Encode.object [ ( "tag", Encode.string "BeginScreen" ) ])
+        |> Dict.insert "jeopardyPlaying" (Encode.bool True)
+        |> Dict.insert "pending" (Encode.list identity [])
+        |> Dict.insert "savedState" savedState
+        |> Encode.dict identity identity
 
 
 init : () -> ( Model, Cmd Msg )
@@ -45,7 +74,13 @@ update msg model =
 
         ClientDisconnected clientId ->
             if model.connectedClientId == Just clientId then
-                ( { model | connectedClientId = Nothing }, Cmd.none )
+                let
+                    newState =
+                        snapshotForJeopardy model.state
+                in
+                ( { model | connectedClientId = Nothing, state = newState }
+                , saveState newState
+                )
 
             else
                 ( model, Cmd.none )
