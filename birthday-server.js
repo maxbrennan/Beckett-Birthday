@@ -1,10 +1,7 @@
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const { Elm } = require('./elm-server.js');
-
-try { execSync('lsof -ti:5270 | xargs kill'); } catch (_) {}
 
 const STATE_FILE = path.join(__dirname, 'state.json');
 
@@ -71,16 +68,13 @@ app.ports.readFile.subscribe((filePath) => {
 });
 
 wss.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-        console.error('Port 5270 already in use. Kill the old process: lsof -ti:5270 | xargs kill');
-    } else {
-        console.error('WebSocket server error:', err.message);
-    }
+    console.error('WebSocket server error:', err.message);
     process.exit(1);
 });
 
 console.log('WebSocket server listening on ws://0.0.0.0:5270');
 
-const shutdown = () => wss.close(() => process.exit(0));
+const shutdown = () => { wss.close(() => process.exit(0)); };
 process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 process.on('SIGHUP', () => {});
