@@ -8,14 +8,7 @@ try { execSync('lsof -ti:5270 | xargs kill'); } catch (_) {}
 
 const STATE_FILE = path.join(__dirname, 'state.json');
 
-let initialState = {};
-try {
-    initialState = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-} catch (_) {
-    initialState = {};
-}
-
-const app = Elm.Server.init({ flags: initialState });
+const app = Elm.Server.init();
 const clients = new Map();
 let nextId = 0;
 
@@ -50,11 +43,11 @@ app.ports.sendToClient.subscribe(({ clientId, payload }) => {
     }
 });
 
-app.ports.rejectClient.subscribe((clientId) => {
+app.ports.closeClient.subscribe(({ clientId, reason }) => {
     const ws = clients.get(clientId);
     if (ws) {
         try {
-            ws.close(4000, 'Another client is already connected');
+            ws.close(1000, reason);
         } catch (_) {}
         clients.delete(clientId);
     }
@@ -63,6 +56,17 @@ app.ports.rejectClient.subscribe((clientId) => {
 app.ports.saveState.subscribe((payload) => {
     fs.writeFile(STATE_FILE, JSON.stringify(payload, null, 2), (err) => {
         if (err) console.error('Failed to write state file:', err.message);
+    });
+});
+
+app.ports.readFile.subscribe((filePath) => {
+    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, filePath);
+    fs.readFile(fullPath, 'utf8', (err, data) => {
+        if (err) {
+            app.ports.readFileResult.send({ path: filePath, contents: null, error: err.message });
+        } else {
+            app.ports.readFileResult.send({ path: filePath, contents: data, error: null });
+        }
     });
 });
 

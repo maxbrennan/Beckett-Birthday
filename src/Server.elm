@@ -1,12 +1,13 @@
 port module Server exposing (..)
 
+import Json.Decode as Decode
 import Json.Encode as Encode
 import Platform
 
 
 type alias Model =
     { state : Encode.Value
-    , connected : Maybe String
+    , connectedClientId : Maybe String
     }
 
 
@@ -14,35 +15,43 @@ type Msg
     = ClientConnected String
     | ClientDisconnected String
     | MessageReceived { clientId : String, payload : Encode.Value }
+    | FileRead String (Result String String)
 
 
-init : Encode.Value -> ( Model, Cmd Msg )
-init savedState =
-    ( { state = savedState, connected = Nothing }, Cmd.none )
+stateFilePath : String
+stateFilePath =
+    "state.json"
+
+
+init : () -> ( Model, Cmd Msg )
+init _ =
+    ( { state = Encode.object [], connectedClientId = Nothing }
+    , readFile stateFilePath
+    )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         ClientConnected clientId ->
-            case model.connected of
+            case model.connectedClientId of
                 Just _ ->
-                    ( model, rejectClient clientId )
+                    ( model, closeClient { clientId = clientId, reason = "Another client is already connected" } )
 
                 Nothing ->
-                    ( { model | connected = Just clientId }
+                    ( { model | connectedClientId = Just clientId }
                     , sendToClient { clientId = clientId, payload = model.state }
                     )
 
         ClientDisconnected clientId ->
-            if model.connected == Just clientId then
-                ( { model | connected = Nothing }, Cmd.none )
+            if model.connectedClientId == Just clientId then
+                ( { model | connectedClientId = Nothing }, Cmd.none )
 
             else
                 ( model, Cmd.none )
 
         MessageReceived { clientId, payload } ->
-            if model.connected == Just clientId then
+            if model.connectedClientId == Just clientId then
                 ( { model | state = payload }
                 , Cmd.batch
                     [ saveState payload
@@ -56,6 +65,23 @@ update msg model =
             else
                 ( model, Cmd.none )
 
+        FileRead path result ->
+            if path == stateFilePath then
+                case result of
+                    Ok contents ->
+                        case Decode.decodeString Decode.value contents of
+                            Ok value ->
+                                ( { model | state = value }, Cmd.none )
+
+                            Err _ ->
+                                ( model, Cmd.none )
+
+                    Err _ ->
+                        ( model, Cmd.none )
+
+            else
+                ( model, Cmd.none )
+
 
 subscriptions : Model -> Sub Msg
 subscriptions _ =
@@ -63,10 +89,22 @@ subscriptions _ =
         [ onConnection ClientConnected
         , onDisconnection ClientDisconnected
         , onMessage MessageReceived
+        , readFileResult
+            (\{ path, contents, error } ->
+                case ( contents, error ) of
+                    ( Just c, _ ) ->
+                        FileRead path (Ok c)
+
+                    ( _, Just e ) ->
+                        FileRead path (Err e)
+
+                    _ ->
+                        FileRead path (Err "unknown error")
+            )
         ]
 
 
-main : Program Encode.Value Model Msg
+main : Program () Model Msg
 main =
     Platform.worker
         { init = init
@@ -83,6 +121,10 @@ port onMessage : ({ clientId : String, payload : Encode.Value } -> msg) -> Sub m
 
 port sendToClient : { clientId : String, payload : Encode.Value } -> Cmd msg
 
-port rejectClient : String -> Cmd msg
+port closeClient : { clientId : String, reason : String } -> Cmd msg
 
 port saveState : Encode.Value -> Cmd msg
+
+port readFile : String -> Cmd msg
+
+port readFileResult : ({ path : String, contents : Maybe String, error : Maybe String } -> msg) -> Sub msg
