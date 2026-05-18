@@ -1,0 +1,36 @@
+syntax = "proto3";
+package birthday;
+
+enum AuthLevel {
+  AUTH_LEVEL_NONE   = 0;
+  AUTH_LEVEL_PLAYER = 1;
+  AUTH_LEVEL_ADMIN  = 2;
+}
+
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+}
+
+message StateUpdate      { string json = 1; }
+message Ack              {}
+message AuthChallenge    { bytes  challenge = 1; AuthLevel level = 2; }
+message AuthResponse     { bytes  challenge_response = 1; }
+message AuthResult       { bool   success = 1; AuthLevel level = 2; }
+message PermissionDenied { AuthLevel required = 1; AuthLevel actual = 2; Action action = 3; }
+
+message ServerMessage {
+  oneof payload {
+    StateUpdate      state_update      = 1;
+    Ack              ack               = 2;
+    AuthChallenge    auth_challenge    = 3;
+    AuthResult       auth_result       = 4;
+    PermissionDenied permission_denied = 5;
+  }
+}
+
+message ClientMessage {
+  oneof payload {
+    StateUpdate  state_update  = 1;
+    AuthResponse auth_response = 2;
+  }
+}

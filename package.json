@@ -23,6 +23,8 @@
       "elm-client.js",
       "electron.js",
       "index.html",
+      "proto-codec.js",
+      "proto/**/*",
       "assets/**/*"
     ],
     "mac": {
@@ -50,6 +52,7 @@
   },
   "dependencies": {
     "pm2": "^7.0.1",
+    "protobufjs": "^8.3.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {

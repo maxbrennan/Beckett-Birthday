@@ -1,4 +1,5 @@
 const Ws = require('ws')
+const codec = require('./proto-codec.js')
 
 const app = Elm.Main.init({ node: document.getElementById('app') })
 let received = false
@@ -54,10 +55,31 @@ app.ports.initWebSocketClient.subscribe((url) => {
   })
 
   ws.on('message', (data) => {
-    app.ports.receiveFromWs.send(data.toString())
-    if (!received) {
-      console.log(`WebSocket ${id} received first message: ${data.toString()}`)
-      received = true
+    let msg
+    try {
+      msg = codec.decodeServer(data)
+    } catch (err) {
+      console.error('Failed to decode ServerMessage:', err.message)
+      return
+    }
+    switch (msg.payload) {
+      case 'stateUpdate':
+        app.ports.receiveFromWs.send(msg.stateUpdate.json)
+        if (!received) {
+          console.log(`WebSocket ${id} received first message: ${msg.stateUpdate.json}`)
+          received = true
+        }
+        break
+      case 'ack':
+        app.ports.receiveFromWs.send('{"tag":"ack"}')
+        break
+      case 'authChallenge':
+      case 'authResult':
+      case 'permissionDenied':
+        console.log(`Received ${msg.payload} (handler not implemented)`)
+        break
+      default:
+        console.warn('Unknown ServerMessage payload:', msg.payload)
     }
   })
 
@@ -73,6 +95,7 @@ app.ports.initWebSocketClient.subscribe((url) => {
 app.ports.sendToWs.subscribe(({ wsId, data }) => {
   const ws = wsMap.get(wsId)
   if (ws && ws.readyState === Ws.OPEN) {
-    ws.send(data)
+    const buf = codec.encodeClient({ stateUpdate: { json: data } })
+    ws.send(buf, { binary: true })
   }
 })

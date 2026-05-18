@@ -2,6 +2,7 @@ const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
 const { Elm } = require('./elm-server.js');
+const codec = require('./proto-codec.js');
 
 const STATE_FILE = path.join(__dirname, 'state.json');
 
@@ -9,7 +10,7 @@ const app = Elm.Server.init();
 const clients = new Map();
 let nextId = 0;
 
-const wss = new WebSocket.Server({ host: '0.0.0.0', port: 5271 });
+const wss = new WebSocket.Server({ host: '0.0.0.0', port: 5270 });
 
 wss.on('connection', (ws) => {
     const clientId = String(nextId++);
@@ -18,13 +19,30 @@ wss.on('connection', (ws) => {
     app.ports.onConnection.send(clientId);
 
     ws.on('message', (data) => {
-        let parsed;
+        let msg;
         try {
-            parsed = JSON.parse(data.toString());
-        } catch (_) {
+            msg = codec.decodeClient(data);
+        } catch (err) {
+            console.error('Failed to decode ClientMessage:', err.message);
             return;
         }
-        app.ports.onMessage.send({ clientId, payload: parsed });
+        switch (msg.payload) {
+            case 'stateUpdate': {
+                let parsed;
+                try {
+                    parsed = JSON.parse(msg.stateUpdate.json);
+                } catch (_) {
+                    return;
+                }
+                app.ports.onMessage.send({ clientId, payload: parsed });
+                break;
+            }
+            case 'authResponse':
+                console.log(`Auth response from ${clientId} (handler not implemented)`);
+                break;
+            default:
+                console.warn('Unknown ClientMessage payload:', msg.payload);
+        }
     });
 
     ws.on('close', () => {
@@ -35,9 +53,13 @@ wss.on('connection', (ws) => {
 
 app.ports.sendToClient.subscribe(({ clientId, payload }) => {
     const ws = clients.get(clientId);
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(payload));
-    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const isAck = payload && typeof payload === 'object' && payload.tag === 'ack';
+    const buf = isAck
+        ? codec.encodeServer({ ack: {} })
+        : codec.encodeServer({ stateUpdate: { json: JSON.stringify(payload) } });
+    ws.send(buf, { binary: true });
 });
 
 app.ports.closeClient.subscribe(({ clientId, reason }) => {
@@ -72,7 +94,7 @@ wss.on('error', (err) => {
     process.exit(1);
 });
 
-console.log('WebSocket server listening on ws://0.0.0.0:5271');
+console.log('WebSocket server listening on ws://0.0.0.0:5270');
 
 const shutdown = () => { wss.close(() => process.exit(0)); };
 process.on('SIGINT', shutdown);
