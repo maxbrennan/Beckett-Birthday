@@ -7,24 +7,52 @@ enum AuthLevel {
   AUTH_LEVEL_ADMIN  = 2;
 }
 
-enum Action {
-  ACTION_UNSPECIFIED = 0;
+message StateUpdate   { string json = 1; }
+message Ack           {}
+message AuthChallenge { bytes challenge = 1; AuthLevel level = 2; }
+
+message PasswordAuthResponse {
+  string username   = 1;
+  string password   = 2;
+  bytes  public_key = 3;
 }
 
-message StateUpdate      { string json = 1; }
-message Ack              {}
-message AuthChallenge    { bytes  challenge = 1; AuthLevel level = 2; }
-message AuthResponse     { bytes  challenge_response = 1; }
-message AuthResult       { bool   success = 1; AuthLevel level = 2; }
-message PermissionDenied { AuthLevel required = 1; AuthLevel actual = 2; Action action = 3; }
+message KeyAuthResponse {
+  string uuid               = 1;
+  bytes  challenge_response = 2;
+}
+
+message AuthResponse {
+  oneof method {
+    PasswordAuthResponse password = 1;
+    KeyAuthResponse      key      = 2;
+  }
+}
+
+message PasswordAuthResult {
+  bool      success = 1;
+  AuthLevel level   = 2;
+  string    uuid    = 3;
+}
+
+message KeyAuthResult {
+  bool      success = 1;
+  AuthLevel level   = 2;
+}
+
+message AuthResult {
+  oneof result {
+    PasswordAuthResult password = 1;
+    KeyAuthResult      key      = 2;
+  }
+}
 
 message ServerMessage {
   oneof payload {
-    StateUpdate      state_update      = 1;
-    Ack              ack               = 2;
-    AuthChallenge    auth_challenge    = 3;
-    AuthResult       auth_result       = 4;
-    PermissionDenied permission_denied = 5;
+    StateUpdate   state_update   = 1;
+    Ack           ack            = 2;
+    AuthChallenge auth_challenge = 3;
+    AuthResult    auth_result    = 4;
   }
 }
 
