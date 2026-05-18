@@ -12,7 +12,9 @@
     "start:client": "npm run build:client && pm2 startOrRestart ecosystem.config.js --only birthday-client",
     "stop": "pm2 stop ecosystem.config.js || true",
     "start": "npm run build:server && npm run build:client && pm2 startOrRestart ecosystem.config.js",
-    "dist": "npm run build:client && electron-builder",
+    "dist:win": "npm run build:client && electron-builder --win",
+    "dist:mac": "npm run build:client && electron-builder --mac",
+    "dist": "electron-builder",
     "reset": "npm run stop && node reset.js"
   },
   "build": {
@@ -30,6 +32,17 @@
           "target": "dmg",
           "arch": [
             "universal"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
           ]
         }
       ]
