@@ -14,7 +14,8 @@
     "start": "npm run build:server && npm run build:client && pm2 startOrRestart ecosystem.config.js",
     "dist:win": "npm run build:client && electron-builder --win",
     "dist:mac": "npm run build:client && electron-builder --mac",
-    "reset": "npm run stop && node reset.js"
+    "reset": "npm run stop && node reset.js",
+    "add-admin": "node add-admin.js"
   },
   "build": {
     "files": [

@@ -1,1 +1,23 @@
-{}
+{
+  "dingKey": 0,
+  "jeopardyPlaying": true,
+  "now": 1779129365282,
+  "pending": [],
+  "pendingStartTime": null,
+  "savedState": {
+    "screen": {
+      "tag": "VideoScreen",
+      "idx": 3,
+      "s": "revenge.mp4"
+    },
+    "pending": [],
+    "savedAt": 1779129365282,
+    "songResumeTime": null,
+    "videoResumeTime": null
+  },
+  "screen": {
+    "tag": "BeginScreen"
+  },
+  "timerEndsAt": 1779734108294,
+  "wsClientId": "0"
+}

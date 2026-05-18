@@ -199,21 +199,18 @@ function signWithKey(privateKeyPem, data) {
 function promptCredentials() {
     return new Promise((resolve) => {
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        let muted = false;
+        rl._writeToOutput = (s) => {
+            if (!muted) rl.output.write(s);
+        };
         rl.question('Username: ', (username) => {
-            const stdout = process.stdout;
-            const origWrite = stdout.write.bind(stdout);
-            stdout.write = (chunk, encoding, cb) => {
-                if (typeof chunk === 'string' && chunk !== '\n' && chunk !== '\r\n') {
-                    return origWrite('', encoding, cb);
-                }
-                return origWrite(chunk, encoding, cb);
-            };
             rl.question('Password: ', (password) => {
-                stdout.write = origWrite;
-                origWrite('\n');
+                muted = false;
+                rl.output.write('\n');
                 rl.close();
                 resolve({ username: username.trim(), password });
             });
+            muted = true;
         });
     });
 }
@@ -240,6 +237,6 @@ module.exports = {
     handleAuthChallenge,
     handleAuthResponse,
     handleAuthResult,
-    // Exposed for fixtures / testing only:
-    _internals: { hashPassword, loadOrGenerateKeys, persistUuid, loadStoredUuid },
+    // Exposed for fixtures / scripts:
+    _internals: { hashPassword, loadOrGenerateKeys, persistUuid, loadStoredUuid, promptCredentials, USERS_FILE, SERVER_DIR },
 };
