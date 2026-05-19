@@ -60,7 +60,7 @@ function handleAuthResponse(responseMsg, originalChallenge) {
     switch (responseMsg.method) {
         case 'password': {
             const { username, password, publicKey } = responseMsg.password;
-            const publicKeyPem = Buffer.from(publicKey).toString('utf8');
+            const publicKeyPem = toBuffer(publicKey).toString('utf8');
             const user = findUser(username);
             if (!user || !verifyPassword(password, user.salt, user.hash)) {
                 return { password: { success: false, level: AUTH_LEVEL_NONE, uuid: '' } };
@@ -108,6 +108,8 @@ function handleAuthResult(resultMsg) {
 
 function toBuffer(maybe) {
     if (Buffer.isBuffer(maybe)) return maybe;
+    if (maybe instanceof Uint8Array) return Buffer.from(maybe);
+    if (typeof maybe === 'string') return Buffer.from(maybe, 'base64');
     return Buffer.from(maybe);
 }
 

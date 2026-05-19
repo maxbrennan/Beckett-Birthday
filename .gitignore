@@ -14,3 +14,6 @@ dist/
 
 # Auth (server-local user/uuid stores; never commit)
 .auth/
+
+# TLS certs (local dev; never commit private keys)
+certs/

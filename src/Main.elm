@@ -29,7 +29,7 @@ port logToFile : String -> Cmd msg
 
 wsUrl : String
 wsUrl =
-    "ws://localhost:5270"
+    "wss://localhost"
 
 
 port initWebSocketClient : String -> Cmd msg
@@ -948,38 +948,44 @@ update msg model =
         WsClientReady wsId ->
             ( { model | wsClientId = Just wsId, screen = WsLoadingScreen }, Cmd.none )
 
-        WsDataReceived json ->
-            case model.screen of
-                WsLoadingScreen ->
-                    if String.trim json == "{}" then
-                        ( { model | screen = BeginScreen, jeopardyPlaying = True }, Cmd.none )
+        WsDataReceived envelopeJson ->
+            case Decode.decodeString decodeServerEnvelope envelopeJson of
+                Ok (ServerStateUpdate inner) ->
+                    case model.screen of
+                        WsLoadingScreen ->
+                            if String.trim inner == "{}" then
+                                ( { model | screen = BeginScreen, jeopardyPlaying = True }, Cmd.none )
 
-                    else
-                        case Decode.decodeString decodeModel json of
-                            Ok newModel ->
-                                let
-                                    videoCmd =
-                                        newModel.savedState
-                                            |> Maybe.andThen .videoResumeTime
-                                            |> Maybe.map (\t -> setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t })
-                                            |> Maybe.withDefault Cmd.none
-                                in
-                                ( { newModel
-                                    | wsClientId = model.wsClientId
-                                    , dingKey = model.dingKey
-                                  }
-                                , videoCmd
-                                )
+                            else
+                                case Decode.decodeString decodeModel inner of
+                                    Ok newModel ->
+                                        let
+                                            videoCmd =
+                                                newModel.savedState
+                                                    |> Maybe.andThen .videoResumeTime
+                                                    |> Maybe.map (\t -> setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t })
+                                                    |> Maybe.withDefault Cmd.none
+                                        in
+                                        ( { newModel
+                                            | wsClientId = model.wsClientId
+                                            , dingKey = model.dingKey
+                                          }
+                                        , videoCmd
+                                        )
 
-                            Err _ ->
-                                ( model, Cmd.none )
+                                    Err _ ->
+                                        ( model, Cmd.none )
 
-                ConfirmingAnswerScreen nextScreen ->
-                    if isAck json then
-                        ( { model | screen = nextScreen }, Cmd.none )
+                        _ ->
+                            ( model, Cmd.none )
 
-                    else
-                        ( model, Cmd.none )
+                Ok ServerAck ->
+                    case model.screen of
+                        ConfirmingAnswerScreen nextScreen ->
+                            ( { model | screen = nextScreen }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
@@ -1023,7 +1029,7 @@ update msg model =
                                 _ ->
                                     model
                     in
-                    ( newModel, sendToWs { wsId = wsId, data = Encode.encode 0 (encodeModel newModel) } )
+                    ( newModel, sendToWs { wsId = wsId, data = Encode.encode 0 (clientStateEnvelope newModel) } )
 
                 Nothing ->
                     let
@@ -1174,11 +1180,35 @@ encodeMaybeFloat =
     Maybe.map Encode.float >> Maybe.withDefault Encode.null
 
 
-isAck : String -> Bool
-isAck json =
-    Decode.decodeString (Decode.field "tag" Decode.string) json
-        |> Result.map ((==) "ack")
-        |> Result.withDefault False
+type ServerEnvelope
+    = ServerStateUpdate String
+    | ServerAck
+    | ServerAuth
+    | ServerUnknown
+
+
+decodeServerEnvelope : Decode.Decoder ServerEnvelope
+decodeServerEnvelope =
+    Decode.field "payload" Decode.string
+        |> Decode.andThen
+            (\variant ->
+                case variant of
+                    "stateUpdate" ->
+                        Decode.at [ "stateUpdate", "json" ] Decode.string
+                            |> Decode.map ServerStateUpdate
+
+                    "ack" ->
+                        Decode.succeed ServerAck
+
+                    "authChallenge" ->
+                        Decode.succeed ServerAuth
+
+                    "authResult" ->
+                        Decode.succeed ServerAuth
+
+                    _ ->
+                        Decode.succeed ServerUnknown
+            )
 
 
 -- For slot index s and the current model.dingKey, returns the largest n ≤ dingKey
@@ -1391,6 +1421,14 @@ encodePausedState s =
         , ( "savedAt", Encode.float s.savedAt )
         , ( "songResumeTime", encodeMaybeFloat s.songResumeTime )
         , ( "videoResumeTime", encodeMaybeFloat s.videoResumeTime )
+        ]
+
+
+clientStateEnvelope : Model -> Encode.Value
+clientStateEnvelope model =
+    Encode.object
+        [ ( "payload", Encode.string "stateUpdate" )
+        , ( "stateUpdate", Encode.object [ ( "json", Encode.string (Encode.encode 0 (encodeModel model)) ) ] )
         ]
 
 

@@ -39,7 +39,7 @@ const generateWsId = () => String(nextWsId++)
 app.ports.initWebSocketClient.subscribe((url) => {
   console.log(`Initializing WebSocket client with URL: ${url}`)
   const id = generateWsId()
-  const ws = new Ws(url)
+  const ws = new Ws(url, { rejectUnauthorized: false }) // TODO remove rejectUnauthorized in production with valid certs
 
   const fireFailed = (reason) => {
     console.log(`WebSocket ${id} failed: ${reason}`)
@@ -62,40 +62,26 @@ app.ports.initWebSocketClient.subscribe((url) => {
       console.error('Failed to decode ServerMessage:', err.message)
       return
     }
-    switch (msg.payload) {
-      case 'stateUpdate':
-        app.ports.receiveFromWs.send(msg.stateUpdate.json)
-        if (!received) {
-          console.log(`WebSocket ${id} received first message: ${msg.stateUpdate.json}`)
-          received = true
-        }
-        break
-      case 'ack':
-        app.ports.receiveFromWs.send('{"tag":"ack"}')
-        break
-      case 'authChallenge':
-      case 'authResult':
-      case 'permissionDenied':
-        console.log(`Received ${msg.payload} (handler not implemented)`)
-        break
-      default:
-        console.warn('Unknown ServerMessage payload:', msg.payload)
+    const encoded = JSON.stringify(msg)
+    app.ports.receiveFromWs.send(encoded)
+    if (!received) {
+      console.log(`WebSocket ${id} received first message: ${encoded}`)
+      received = true
     }
   })
 
-  ws.on('close', () => {
-    fireFailed('closed')
+  ws.on('close', (code, reason) => {
+    fireFailed(`closed ${reason.toString()} (code ${code})`)
   })
 
-  ws.on('error', () => {
-    fireFailed('error')
+  ws.on('error', (error) => {
+    fireFailed(`error ${error.message}`)
   })
 })
 
 app.ports.sendToWs.subscribe(({ wsId, data }) => {
   const ws = wsMap.get(wsId)
   if (ws && ws.readyState === Ws.OPEN) {
-    const buf = codec.encodeClient({ stateUpdate: { json: data } })
-    ws.send(buf, { binary: true })
+    ws.send(codec.encodeClient(JSON.parse(data)), { binary: true })
   }
 })

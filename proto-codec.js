@@ -6,10 +6,10 @@ const ServerMessage = root.lookupType('birthday.ServerMessage');
 const ClientMessage = root.lookupType('birthday.ClientMessage');
 
 const encode = (Type, payload) =>
-    Type.encode(Type.create(payload)).finish();
+    Type.encode(Type.fromObject(payload)).finish();
 
 const decode = (Type, buf) =>
-    Type.toObject(Type.decode(buf), { defaults: true, oneofs: true });
+    Type.toObject(Type.decode(buf), { defaults: true, oneofs: true, bytes: String });
 
 module.exports = {
     encodeServer: (msg) => encode(ServerMessage, msg),

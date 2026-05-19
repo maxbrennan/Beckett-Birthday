@@ -24,6 +24,54 @@ stateFilePath =
     "state.json"
 
 
+type ClientEnvelope
+    = ClientStateUpdate Encode.Value
+    | ClientAuthResponse
+    | ClientUnknown
+
+
+decodeClientEnvelope : Decode.Decoder ClientEnvelope
+decodeClientEnvelope =
+    Decode.field "payload" Decode.string
+        |> Decode.andThen
+            (\variant ->
+                case variant of
+                    "stateUpdate" ->
+                        Decode.at [ "stateUpdate", "json" ] Decode.string
+                            |> Decode.andThen
+                                (\inner ->
+                                    case Decode.decodeString Decode.value inner of
+                                        Ok v ->
+                                            Decode.succeed (ClientStateUpdate v)
+
+                                        Err _ ->
+                                            Decode.succeed ClientUnknown
+                                )
+
+                    "authResponse" ->
+                        Decode.succeed ClientAuthResponse
+
+                    _ ->
+                        Decode.succeed ClientUnknown
+            )
+
+
+stateEnvelope : Encode.Value -> Encode.Value
+stateEnvelope state =
+    Encode.object
+        [ ( "payload", Encode.string "stateUpdate" )
+        , ( "stateUpdate", Encode.object [ ( "json", Encode.string (Encode.encode 0 state) ) ] )
+        ]
+
+
+ackEnvelope : Encode.Value
+ackEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "ack" )
+        , ( "ack", Encode.object [] )
+        ]
+
+
 snapshotForJeopardy : Encode.Value -> Encode.Value
 snapshotForJeopardy state =
     let
@@ -69,7 +117,7 @@ update msg model =
 
                 Nothing ->
                     ( { model | connectedClientId = Just clientId }
-                    , sendToClient { clientId = clientId, payload = model.state }
+                    , sendToClient { clientId = clientId, payload = stateEnvelope model.state }
                     )
 
         ClientDisconnected clientId ->
@@ -86,19 +134,21 @@ update msg model =
                 ( model, Cmd.none )
 
         MessageReceived { clientId, payload } ->
-            if model.connectedClientId == Just clientId then
-                ( { model | state = payload }
-                , Cmd.batch
-                    [ saveState payload
-                    , sendToClient
-                        { clientId = clientId
-                        , payload = Encode.object [ ( "tag", Encode.string "ack" ) ]
-                        }
-                    ]
-                )
+            if model.connectedClientId /= Just clientId then
+                ( model, Cmd.none )
 
             else
-                ( model, Cmd.none )
+                case Decode.decodeValue decodeClientEnvelope payload of
+                    Ok (ClientStateUpdate inner) ->
+                        ( { model | state = inner }
+                        , Cmd.batch
+                            [ saveState inner
+                            , sendToClient { clientId = clientId, payload = ackEnvelope }
+                            ]
+                        )
+
+                    _ ->
+                        ( model, Cmd.none )
 
         FileRead path result ->
             if path == stateFilePath then
