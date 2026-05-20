@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Read(//Users/maxbrennan/.birthday-auth/keys/**)",
+      "Read(//Users/maxbrennan/.birthday-auth/**)",
+      "Bash(npx pm2 *)"
     ]
   }
 }

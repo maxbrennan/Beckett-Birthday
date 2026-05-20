@@ -47,6 +47,15 @@ message AuthResult {
   }
 }
 
+message DistRegister { string uuid = 1; string platform = 2; }
+message DistUpload {
+  string uuid        = 1;
+  string filename    = 2;
+  bytes  contents    = 3;
+  uint32 chunk_index = 4;
+  bool   is_last     = 5;
+}
+
 message ServerMessage {
   oneof payload {
     StateUpdate   state_update   = 1;
@@ -60,5 +69,7 @@ message ClientMessage {
   oneof payload {
     StateUpdate  state_update  = 1;
     AuthResponse auth_response = 2;
+    DistRegister dist_register = 3;
+    DistUpload   dist_upload   = 4;
   }
 }

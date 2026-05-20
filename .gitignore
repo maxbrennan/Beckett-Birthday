@@ -17,3 +17,7 @@ dist/
 
 # TLS certs (local dev; never commit private keys)
 certs/
+
+# Dist orchestrator artifacts
+app-uuid.json
+app-builds/

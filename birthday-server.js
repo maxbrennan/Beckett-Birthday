@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { Elm } = require('./elm-server.js');
 const codec = require('./proto-codec.js');
+const auth = require('./auth-helpers.js');
 
 const STATE_FILE = path.join(__dirname, 'state.json');
 const CERT_FILE = path.join(__dirname, 'certs', 'cert.pem');
@@ -11,6 +12,7 @@ const KEY_FILE = path.join(__dirname, 'certs', 'key.pem');
 
 const app = Elm.Server.init();
 const clients = new Map();
+const pendingAuths = new Map();
 let nextId = 0;
 
 const server = https.createServer({
@@ -33,11 +35,29 @@ wss.on('connection', (ws) => {
             console.error('Failed to decode ClientMessage:', err.message);
             return;
         }
+
+        if (msg.payload === 'authResponse') {
+            const pending = pendingAuths.get(clientId);
+            if (!pending) return;
+            pendingAuths.delete(clientId);
+            const result = auth.handleAuthResponse(msg.authResponse, pending.challenge);
+            ws.send(codec.encodeServer({ authResult: result }), { binary: true });
+            const variant = result.password || result.key || {};
+            app.ports.authResult.send({
+                clientId,
+                success: !!variant.success,
+                level: variant.level || 0,
+                uuid: variant.uuid || '',
+            });
+            return;
+        }
+
         app.ports.onMessage.send({ clientId, payload: msg });
     });
 
     ws.on('close', () => {
         clients.delete(clientId);
+        pendingAuths.delete(clientId);
         app.ports.onDisconnection.send(clientId);
     });
 });
@@ -73,6 +93,36 @@ app.ports.readFile.subscribe((filePath) => {
             app.ports.readFileResult.send({ path: filePath, contents: data, error: null });
         }
     });
+});
+
+const writeQueues = new Map();
+app.ports.writeFile.subscribe(({ path: filePath, contents, encoding, append }) => {
+    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, filePath);
+    const prev = writeQueues.get(fullPath) || Promise.resolve();
+    const next = prev.then(() => new Promise((resolve) => {
+        fs.mkdir(path.dirname(fullPath), { recursive: true }, () => {
+            const writer = append ? fs.appendFile : fs.writeFile;
+            writer(fullPath, contents, encoding, (err) => {
+                app.ports.writeFileResult.send({
+                    path: filePath,
+                    ok: !err,
+                    error: err ? err.message : null,
+                });
+                resolve();
+            });
+        });
+    }));
+    writeQueues.set(fullPath, next);
+});
+
+app.ports.requestAuth.subscribe(({ clientId, level }) => {
+    const ws = clients.get(clientId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const { challenge } = auth.generateAuthChallenge();
+    pendingAuths.set(clientId, { challenge, level });
+    ws.send(codec.encodeServer({
+        authChallenge: { challenge, level },
+    }), { binary: true });
 });
 
 wss.on('error', (err) => {
