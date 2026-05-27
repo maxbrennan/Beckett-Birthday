@@ -1,4 +1,6 @@
 const Ws = require('ws')
+const fs = require('fs')
+const path = require('path')
 const codec = require('./proto-codec.js')
 
 const app = Elm.Main.init({ node: document.getElementById('app') })
@@ -84,4 +86,15 @@ app.ports.sendToWs.subscribe(({ wsId, data }) => {
   if (ws && ws.readyState === Ws.OPEN) {
     ws.send(codec.encodeClient(JSON.parse(data)), { binary: true })
   }
+})
+
+app.ports.readFile.subscribe((filePath) => {
+  const fullPath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, filePath)
+  fs.readFile(fullPath, 'utf8', (err, data) => {
+    if (err) {
+      app.ports.readFileResult.send({ path: filePath, contents: null, error: err.message })
+    } else {
+      app.ports.readFileResult.send({ path: filePath, contents: data, error: null })
+    }
+  })
 })

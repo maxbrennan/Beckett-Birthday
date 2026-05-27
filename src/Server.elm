@@ -16,12 +16,15 @@ type DistStage
 
 
 type alias RegistryEntry =
-    { uuid : String, filename : String, platform : String }
+    { uuid : String
+    , filename : String
+    , platform : String
+    , state : Maybe Encode.Value
+    }
 
 
 type alias Model =
-    { state : Encode.Value
-    , connectedClientId : Maybe String
+    { connectedPlayers : Dict String String
     , distClients : Dict String DistStage
     , registry : List RegistryEntry
     }
@@ -36,18 +39,14 @@ type Msg
     | WriteFileCompleted { path : String, ok : Bool, error : Maybe String }
 
 
-stateFilePath : String
-stateFilePath =
-    "state.json"
-
-
 registryFilePath : String
 registryFilePath =
-    "app-builds/registry.json"
+    "app-builds/registry.jsonl"
 
 
 type ClientEnvelope
     = ClientStateUpdate Encode.Value
+    | ClientStateRequest String
     | ClientDistRegister DistInfo
     | ClientDistUpload { uuid : String, filename : String, contentsBase64 : String, chunkIndex : Int, isLast : Bool }
     | ClientUnknown
@@ -70,6 +69,10 @@ decodeClientEnvelope =
                                         Err _ ->
                                             Decode.succeed ClientUnknown
                                 )
+
+                    "stateRequest" ->
+                        Decode.map ClientStateRequest
+                            (Decode.at [ "stateRequest", "uuid" ] Decode.string)
 
                     "distRegister" ->
                         Decode.map2 (\u p -> ClientDistRegister { uuid = u, platform = p })
@@ -114,28 +117,65 @@ ackEnvelope =
         ]
 
 
+rejectEnvelope : String -> Encode.Value
+rejectEnvelope reason =
+    Encode.object
+        [ ( "payload", Encode.string "stateRequestRejected" )
+        , ( "stateRequestRejected", Encode.object [ ( "reason", Encode.string reason ) ] )
+        ]
+
+
 encodeRegistryEntry : RegistryEntry -> Encode.Value
 encodeRegistryEntry entry =
     Encode.object
         [ ( "uuid", Encode.string entry.uuid )
         , ( "filename", Encode.string entry.filename )
         , ( "platform", Encode.string entry.platform )
+        , ( "state", Maybe.withDefault Encode.null entry.state )
         ]
 
 
 encodeRegistry : List RegistryEntry -> String
 encodeRegistry entries =
-    Encode.encode 2 (Encode.list encodeRegistryEntry entries)
+    let
+        body =
+            entries
+                |> List.map (\e -> Encode.encode 0 (encodeRegistryEntry e))
+                |> String.join "\n"
+    in
+    if body == "" then
+        ""
+
+    else
+        body ++ "\n"
 
 
-decodeRegistry : Decode.Decoder (List RegistryEntry)
-decodeRegistry =
-    Decode.list
-        (Decode.map3 (\u f p -> { uuid = u, filename = f, platform = p })
-            (Decode.field "uuid" Decode.string)
-            (Decode.field "filename" Decode.string)
-            (Decode.field "platform" Decode.string)
+decodeRegistryEntry : Decode.Decoder RegistryEntry
+decodeRegistryEntry =
+    Decode.map4 RegistryEntry
+        (Decode.field "uuid" Decode.string)
+        (Decode.field "filename" Decode.string)
+        (Decode.field "platform" Decode.string)
+        (Decode.maybe (Decode.field "state" Decode.value)
+            |> Decode.map
+                (Maybe.andThen
+                    (\v ->
+                        if Encode.encode 0 v == "null" then
+                            Nothing
+
+                        else
+                            Just v
+                    )
+                )
         )
+
+
+parseRegistryJsonl : String -> List RegistryEntry
+parseRegistryJsonl raw =
+    raw
+        |> String.split "\n"
+        |> List.filter (\l -> String.trim l /= "")
+        |> List.filterMap (\l -> Decode.decodeString decodeRegistryEntry l |> Result.toMaybe)
 
 
 snapshotForJeopardy : Encode.Value -> Encode.Value
@@ -166,75 +206,136 @@ snapshotForJeopardy state =
         |> Encode.dict identity identity
 
 
+findUuidByClient : String -> Dict String String -> Maybe String
+findUuidByClient clientId dict =
+    Dict.toList dict
+        |> List.filterMap
+            (\( u, c ) ->
+                if c == clientId then
+                    Just u
+
+                else
+                    Nothing
+            )
+        |> List.head
+
+
+updateEntryState : String -> Encode.Value -> List RegistryEntry -> List RegistryEntry
+updateEntryState uuid newState =
+    List.map
+        (\e ->
+            if e.uuid == uuid then
+                { e | state = Just newState }
+
+            else
+                e
+        )
+
+
+writeRegistry : List RegistryEntry -> Cmd Msg
+writeRegistry entries =
+    writeFile
+        { path = registryFilePath
+        , contents = encodeRegistry entries
+        , encoding = "utf8"
+        , append = False
+        }
+
+
 init : () -> ( Model, Cmd Msg )
 init _ =
-    ( { state = Encode.object []
-      , connectedClientId = Nothing
+    ( { connectedPlayers = Dict.empty
       , distClients = Dict.empty
       , registry = []
       }
-    , Cmd.batch
-        [ readFile stateFilePath
-        , readFile registryFilePath
-        ]
+    , readFile registryFilePath
     )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        ClientConnected clientId ->
-            -- TODO: in the future, reject duplicate connections from the same player UUID.
-            -- For now, allow concurrent clients so the dist orchestrator can connect alongside the player.
-            -- The "player" slot is claimed lazily on the first StateUpdate, not on connection.
-            ( model
-            , sendToClient { clientId = clientId, payload = stateEnvelope model.state }
-            )
+        ClientConnected _ ->
+            ( model, Cmd.none )
 
         ClientDisconnected clientId ->
             let
                 cleanedDist =
                     Dict.remove clientId model.distClients
             in
-            if model.connectedClientId == Just clientId then
-                let
-                    newState =
-                        snapshotForJeopardy model.state
-                in
-                ( { model
-                    | connectedClientId = Nothing
-                    , state = newState
-                    , distClients = cleanedDist
-                  }
-                , saveState newState
-                )
+            case findUuidByClient clientId model.connectedPlayers of
+                Nothing ->
+                    ( { model | distClients = cleanedDist }, Cmd.none )
 
-            else
-                ( { model | distClients = cleanedDist }, Cmd.none )
+                Just uuid ->
+                    let
+                        currentState =
+                            model.registry
+                                |> List.filter (\e -> e.uuid == uuid)
+                                |> List.head
+                                |> Maybe.andThen .state
+                                |> Maybe.withDefault (Encode.object [])
+
+                        snapshotted =
+                            snapshotForJeopardy currentState
+
+                        newRegistry =
+                            updateEntryState uuid snapshotted model.registry
+                    in
+                    ( { model
+                        | connectedPlayers = Dict.remove uuid model.connectedPlayers
+                        , distClients = cleanedDist
+                        , registry = newRegistry
+                      }
+                    , writeRegistry newRegistry
+                    )
 
         MessageReceived { clientId, payload } ->
             case Decode.decodeValue decodeClientEnvelope payload of
-                Ok (ClientStateUpdate inner) ->
-                    case model.connectedClientId of
-                        Nothing ->
-                            ( { model | state = inner, connectedClientId = Just clientId }
+                Ok (ClientStateRequest uuid) ->
+                    case List.filter (\e -> e.uuid == uuid) model.registry of
+                        [] ->
+                            ( model
                             , Cmd.batch
-                                [ saveState inner
-                                , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                [ sendToClient { clientId = clientId, payload = rejectEnvelope "unknown uuid" }
+                                , closeClient { clientId = clientId, reason = "unknown uuid" }
                                 ]
                             )
 
-                        Just current ->
-                            if current == clientId then
-                                ( { model | state = inner }
+                        entry :: _ ->
+                            if Dict.member uuid model.connectedPlayers then
+                                ( model
                                 , Cmd.batch
-                                    [ saveState inner
-                                    , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                    [ sendToClient { clientId = clientId, payload = rejectEnvelope "player already connected" }
+                                    , closeClient { clientId = clientId, reason = "duplicate uuid" }
                                     ]
                                 )
 
                             else
-                                ( model, Cmd.none )
+                                let
+                                    initialState =
+                                        Maybe.withDefault (Encode.object []) entry.state
+                                in
+                                ( { model | connectedPlayers = Dict.insert uuid clientId model.connectedPlayers }
+                                , sendToClient { clientId = clientId, payload = stateEnvelope initialState }
+                                )
+
+                Ok (ClientStateUpdate inner) ->
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just uuid ->
+                            let
+                                newRegistry =
+                                    updateEntryState uuid inner model.registry
+                            in
+                            ( { model | registry = newRegistry }
+                            , Cmd.batch
+                                [ writeRegistry newRegistry
+                                , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                ]
+                            )
 
                 Ok (ClientDistRegister info) ->
                     ( { model | distClients = Dict.insert clientId (AwaitingAuth info) model.distClients }
@@ -249,7 +350,6 @@ update msg model =
                                     binPath =
                                         "app-builds/" ++ upload.filename
 
-                                    -- chunkIndex == 0 truncates / starts the file; later chunks append.
                                     writeChunk =
                                         writeFile
                                             { path = binPath
@@ -264,9 +364,9 @@ update msg model =
                                             { uuid = upload.uuid
                                             , filename = upload.filename
                                             , platform = info.platform
+                                            , state = Nothing
                                             }
 
-                                        -- Replace any existing entry for this filename; otherwise append.
                                         newRegistry =
                                             List.filter (\e -> e.filename /= upload.filename) model.registry
                                                 ++ [ newEntry ]
@@ -277,12 +377,7 @@ update msg model =
                                       }
                                     , Cmd.batch
                                         [ writeChunk
-                                        , writeFile
-                                            { path = registryFilePath
-                                            , contents = encodeRegistry newRegistry
-                                            , encoding = "utf8"
-                                            , append = False
-                                            }
+                                        , writeRegistry newRegistry
                                         , sendToClient { clientId = clientId, payload = ackEnvelope }
                                         ]
                                     )
@@ -316,28 +411,10 @@ update msg model =
                     ( model, Cmd.none )
 
         FileRead path result ->
-            if path == stateFilePath then
+            if path == registryFilePath then
                 case result of
                     Ok contents ->
-                        case Decode.decodeString Decode.value contents of
-                            Ok value ->
-                                ( { model | state = value }, Cmd.none )
-
-                            Err _ ->
-                                ( model, Cmd.none )
-
-                    Err _ ->
-                        ( model, Cmd.none )
-
-            else if path == registryFilePath then
-                case result of
-                    Ok contents ->
-                        case Decode.decodeString decodeRegistry contents of
-                            Ok entries ->
-                                ( { model | registry = entries }, Cmd.none )
-
-                            Err _ ->
-                                ( model, Cmd.none )
+                        ( { model | registry = parseRegistryJsonl contents }, Cmd.none )
 
                     Err _ ->
                         ( model, Cmd.none )
@@ -390,8 +467,6 @@ port onMessage : ({ clientId : String, payload : Encode.Value } -> msg) -> Sub m
 port sendToClient : { clientId : String, payload : Encode.Value } -> Cmd msg
 
 port closeClient : { clientId : String, reason : String } -> Cmd msg
-
-port saveState : Encode.Value -> Cmd msg
 
 port readFile : String -> Cmd msg
 

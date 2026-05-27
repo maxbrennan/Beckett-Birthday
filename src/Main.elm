@@ -42,6 +42,10 @@ port receiveFromWs : (String -> msg) -> Sub msg
 
 port wsClientFailed : (String -> msg) -> Sub msg
 
+port readFile : String -> Cmd msg
+
+port readFileResult : ({ path : String, contents : Maybe String, error : Maybe String } -> msg) -> Sub msg
+
 
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
 debug : Bool
@@ -309,6 +313,7 @@ type alias Model =
     , pendingStartTime : Maybe Float
     , wsClientId : Maybe String
     , timerEndsAt : Float
+    , myUuid : Maybe String
     }
 
 
@@ -341,6 +346,7 @@ type Msg
     | WsSyncTick
     | WsDisconnected String
     | WsReconnect
+    | UuidLoaded (Maybe String)
     | NoOp
 
 
@@ -355,9 +361,10 @@ init _ =
       , pendingStartTime = Nothing
       , wsClientId = Nothing
       , timerEndsAt = 0
+      , myUuid = Nothing
       }
     , Cmd.batch
-        [ initWebSocketClient wsUrl
+        [ readFile "app-uuid.json"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -946,7 +953,18 @@ update msg model =
                     ( model, Cmd.none )
 
         WsClientReady wsId ->
-            ( { model | wsClientId = Just wsId, screen = WsLoadingScreen }, Cmd.none )
+            let
+                newModel =
+                    { model | wsClientId = Just wsId, screen = WsLoadingScreen }
+            in
+            case model.myUuid of
+                Just uuid ->
+                    ( newModel
+                    , sendToWs { wsId = wsId, data = Encode.encode 0 (stateRequestEnvelope uuid) }
+                    )
+
+                Nothing ->
+                    ( { newModel | screen = WsErrorScreen }, Cmd.none )
 
         WsDataReceived envelopeJson ->
             case Decode.decodeString decodeServerEnvelope envelopeJson of
@@ -969,6 +987,7 @@ update msg model =
                                         ( { newModel
                                             | wsClientId = model.wsClientId
                                             , dingKey = model.dingKey
+                                            , myUuid = model.myUuid
                                           }
                                         , videoCmd
                                         )
@@ -978,6 +997,9 @@ update msg model =
 
                         _ ->
                             ( model, Cmd.none )
+
+                Ok (ServerRejected _) ->
+                    ( { model | screen = WsErrorScreen, wsClientId = Nothing }, Cmd.none )
 
                 Ok ServerAck ->
                     case model.screen of
@@ -1018,8 +1040,17 @@ update msg model =
                     ( model, Cmd.none )
 
         WsSyncTick ->
-            case model.wsClientId of
-                Just wsId ->
+            case ( model.wsClientId, model.screen ) of
+                ( Just _, WsLoadingScreen ) ->
+                    ( model, Cmd.none )
+
+                ( Just _, WsConnectingScreen ) ->
+                    ( model, Cmd.none )
+
+                ( Just _, WsErrorScreen ) ->
+                    ( model, Cmd.none )
+
+                ( Just wsId, _ ) ->
                     let
                         newModel =
                             case model.screen of
@@ -1031,7 +1062,7 @@ update msg model =
                     in
                     ( newModel, sendToWs { wsId = wsId, data = Encode.encode 0 (clientStateEnvelope newModel) } )
 
-                Nothing ->
+                ( Nothing, _ ) ->
                     let
                         newModel =
                             case model.screen of
@@ -1042,6 +1073,14 @@ update msg model =
                                     model
                     in
                     ( newModel, Cmd.none )
+
+        UuidLoaded maybeUuid ->
+            case maybeUuid of
+                Just uuid ->
+                    ( { model | myUuid = Just uuid }, initWebSocketClient wsUrl )
+
+                Nothing ->
+                    ( { model | screen = WsErrorScreen }, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )
@@ -1184,6 +1223,7 @@ type ServerEnvelope
     = ServerStateUpdate String
     | ServerAck
     | ServerAuth
+    | ServerRejected String
     | ServerUnknown
 
 
@@ -1206,9 +1246,21 @@ decodeServerEnvelope =
                     "authResult" ->
                         Decode.succeed ServerAuth
 
+                    "stateRequestRejected" ->
+                        Decode.at [ "stateRequestRejected", "reason" ] Decode.string
+                            |> Decode.map ServerRejected
+
                     _ ->
                         Decode.succeed ServerUnknown
             )
+
+
+stateRequestEnvelope : String -> Encode.Value
+stateRequestEnvelope uuid =
+    Encode.object
+        [ ( "payload", Encode.string "stateRequest" )
+        , ( "stateRequest", Encode.object [ ( "uuid", Encode.string uuid ) ] )
+        ]
 
 
 -- For slot index s and the current model.dingKey, returns the largest n ≤ dingKey
@@ -1704,6 +1756,7 @@ decodeModel =
                 , pendingStartTime = pst
                 , wsClientId = wci
                 , timerEndsAt = tea
+                , myUuid = Nothing
                 }
         )
         (Decode.field "screen" decodeScreen)
@@ -2427,6 +2480,20 @@ subscriptions model =
         , Browser.Events.onAnimationFrame (\posix -> Tick (toFloat (Time.posixToMillis posix)))
         , receiveDomProperty DomPropertyReceived
         , domPropertyError DomPropertyError
+        , readFileResult
+            (\{ contents } ->
+                case contents of
+                    Just raw ->
+                        case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
+                            Ok uuid ->
+                                UuidLoaded (Just uuid)
+
+                            Err _ ->
+                                UuidLoaded Nothing
+
+                    Nothing ->
+                        UuidLoaded Nothing
+            )
         ]
 
 -- TODO extract logic from TrackEnded and WsPong messages

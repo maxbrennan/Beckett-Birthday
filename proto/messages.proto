@@ -7,9 +7,11 @@ enum AuthLevel {
   AUTH_LEVEL_ADMIN  = 2;
 }
 
-message StateUpdate   { string json = 1; }
-message Ack           {}
-message AuthChallenge { bytes challenge = 1; AuthLevel level = 2; }
+message StateUpdate          { string json = 1; }
+message Ack                  {}
+message AuthChallenge        { bytes challenge = 1; AuthLevel level = 2; }
+message StateRequest         { string uuid = 1; }
+message StateRequestRejected { string reason = 1; }
 
 message PasswordAuthResponse {
   string username   = 1;
@@ -58,10 +60,11 @@ message DistUpload {
 
 message ServerMessage {
   oneof payload {
-    StateUpdate   state_update   = 1;
-    Ack           ack            = 2;
-    AuthChallenge auth_challenge = 3;
-    AuthResult    auth_result    = 4;
+    StateUpdate          state_update           = 1;
+    Ack                  ack                    = 2;
+    AuthChallenge        auth_challenge         = 3;
+    AuthResult           auth_result            = 4;
+    StateRequestRejected state_request_rejected = 5;
   }
 }
 
@@ -71,5 +74,6 @@ message ClientMessage {
     AuthResponse auth_response = 2;
     DistRegister dist_register = 3;
     DistUpload   dist_upload   = 4;
+    StateRequest state_request = 5;
   }
 }

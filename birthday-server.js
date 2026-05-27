@@ -6,7 +6,6 @@ const { Elm } = require('./elm-server.js');
 const codec = require('./proto-codec.js');
 const auth = require('./auth-helpers.js');
 
-const STATE_FILE = path.join(__dirname, 'state.json');
 const CERT_FILE = path.join(__dirname, 'certs', 'cert.pem');
 const KEY_FILE = path.join(__dirname, 'certs', 'key.pem');
 
@@ -76,12 +75,6 @@ app.ports.closeClient.subscribe(({ clientId, reason }) => {
         } catch (_) {}
         clients.delete(clientId);
     }
-});
-
-app.ports.saveState.subscribe((payload) => {
-    fs.writeFile(STATE_FILE, JSON.stringify(payload, null, 2), (err) => {
-        if (err) console.error('Failed to write state file:', err.message);
-    });
 });
 
 app.ports.readFile.subscribe((filePath) => {
