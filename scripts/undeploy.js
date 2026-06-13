@@ -1,0 +1,65 @@
+const Ws = require('ws');
+const codec = require('./proto-codec.js');
+const auth = require('./auth-helpers.js');
+
+const uuid = process.argv[2];
+if (!uuid) {
+    console.error('Usage: node undeploy.js <uuid>');
+    process.exit(1);
+}
+
+const SERVER_URL = process.env.DIST_SERVER_URL || 'wss://localhost';
+const fail = (msg) => { console.error(`[undeploy] ${msg}`); process.exit(1); };
+
+function send(ws, payload) {
+    ws.send(codec.encodeClient(payload), { binary: true });
+}
+
+async function main() {
+    const ws = await new Promise((resolve, reject) => {
+        const sock = new Ws(SERVER_URL, { rejectUnauthorized: false });
+        sock.once('open', () => resolve(sock));
+        sock.once('error', reject);
+    }).catch((err) => fail(`could not connect to ${SERVER_URL}: ${err.message}`));
+
+    console.log(`[undeploy] connected to ${SERVER_URL}`);
+
+    let pendingResolver = null;
+    const incoming = [];
+    const nextMessage = () => new Promise((resolve) => {
+        if (incoming.length > 0) resolve(incoming.shift());
+        else pendingResolver = resolve;
+    });
+
+    ws.on('message', (data) => {
+        let msg;
+        try { msg = codec.decodeServer(data); } catch (err) { console.error('[undeploy] decode error:', err.message); return; }
+        if (pendingResolver) { const r = pendingResolver; pendingResolver = null; r(msg); }
+        else incoming.push(msg);
+    });
+
+    ws.on('close', () => process.exit(0));
+
+    send(ws, { distUndeploy: { uuid } });
+    console.log(`[undeploy] sent undeploy request for ${uuid}`);
+
+    while (true) {
+        const msg = await nextMessage();
+        if (msg.payload === 'authChallenge') {
+            console.log('[undeploy] received auth challenge, responding');
+            const response = await auth.handleAuthChallenge(msg.authChallenge);
+            send(ws, { authResponse: response });
+        } else if (msg.payload === 'authResult') {
+            auth.handleAuthResult(msg.authResult);
+            const variant = msg.authResult.password || msg.authResult.key || {};
+            if (!variant.success) fail('authentication failed');
+            console.log('[undeploy] authenticated');
+        } else if (msg.payload === 'ack') {
+            console.log('[undeploy] done');
+            ws.close();
+            break;
+        }
+    }
+}
+
+main().catch((err) => fail(err.stack || err.message));
