@@ -6,8 +6,7 @@ const { Elm } = require('../elm-server.js');
 const codec = require('./codec.js');
 const auth = require('./auth.js');
 
-const CERT_FILE = path.join(__dirname, '..', 'certs', 'cert.pem');
-const KEY_FILE = path.join(__dirname, '..', 'certs', 'key.pem');
+const DOMAIN = 'brennanfamily.mynetgear.com';
 
 const app = Elm.Server.init();
 const clients = new Map();
@@ -15,10 +14,16 @@ const pendingAuths = new Map();
 const pendingUndeployOps = new Map();
 let nextId = 0;
 
-const server = https.createServer({
-    cert: fs.readFileSync(CERT_FILE),
-    key: fs.readFileSync(KEY_FILE),
-});
+const tlsOptions = process.env.DEV
+    ? {
+        cert: fs.readFileSync(path.join(__dirname, '..', 'certs', 'cert.pem')),
+        key: fs.readFileSync(path.join(__dirname, '..', 'certs', 'key.pem')),
+    }
+    : {
+        cert: fs.readFileSync(`/etc/letsencrypt/live/${DOMAIN}/fullchain.pem`),
+        key: fs.readFileSync(`/etc/letsencrypt/live/${DOMAIN}/privkey.pem`),
+    };
+const server = https.createServer(tlsOptions);
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
