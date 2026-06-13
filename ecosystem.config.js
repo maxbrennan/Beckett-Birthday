@@ -4,6 +4,7 @@ module.exports = {
       name: 'birthday-server',
       script: 'server/index.js',
       autorestart: false,
+      env: { DEV: 'false' },
       env_dev: { DEV: 'true' },
     },
     {
@@ -11,6 +12,7 @@ module.exports = {
       script: 'electron',
       args: '.',
       autorestart: false,
+      env: { DEV: 'false' },
       env_dev: { DEV: 'true' },
     },
   ],

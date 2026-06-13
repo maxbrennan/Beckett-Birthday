@@ -14,7 +14,7 @@ const pendingAuths = new Map();
 const pendingUndeployOps = new Map();
 let nextId = 0;
 
-const tlsOptions = process.env.DEV
+const tlsOptions = process.env.DEV === 'true'
     ? {
         cert: fs.readFileSync(path.join(__dirname, '..', 'certs', 'cert.pem')),
         key: fs.readFileSync(path.join(__dirname, '..', 'certs', 'key.pem')),
