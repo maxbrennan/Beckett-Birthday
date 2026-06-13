@@ -41,7 +41,7 @@ type Msg
 
 registryFilePath : String
 registryFilePath =
-    "app-builds/registry.jsonl"
+    "releases/manifest.jsonl"
 
 
 type ClientEnvelope

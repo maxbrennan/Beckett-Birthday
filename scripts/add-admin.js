@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
-const { _internals } = require('./auth-helpers.js');
+const { _internals } = require('../server/auth.js');
 
 const AUTH_LEVEL_ADMIN = 2;
 

@@ -1,7 +1,7 @@
 const protobuf = require('protobufjs');
 const path = require('path');
 
-const root = protobuf.loadSync(path.join(__dirname, 'proto', 'messages.proto'));
+const root = protobuf.loadSync(path.join(__dirname, '..', 'proto', 'messages.proto'));
 const ServerMessage = root.lookupType('birthday.ServerMessage');
 const ClientMessage = root.lookupType('birthday.ClientMessage');
 

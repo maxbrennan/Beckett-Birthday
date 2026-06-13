@@ -12,14 +12,16 @@
     "start:client": "npm run build:client && pm2 startOrRestart ecosystem.config.js --only birthday-client",
     "stop": "pm2 stop ecosystem.config.js || true",
     "start": "npm run build:server && npm run build:client && pm2 startOrRestart ecosystem.config.js",
-    "dist:win": "npm run build:client && node dist.js win",
-    "dist:mac": "npm run build:client && node dist.js mac",
+    "dist:win": "npm run build:client && npx electron-builder --win",
+    "dist:mac": "npm run build:client && npx electron-builder --mac",
+    "deploy": "npm run build:client && node scripts/deploy.js mac",
+    "undeploy": "node scripts/undeploy.js",
     "reset": "npm run stop && node reset.js",
-    "add-admin": "node add-admin.js"
+    "add-admin": "node scripts/add-admin.js"
   },
   "build": {
     "files": [
-      "birthday-client.js",
+      "client/bridge.js",
       "elm-client.js",
       "electron.js",
       "index.html",
@@ -52,13 +54,13 @@
     }
   },
   "dependencies": {
-    "pm2": "^7.0.1",
     "protobufjs": "^8.3.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "electron": "^42.4.0",
+    "pm2": "^7.0.1",
     "concurrently": "^9.2.1",
-    "electron": "^41.3.0",
     "electron-builder": "^26.8.1"
   }
 }

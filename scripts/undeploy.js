@@ -1,6 +1,6 @@
 const Ws = require('ws');
-const codec = require('./proto-codec.js');
-const auth = require('./auth-helpers.js');
+const codec = require('../server/codec.js');
+const auth = require('../server/auth.js');
 
 const uuid = process.argv[2];
 if (!uuid) {

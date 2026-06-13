@@ -3,18 +3,18 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const Ws = require('ws');
-const codec = require('./proto-codec.js');
-const auth = require('./auth-helpers.js');
+const codec = require('../server/codec.js');
+const auth = require('../server/auth.js');
 
 const PLATFORM = process.argv[2];
 if (PLATFORM !== 'mac' && PLATFORM !== 'win') {
-    console.error('Usage: node dist.js <mac|win>');
+    console.error('Usage: node scripts/deploy.js <mac|win>');
     process.exit(1);
 }
 
 const SERVER_URL = process.env.DIST_SERVER_URL || 'wss://localhost';
-const UUID_FILE = path.join(__dirname, 'app-uuid.json');
-const DIST_DIR = path.join(__dirname, 'dist');
+const UUID_FILE = path.join(__dirname, '..', 'app-uuid.json');
+const DIST_DIR = path.join(__dirname, '..', 'dist');
 const EXTENSION = PLATFORM === 'mac' ? '.dmg' : '.exe';
 
 const fail = (msg) => {
@@ -46,7 +46,7 @@ function runElectronBuilder() {
         const args = [PLATFORM === 'mac' ? '--mac' : '--win'];
         console.log(`[dist] running electron-builder ${args.join(' ')}`);
         const child = spawn('npx', ['electron-builder', ...args], {
-            cwd: __dirname,
+            cwd: path.join(__dirname, '..'),
             stdio: 'inherit',
         });
         child.on('exit', (code) => {

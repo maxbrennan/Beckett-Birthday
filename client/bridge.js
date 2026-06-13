@@ -1,7 +1,7 @@
 const Ws = require('ws')
 const fs = require('fs')
 const path = require('path')
-const codec = require('./proto-codec.js')
+const codec = require('./server/codec.js')
 
 const app = Elm.Main.init({ node: document.getElementById('app') })
 let received = false

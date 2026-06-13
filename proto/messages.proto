@@ -57,6 +57,7 @@ message DistUpload {
   uint32 chunk_index = 4;
   bool   is_last     = 5;
 }
+message DistUndeploy { string uuid = 1; }
 
 message ServerMessage {
   oneof payload {
@@ -75,5 +76,6 @@ message ClientMessage {
     DistRegister dist_register = 3;
     DistUpload   dist_upload   = 4;
     StateRequest state_request = 5;
+    DistUndeploy dist_undeploy = 6;
   }
 }
