@@ -5,10 +5,6 @@ const codec = require('../server/codec.js');
 const auth = require('../server/auth.js');
 
 const uuid = process.argv[2];
-if (!uuid) {
-    console.error('Usage: node scripts/undeploy.js <uuid>');
-    process.exit(1);
-}
 
 const host = process.env.PROD_SERVER_HOST;
 const port = process.env.PROD_SERVER_PORT || '443';
@@ -44,24 +40,55 @@ async function main() {
 
     ws.on('close', () => process.exit(0));
 
-    send(ws, { distUndeploy: { uuid } });
-    console.log(`[undeploy] sent undeploy request for ${uuid}`);
+    if (!uuid) {
+        // List mode: authenticate then display available builds
+        send(ws, { distList: {} });
+        console.log('[undeploy] no UUID provided — fetching list of deployed builds');
 
-    while (true) {
-        const msg = await nextMessage();
-        if (msg.payload === 'authChallenge') {
-            console.log('[undeploy] received auth challenge, responding');
-            const response = await auth.handleAuthChallenge(msg.authChallenge);
-            send(ws, { authResponse: response });
-        } else if (msg.payload === 'authResult') {
-            auth.handleAuthResult(msg.authResult);
-            const variant = msg.authResult.password || msg.authResult.key || {};
-            if (!variant.success) fail('authentication failed');
-            console.log('[undeploy] authenticated');
-        } else if (msg.payload === 'ack') {
-            console.log('[undeploy] done');
-            ws.close();
-            break;
+        while (true) {
+            const msg = await nextMessage();
+            if (msg.payload === 'authChallenge') {
+                const response = await auth.handleAuthChallenge(msg.authChallenge);
+                send(ws, { authResponse: response });
+            } else if (msg.payload === 'authResult') {
+                auth.handleAuthResult(msg.authResult);
+                const variant = msg.authResult.password || msg.authResult.key || {};
+                if (!variant.success) fail('authentication failed');
+            } else if (msg.payload === 'distListResult') {
+                const entries = msg.distListResult.entries || [];
+                if (entries.length === 0) {
+                    console.log('[undeploy] no builds deployed');
+                } else {
+                    console.log('\nDeployed builds:');
+                    for (const e of entries) {
+                        console.log(`  ${e.uuid}  ${e.filename}  (${e.platform})`);
+                    }
+                    console.log(`\nRun: node scripts/undeploy.js <uuid>`);
+                }
+                process.exit(0);
+            }
+        }
+    } else {
+        // Undeploy mode
+        send(ws, { distUndeploy: { uuid } });
+        console.log(`[undeploy] sent undeploy request for ${uuid}`);
+
+        while (true) {
+            const msg = await nextMessage();
+            if (msg.payload === 'authChallenge') {
+                console.log('[undeploy] received auth challenge, responding');
+                const response = await auth.handleAuthChallenge(msg.authChallenge);
+                send(ws, { authResponse: response });
+            } else if (msg.payload === 'authResult') {
+                auth.handleAuthResult(msg.authResult);
+                const variant = msg.authResult.password || msg.authResult.key || {};
+                if (!variant.success) fail('authentication failed');
+                console.log('[undeploy] authenticated');
+            } else if (msg.payload === 'ack') {
+                console.log('[undeploy] done');
+                ws.close();
+                break;
+            }
         }
     }
 }

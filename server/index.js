@@ -14,6 +14,7 @@ const app = Elm.Server.init({ flags: isDev });
 const clients = new Map();
 const pendingAuths = new Map();
 const pendingUndeployOps = new Map();
+const pendingListOps = new Set();
 let nextId = 0;
 
 const server = https.createServer({
@@ -57,6 +58,25 @@ wss.on('connection', (ws) => {
                 return;
             }
 
+            if (pendingListOps.has(clientId)) {
+                pendingListOps.delete(clientId);
+                if (!variant.success) {
+                    console.error(`[list] auth failed for ${clientId}`);
+                    ws.close();
+                    return;
+                }
+                fs.readFile(REGISTRY_FILE, 'utf8', (err, data) => {
+                    const entries = err ? [] : data.trim().split('\n')
+                        .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
+                        .filter(Boolean)
+                        .map(e => ({ uuid: e.uuid, filename: e.filename, platform: e.platform || '' }));
+                    console.log(`[list] sending ${entries.length} entries to ${clientId}`);
+                    ws.send(codec.encodeServer({ distListResult: { entries } }), { binary: true });
+                    ws.close();
+                });
+                return;
+            }
+
             app.ports.authResult.send({
                 clientId,
                 success: !!variant.success,
@@ -70,6 +90,15 @@ wss.on('connection', (ws) => {
             const { uuid } = msg.distUndeploy;
             console.log(`[undeploy] received request for ${uuid}`);
             pendingUndeployOps.set(clientId, uuid);
+            const { challenge } = auth.generateAuthChallenge();
+            pendingAuths.set(clientId, { challenge, level: 2 });
+            ws.send(codec.encodeServer({ authChallenge: { challenge, level: 2 } }), { binary: true });
+            return;
+        }
+
+        if (msg.payload === 'distList') {
+            console.log(`[list] received list request from ${clientId}`);
+            pendingListOps.add(clientId);
             const { challenge } = auth.generateAuthChallenge();
             pendingAuths.set(clientId, { challenge, level: 2 });
             ws.send(codec.encodeServer({ authChallenge: { challenge, level: 2 } }), { binary: true });
