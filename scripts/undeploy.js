@@ -1,14 +1,18 @@
 const Ws = require('ws');
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const codec = require('../server/codec.js');
 const auth = require('../server/auth.js');
 
 const uuid = process.argv[2];
 if (!uuid) {
-    console.error('Usage: node undeploy.js <uuid>');
+    console.error('Usage: node scripts/undeploy.js <uuid>');
     process.exit(1);
 }
 
-const SERVER_URL = process.env.DIST_SERVER_URL || 'wss://localhost';
+const host = process.env.PROD_SERVER_HOST;
+const port = process.env.PROD_SERVER_PORT || '443';
+const SERVER_URL = port === '443' ? `wss://${host}` : `wss://${host}:${port}`;
 const fail = (msg) => { console.error(`[undeploy] ${msg}`); process.exit(1); };
 
 function send(ws, payload) {

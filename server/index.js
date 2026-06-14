@@ -2,28 +2,24 @@ const WebSocket = require('ws');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const { Elm } = require('../elm-server.js');
 const codec = require('./codec.js');
 const auth = require('./auth.js');
 
-const DOMAIN = 'brennanfamily.mynetgear.com';
+const isDev = process.env.DEV === 'true';
+const PORT = parseInt(isDev ? process.env.DEV_SERVER_PORT : process.env.PROD_SERVER_PORT, 10) || (isDev ? 8443 : 443);
 
-const app = Elm.Server.init();
+const app = Elm.Server.init({ flags: isDev });
 const clients = new Map();
 const pendingAuths = new Map();
 const pendingUndeployOps = new Map();
 let nextId = 0;
 
-const tlsOptions = process.env.DEV === 'true'
-    ? {
+const server = https.createServer({
         cert: fs.readFileSync(path.join(__dirname, '..', 'certs', 'cert.pem')),
         key: fs.readFileSync(path.join(__dirname, '..', 'certs', 'key.pem')),
-    }
-    : {
-        cert: fs.readFileSync(`/etc/letsencrypt/live/${DOMAIN}/fullchain.pem`),
-        key: fs.readFileSync(`/etc/letsencrypt/live/${DOMAIN}/privkey.pem`),
-    };
-const server = https.createServer(tlsOptions);
+    });
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
@@ -147,8 +143,8 @@ app.ports.requestAuth.subscribe(({ clientId, level }) => {
     }), { binary: true });
 });
 
-const REGISTRY_FILE = path.join(__dirname, '..', 'releases', 'manifest.jsonl');
-const BUILDS_DIR = path.join(__dirname, '..', 'releases');
+const REGISTRY_FILE = path.join(__dirname, '..', 'app-builds', 'builds.jsonl');
+const BUILDS_DIR = path.join(__dirname, '..', 'app-builds');
 
 function performUndeploy(uuid, ws) {
     fs.readFile(REGISTRY_FILE, 'utf8', (err, data) => {
@@ -236,8 +232,8 @@ server.on('error', (err) => {
     process.exit(1);
 });
 
-server.listen(443, '0.0.0.0', () => {
-    console.log(`WebSocket server listening on wss://0.0.0.0`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`WebSocket server listening on port ${PORT}`);
 });
 
 const shutdown = () => { wss.close(() => server.close(() => process.exit(0))); };

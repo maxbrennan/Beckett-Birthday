@@ -27,11 +27,6 @@ port receiveDomProperty : ({ elementId : String, property : String, value : Deco
 
 port logToFile : String -> Cmd msg
 
-wsUrl : String
-wsUrl =
-    "wss://localhost"
-
-
 port initWebSocketClient : String -> Cmd msg
 
 port wsClientReady : (String -> msg) -> Sub msg
@@ -314,6 +309,7 @@ type alias Model =
     , wsClientId : Maybe String
     , timerEndsAt : Float
     , myUuid : Maybe String
+    , wsUrl : String
     }
 
 
@@ -350,8 +346,8 @@ type Msg
     | NoOp
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
+init : String -> ( Model, Cmd Msg )
+init wsUrl =
     ( { screen = WsConnectingScreen
       , jeopardyPlaying = False
       , now = 0
@@ -362,6 +358,7 @@ init _ =
       , wsClientId = Nothing
       , timerEndsAt = 0
       , myUuid = Nothing
+      , wsUrl = wsUrl
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
@@ -988,6 +985,7 @@ update msg model =
                                             | wsClientId = model.wsClientId
                                             , dingKey = model.dingKey
                                             , myUuid = model.myUuid
+                                            , wsUrl = model.wsUrl
                                           }
                                         , videoCmd
                                         )
@@ -1025,16 +1023,16 @@ update msg model =
 
                 _ ->
                     ( { model | wsClientId = Nothing, screen = WsConnectingScreen }
-                    , initWebSocketClient wsUrl
+                    , initWebSocketClient model.wsUrl
                     )
 
         WsReconnect ->
             case model.screen of
                 WsErrorScreen ->
-                    ( { model | screen = WsConnectingScreen }, initWebSocketClient wsUrl )
+                    ( { model | screen = WsConnectingScreen }, initWebSocketClient model.wsUrl )
 
                 WsConnectingScreen ->
-                    ( model, initWebSocketClient wsUrl )
+                    ( model, initWebSocketClient model.wsUrl )
 
                 _ ->
                     ( model, Cmd.none )
@@ -1077,10 +1075,14 @@ update msg model =
         UuidLoaded maybeUuid ->
             case maybeUuid of
                 Just uuid ->
-                    ( { model | myUuid = Just uuid }, initWebSocketClient wsUrl )
+                    ( { model | myUuid = Just uuid }, initWebSocketClient model.wsUrl )
 
                 Nothing ->
-                    ( { model | screen = WsErrorScreen }, Cmd.none )
+                    if debug then
+                        ( { model | myUuid = Just "dev-mode" }, initWebSocketClient model.wsUrl )
+
+                    else
+                        ( { model | screen = WsErrorScreen }, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )
@@ -1757,6 +1759,7 @@ decodeModel =
                 , wsClientId = wci
                 , timerEndsAt = tea
                 , myUuid = Nothing
+                , wsUrl = ""
                 }
         )
         (Decode.field "screen" decodeScreen)
@@ -2497,7 +2500,7 @@ subscriptions model =
         ]
 
 -- TODO extract logic from TrackEnded and WsPong messages
-main : Program () Model Msg
+main : Program String Model Msg
 main =
     Browser.element
         { init = init

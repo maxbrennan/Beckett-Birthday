@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# Environment config (local secrets)
+.env
+
 # Elm
 elm-stuff/
 elm-client.js
@@ -16,8 +19,14 @@ dist/
 .auth/
 
 # TLS certs (local dev; never commit private keys)
-certs/
+certs/*
+!certs/.gitkeep
+
+# Assets (large binaries; distributed separately)
+assets/*
+!assets/.gitkeep
 
 # Dist orchestrator artifacts
 app-uuid.json
-app-builds/
+app-builds/*
+!app-builds/.gitkeep

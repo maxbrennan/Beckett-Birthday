@@ -27,6 +27,7 @@ type alias Model =
     { connectedPlayers : Dict String String
     , distClients : Dict String DistStage
     , registry : List RegistryEntry
+    , isDev : Bool
     }
 
 
@@ -41,7 +42,7 @@ type Msg
 
 registryFilePath : String
 registryFilePath =
-    "releases/manifest.jsonl"
+    "app-builds/builds.jsonl"
 
 
 type ClientEnvelope
@@ -242,11 +243,12 @@ writeRegistry entries =
         }
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
+init : Bool -> ( Model, Cmd Msg )
+init isDev =
     ( { connectedPlayers = Dict.empty
       , distClients = Dict.empty
       , registry = []
+      , isDev = isDev
       }
     , readFile registryFilePath
     )
@@ -293,25 +295,31 @@ update msg model =
         MessageReceived { clientId, payload } ->
             case Decode.decodeValue decodeClientEnvelope payload of
                 Ok (ClientStateRequest uuid) ->
-                    case List.filter (\e -> e.uuid == uuid) model.registry of
-                        [] ->
-                            ( model
-                            , Cmd.batch
-                                [ sendToClient { clientId = clientId, payload = rejectEnvelope "unknown uuid" }
-                                , closeClient { clientId = clientId, reason = "unknown uuid" }
-                                ]
-                            )
+                    if Dict.member uuid model.connectedPlayers then
+                        ( model
+                        , Cmd.batch
+                            [ sendToClient { clientId = clientId, payload = rejectEnvelope "player already connected" }
+                            , closeClient { clientId = clientId, reason = "duplicate uuid" }
+                            ]
+                        )
 
-                        entry :: _ ->
-                            if Dict.member uuid model.connectedPlayers then
-                                ( model
-                                , Cmd.batch
-                                    [ sendToClient { clientId = clientId, payload = rejectEnvelope "player already connected" }
-                                    , closeClient { clientId = clientId, reason = "duplicate uuid" }
-                                    ]
-                                )
+                    else
+                        case List.filter (\e -> e.uuid == uuid) model.registry of
+                            [] ->
+                                if model.isDev then
+                                    ( { model | connectedPlayers = Dict.insert uuid clientId model.connectedPlayers }
+                                    , sendToClient { clientId = clientId, payload = stateEnvelope (Encode.object []) }
+                                    )
 
-                            else
+                                else
+                                    ( model
+                                    , Cmd.batch
+                                        [ sendToClient { clientId = clientId, payload = rejectEnvelope "unknown uuid" }
+                                        , closeClient { clientId = clientId, reason = "unknown uuid" }
+                                        ]
+                                    )
+
+                            entry :: _ ->
                                 let
                                     initialState =
                                         Maybe.withDefault (Encode.object []) entry.state
@@ -449,7 +457,7 @@ subscriptions _ =
         ]
 
 
-main : Program () Model Msg
+main : Program Bool Model Msg
 main =
     Platform.worker
         { init = init

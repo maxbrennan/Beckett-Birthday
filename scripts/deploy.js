@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const Ws = require('ws');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const codec = require('../server/codec.js');
 const auth = require('../server/auth.js');
 
@@ -12,7 +13,9 @@ if (PLATFORM !== 'mac' && PLATFORM !== 'win') {
     process.exit(1);
 }
 
-const SERVER_URL = process.env.DIST_SERVER_URL || 'wss://localhost';
+const host = process.env.PROD_SERVER_HOST;
+const port = process.env.PROD_SERVER_PORT || '443';
+const SERVER_URL = port === '443' ? `wss://${host}` : `wss://${host}:${port}`;
 const UUID_FILE = path.join(__dirname, '..', 'app-uuid.json');
 const DIST_DIR = path.join(__dirname, '..', 'dist');
 const EXTENSION = PLATFORM === 'mac' ? '.dmg' : '.exe';

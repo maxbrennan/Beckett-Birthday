@@ -1,9 +1,15 @@
 const Ws = require('ws')
 const fs = require('fs')
 const path = require('path')
+require('dotenv').config({ path: path.join(__dirname, '.env') })
 const codec = require('./server/codec.js')
 
-const app = Elm.Main.init({ node: document.getElementById('app') })
+const isDev = process.env.DEV === 'true'
+const host = isDev ? 'localhost' : process.env.PROD_SERVER_HOST
+const port = isDev ? process.env.DEV_SERVER_PORT : process.env.PROD_SERVER_PORT
+const wsUrl = port === '443' ? `wss://${host}` : `wss://${host}:${port}`
+
+const app = Elm.Main.init({ node: document.getElementById('app'), flags: wsUrl })
 let received = false
 
 app.ports.setDomProperty.subscribe(({ elementId, property, value }) => {

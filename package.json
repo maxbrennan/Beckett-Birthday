@@ -18,17 +18,19 @@
     "start:dev": "npm run build && pm2 startOrRestart ecosystem.config.js --env dev --update-env",
     "dist:win": "npm run build:client && npx electron-builder --win",
     "dist:mac": "npm run build:client && npx electron-builder --mac",
-    "deploy": "npm run build:client && node scripts/deploy.js mac",
+    "deploy:mac": "npm run build:client && node scripts/deploy.js mac",
+    "deploy:win": "npm run build:client && node scripts/deploy.js win",
     "undeploy": "node scripts/undeploy.js",
     "add-admin": "node scripts/add-admin.js"
   },
   "build": {
     "files": [
+      ".env",
       "client/bridge.js",
       "elm-client.js",
       "electron.js",
       "index.html",
-      "proto-codec.js",
+      "server/codec.js",
       "proto/**/*",
       "assets/**/*",
       "app-uuid.json"
@@ -57,13 +59,14 @@
     }
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "protobufjs": "^8.3.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {
-    "electron": "^42.4.0",
-    "pm2": "^7.0.1",
     "concurrently": "^9.2.1",
-    "electron-builder": "^26.8.1"
+    "electron": "^42.4.0",
+    "electron-builder": "^26.8.1",
+    "pm2": "^7.0.1"
   }
 }
