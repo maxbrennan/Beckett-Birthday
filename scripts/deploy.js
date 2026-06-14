@@ -77,10 +77,6 @@ function findBuiltFile() {
 async function main() {
     const uuid = generateUuid();
 
-    const ws = await connect().catch((err) => fail(`could not connect to ${SERVER_URL}: ${err.message}`));
-    console.log(`[dist] connected to ${SERVER_URL}`);
-
-    const acks = [];
     let pendingMessageResolver = null;
     const incoming = [];
 
@@ -89,10 +85,9 @@ async function main() {
         else pendingMessageResolver = resolve;
     });
 
-    ws.on('message', (data) => {
-        let msg;
-        try { msg = codec.decodeServer(data); }
-        catch (err) { console.error('[dist] decode error:', err.message); return; }
+    // Push a decoded server message (or the synthetic _closed sentinel) into
+    // the shared queue regardless of which WebSocket connection is current.
+    function pushMessage(msg) {
         if (pendingMessageResolver) {
             const r = pendingMessageResolver;
             pendingMessageResolver = null;
@@ -100,30 +95,49 @@ async function main() {
         } else {
             incoming.push(msg);
         }
-    });
+    }
 
-    ws.on('close', () => {
-        if (acks.length < 2) fail('connection closed before flow completed');
-    });
+    // Attach message + close handlers to a socket so both feed the same queue.
+    function wireSocket(socket) {
+        socket.on('message', (data) => {
+            let msg;
+            try { msg = codec.decodeServer(data); }
+            catch (err) { console.error('[dist] decode error:', err.message); return; }
+            pushMessage(msg);
+        });
+        socket.on('close', () => pushMessage({ payload: '_closed' }));
+    }
+
+    let ws = await connect().catch((err) => fail(`could not connect to ${SERVER_URL}: ${err.message}`));
+    console.log(`[dist] connected to ${SERVER_URL}`);
+    wireSocket(ws);
 
     send(ws, { distRegister: { uuid, platform: PLATFORM } });
     console.log(`[dist] sent dist_register`);
 
+    // Auth loop. If key auth fails the server closes the connection; the
+    // _closed sentinel triggers a reconnect and password retry on the new socket.
+    let pendingRetry = false;
     while (true) {
         const msg = await nextMessage();
-        if (msg.payload === 'authChallenge') {
+        if (msg.payload === '_closed') {
+            if (!pendingRetry) fail('connection closed before auth completed');
+            console.log('[dist] reconnecting for password authentication');
+            ws = await connect().catch((err) => fail(`could not reconnect to ${SERVER_URL}: ${err.message}`));
+            wireSocket(ws);
+            pendingRetry = false;
+            send(ws, { distRegister: { uuid, platform: PLATFORM } });
+        } else if (msg.payload === 'authChallenge') {
             console.log('[dist] received auth_challenge, responding');
             const response = await auth.handleAuthChallenge(msg.authChallenge);
             send(ws, { authResponse: response });
         } else if (msg.payload === 'authResult') {
-            auth.handleAuthResult(msg.authResult);
+            const { needsRetry } = auth.handleAuthResult(msg.authResult);
             const variant = msg.authResult.password || msg.authResult.key || {};
-            if (!variant.success) fail('authentication failed');
+            if (!variant.success && !needsRetry) fail('authentication failed');
+            if (needsRetry) pendingRetry = true;
         } else if (msg.payload === 'ack') {
-            acks.push(true);
             break;
-        } else {
-            // ignore stateUpdate etc.
         }
     }
 
@@ -167,10 +181,8 @@ async function main() {
 
     while (true) {
         const msg = await nextMessage();
-        if (msg.payload === 'ack') {
-            acks.push(true);
-            break;
-        }
+        if (msg.payload === '_closed') fail('connection closed before upload acknowledged');
+        if (msg.payload === 'ack') break;
     }
 
     console.log('[dist] upload acknowledged, done');

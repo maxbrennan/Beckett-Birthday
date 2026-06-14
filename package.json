@@ -4,18 +4,18 @@
   "version": "3.0.0",
   "main": "electron.js",
   "scripts": {
-    "build:server": "elm make src/Server.elm --output=elm-server.js",
-    "build:client": "elm make src/Main.elm --output=elm-client.js",
+    "build:server": "npx elm make src/Server.elm --output=elm-server.js",
+    "build:client": "npx elm make src/Main.elm --output=elm-client.js",
     "build": "npm run build:server && npm run build:client",
-    "stop:server": "pm2 stop birthday-server || true",
-    "stop:client": "pm2 stop birthday-client || true",
-    "stop": "pm2 stop ecosystem.config.js || true",
-    "start:server": "npm run build:server && pm2 startOrRestart ecosystem.config.js --only birthday-server --update-env",
-    "start:server:dev": "npm run build:server && pm2 startOrRestart ecosystem.config.js --only birthday-server --env dev --update-env",
-    "start:client": "npm run build:client && pm2 startOrRestart ecosystem.config.js --only birthday-client --update-env",
-    "start:client:dev": "npm run build:client && pm2 startOrRestart ecosystem.config.js --only birthday-client --env dev --update-env",
-    "start": "npm run build && pm2 startOrRestart ecosystem.config.js --update-env",
-    "start:dev": "npm run build && pm2 startOrRestart ecosystem.config.js --env dev --update-env",
+    "stop:server": "npx pm2 stop birthday-server || true",
+    "stop:client": "npx pm2 stop birthday-client || true",
+    "stop": "npx pm2 stop ecosystem.config.js || true",
+    "start:server": "npm run build:server && npx pm2 startOrRestart ecosystem.config.js --only birthday-server --update-env",
+    "start:server:dev": "npm run build:server && npx pm2 startOrRestart ecosystem.config.js --only birthday-server --env dev --update-env",
+    "start:client": "npm run build:client && npx pm2 startOrRestart ecosystem.config.js --only birthday-client --update-env",
+    "start:client:dev": "npm run build:client && npx pm2 startOrRestart ecosystem.config.js --only birthday-client --env dev --update-env",
+    "start": "npm run build && npx pm2 startOrRestart ecosystem.config.js --update-env",
+    "start:dev": "npm run build && npx pm2 startOrRestart ecosystem.config.js --env dev --update-env",
     "dist:win": "npm run build:client && npx electron-builder --win",
     "dist:mac": "npm run build:client && npx electron-builder --mac",
     "deploy:mac": "npm run build:client && node scripts/deploy.js mac",
@@ -64,9 +64,21 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1",
+    "concurrently": "^10.0.3",
     "electron": "^42.4.0",
     "electron-builder": "^26.8.1",
-    "pm2": "^7.0.1"
-  }
+    "pm2": "^6.0.14"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxbrennan/Beckett-Birthday.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/maxbrennan/Beckett-Birthday/issues"
+  },
+  "homepage": "https://github.com/maxbrennan/Beckett-Birthday#readme",
+  "description": ""
 }

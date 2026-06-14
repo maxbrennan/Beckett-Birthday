@@ -51,9 +51,9 @@ async function main() {
                 const response = await auth.handleAuthChallenge(msg.authChallenge);
                 send(ws, { authResponse: response });
             } else if (msg.payload === 'authResult') {
-                auth.handleAuthResult(msg.authResult);
+                const { needsRetry } = auth.handleAuthResult(msg.authResult);
                 const variant = msg.authResult.password || msg.authResult.key || {};
-                if (!variant.success) fail('authentication failed');
+                if (!variant.success && !needsRetry) fail('authentication failed');
             } else if (msg.payload === 'distListResult') {
                 const entries = msg.distListResult.entries || [];
                 if (entries.length === 0) {
@@ -80,9 +80,9 @@ async function main() {
                 const response = await auth.handleAuthChallenge(msg.authChallenge);
                 send(ws, { authResponse: response });
             } else if (msg.payload === 'authResult') {
-                auth.handleAuthResult(msg.authResult);
+                const { needsRetry } = auth.handleAuthResult(msg.authResult);
                 const variant = msg.authResult.password || msg.authResult.key || {};
-                if (!variant.success) fail('authentication failed');
+                if (!variant.success && !needsRetry) fail('authentication failed');
                 console.log('[undeploy] authenticated');
             } else if (msg.payload === 'ack') {
                 console.log('[undeploy] done');

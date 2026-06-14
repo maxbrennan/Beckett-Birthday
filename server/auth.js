@@ -19,6 +19,10 @@ const UUID_ENV_FILE = path.join(CLIENT_DIR, 'uuid.env');
 
 const AUTH_LEVEL_NAME = { 0: 'none', 1: 'player', 2: 'admin' };
 
+// Set when key auth fails so the next handleAuthChallenge call falls through to
+// password auth and regenerates the keypair.
+let _keyAuthFailed = false;
+
 // === Public API ===
 
 function generateAuthChallenge() {
@@ -32,7 +36,7 @@ async function handleAuthChallenge(challengeMsg) {
     const level = challengeMsg.level;
     const challenge = toBuffer(challengeMsg.challenge);
 
-    if (hasKeys(level)) {
+    if (hasKeys(level) && !_keyAuthFailed) {
         const privateKeyPem = fs.readFileSync(privateKeyPath(level), 'utf8');
         const signature = signWithKey(privateKeyPem, challenge);
         return {
@@ -44,7 +48,9 @@ async function handleAuthChallenge(challengeMsg) {
     }
 
     const { username, password } = await promptCredentials();
-    const { publicKeyPem } = loadOrGenerateKeys(level);
+    // Force-generate new keys when retrying after key failure so the stale
+    // keypair is overwritten and the fresh public key is registered with the server.
+    const { publicKeyPem } = _keyAuthFailed ? generateNewKeys(level) : loadOrGenerateKeys(level);
     return {
         password: {
             username,
@@ -81,6 +87,8 @@ function handleAuthResponse(responseMsg, originalChallenge) {
     }
 }
 
+// Returns { needsRetry: boolean }. Callers must re-run the full challenge/response
+// cycle (including fetching a fresh challenge) when needsRetry is true.
 function handleAuthResult(resultMsg) {
     switch (resultMsg.result) {
         case 'password': {
@@ -88,19 +96,26 @@ function handleAuthResult(resultMsg) {
             if (r.success) {
                 console.log(`Auth ok (${AUTH_LEVEL_NAME[r.level]}). UUID: ${r.uuid}`);
                 persistUuid(r.uuid);
+                _keyAuthFailed = false;
             } else {
                 console.log('Auth failed.');
             }
-            return;
+            return { needsRetry: false };
         }
         case 'key': {
             const r = resultMsg.key;
-            if (r.success) console.log(`Auth ok (${AUTH_LEVEL_NAME[r.level]}).`);
-            else console.log('Auth failed.');
-            return;
+            if (r.success) {
+                console.log(`Auth ok (${AUTH_LEVEL_NAME[r.level]}).`);
+                return { needsRetry: false };
+            } else {
+                console.log('Key auth failed, retrying with password.');
+                _keyAuthFailed = true;
+                return { needsRetry: true };
+            }
         }
         default:
             console.log('Auth failed (unknown result variant).');
+            return { needsRetry: false };
     }
 }
 
@@ -175,6 +190,16 @@ function publicKeyPath(level) {
 
 function hasKeys(level) {
     return fs.existsSync(privateKeyPath(level)) && fs.existsSync(publicKeyPath(level));
+}
+
+function generateNewKeys(level) {
+    ensureDir(KEYS_DIR);
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+    const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' });
+    const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+    fs.writeFileSync(privateKeyPath(level), privateKeyPem, { mode: 0o600 });
+    fs.writeFileSync(publicKeyPath(level), publicKeyPem);
+    return { publicKeyPem, privateKeyPem };
 }
 
 function loadOrGenerateKeys(level) {
