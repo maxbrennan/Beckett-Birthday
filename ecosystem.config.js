@@ -2,15 +2,18 @@ module.exports = {
   apps: [
     {
       name: 'birthday-server',
-      script: 'birthday-server.js',
+      script: 'server/index.js',
       autorestart: false,
+      env: { DEV: 'false' },
+      env_dev: { DEV: 'true' },
     },
     {
       name: 'birthday-client',
-      script: './node_modules/.bin/electron',
+      script: 'electron',
       args: '.',
-      interpreter: 'none',
       autorestart: false,
+      env: { DEV: 'false' },
+      env_dev: { DEV: 'true' },
     },
   ],
 };

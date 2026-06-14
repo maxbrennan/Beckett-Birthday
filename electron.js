@@ -14,7 +14,8 @@ function createWindow() {
   })
 
   win.loadFile('index.html')
-  // win.webContents.openDevTools({ mode: 'detach' });
+  console.log(`[DEV] DEV mode is ${process.env.DEV}`)
+  if (process.env.DEV === 'true') win.webContents.openDevTools({ mode: 'detach' });
 }
 
 app.whenReady().then(() => {

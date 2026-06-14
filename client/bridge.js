@@ -1,6 +1,15 @@
 const Ws = require('ws')
+const fs = require('fs')
+const path = require('path')
+require('dotenv').config({ path: path.join(__dirname, '.env') })
+const codec = require('./server/codec.js')
 
-const app = Elm.Main.init({ node: document.getElementById('app') })
+const isDev = process.env.DEV === 'true'
+const host = isDev ? 'localhost' : process.env.PROD_SERVER_HOST
+const port = isDev ? process.env.DEV_SERVER_PORT : process.env.PROD_SERVER_PORT
+const wsUrl = port === '443' ? `wss://${host}` : `wss://${host}:${port}`
+
+const app = Elm.Main.init({ node: document.getElementById('app'), flags: wsUrl })
 let received = false
 
 app.ports.setDomProperty.subscribe(({ elementId, property, value }) => {
@@ -38,7 +47,7 @@ const generateWsId = () => String(nextWsId++)
 app.ports.initWebSocketClient.subscribe((url) => {
   console.log(`Initializing WebSocket client with URL: ${url}`)
   const id = generateWsId()
-  const ws = new Ws(url)
+  const ws = new Ws(url, { rejectUnauthorized: false }) // TODO remove rejectUnauthorized in production with valid certs
 
   const fireFailed = (reason) => {
     console.log(`WebSocket ${id} failed: ${reason}`)
@@ -54,25 +63,44 @@ app.ports.initWebSocketClient.subscribe((url) => {
   })
 
   ws.on('message', (data) => {
-    app.ports.receiveFromWs.send(data.toString())
+    let msg
+    try {
+      msg = codec.decodeServer(data)
+    } catch (err) {
+      console.error('Failed to decode ServerMessage:', err.message)
+      return
+    }
+    const encoded = JSON.stringify(msg)
+    app.ports.receiveFromWs.send(encoded)
     if (!received) {
-      console.log(`WebSocket ${id} received first message: ${data.toString()}`)
+      console.log(`WebSocket ${id} received first message: ${encoded}`)
       received = true
     }
   })
 
-  ws.on('close', () => {
-    fireFailed('closed')
+  ws.on('close', (code, reason) => {
+    fireFailed(`closed ${reason.toString()} (code ${code})`)
   })
 
-  ws.on('error', () => {
-    fireFailed('error')
+  ws.on('error', (error) => {
+    fireFailed(`error ${error.message}`)
   })
 })
 
 app.ports.sendToWs.subscribe(({ wsId, data }) => {
   const ws = wsMap.get(wsId)
   if (ws && ws.readyState === Ws.OPEN) {
-    ws.send(data)
+    ws.send(codec.encodeClient(JSON.parse(data)), { binary: true })
   }
+})
+
+app.ports.readFile.subscribe((filePath) => {
+  const fullPath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, filePath)
+  fs.readFile(fullPath, 'utf8', (err, data) => {
+    if (err) {
+      app.ports.readFileResult.send({ path: filePath, contents: null, error: err.message })
+    } else {
+      app.ports.readFileResult.send({ path: filePath, contents: data, error: null })
+    }
+  })
 })

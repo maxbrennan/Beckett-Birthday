@@ -27,11 +27,6 @@ port receiveDomProperty : ({ elementId : String, property : String, value : Deco
 
 port logToFile : String -> Cmd msg
 
-wsUrl : String
-wsUrl =
-    "ws://72.211.182.145:5271"
-
-
 port initWebSocketClient : String -> Cmd msg
 
 port wsClientReady : (String -> msg) -> Sub msg
@@ -41,6 +36,10 @@ port sendToWs : { wsId : String, data : String } -> Cmd msg
 port receiveFromWs : (String -> msg) -> Sub msg
 
 port wsClientFailed : (String -> msg) -> Sub msg
+
+port readFile : String -> Cmd msg
+
+port readFileResult : ({ path : String, contents : Maybe String, error : Maybe String } -> msg) -> Sub msg
 
 
 -- Set to True to enable debug mode (smaller counts, faster delays, no AirPods required).
@@ -155,15 +154,15 @@ type alias Question =
 
 questions : List Question
 questions =
-    [ { song = "texas.mp3", answers = [ "Choosin' Texas", "Choosing Texas" ] }
+    [ { song = "not-like-us.mp3", answers = [ "Not Like Us" ] }
     , { song = "golden.mp3", answers = [ "Golden" ] }
-    , { song = "cigarettes.mp3", answers = [ "20 Cigarettes" , "Twenty Cigarettes" ] }
+    , { song = "heartless.mp3", answers = [ "Heartless" ] }
     , { song = "revenge.mp4", answers = [ "Revenge", "Revenge Parody", "Revenge a Minecraft Parody" ] }
-    , { song = "so-easy.mp3", answers = [ "So Easy", "To Fall in Love", "So Easy (To Fall in Love)" ] }
+    , { song = "runaway.mp3", answers = [ "Runaway" ] }
     , { song = "california-gurls.mp3", answers = [ "California Gurls", "California Girls" ] }
-    , { song = "espresso.mp3", answers = [ "Espresso" ] }
-    , { song = "baby-shark.mp3", answers = [ "Baby Shark Hip Hop Version", "Baby Shark Hip Hop", "Hip Hop Baby Shark", "Baby Shark Hip Hop Remix" ] }
-    , { song = "anything-but-love.mp3", answers = [ "Anything But Love" ] }
+    , { song = "power.mp3", answers = [ "Power" ] }
+    , { song = "shabang.mp3", answers = [ "Shabang" ] }
+    , { song = "national-treasures.mp3", answers = [ "National Treasures" ] }
     , { song = "korean.mp3", answers = [ "천 번 차이는 남자" ] }
     ]
 
@@ -309,6 +308,8 @@ type alias Model =
     , pendingStartTime : Maybe Float
     , wsClientId : Maybe String
     , timerEndsAt : Float
+    , myUuid : Maybe String
+    , wsUrl : String
     }
 
 
@@ -341,11 +342,12 @@ type Msg
     | WsSyncTick
     | WsDisconnected String
     | WsReconnect
+    | UuidLoaded (Maybe String)
     | NoOp
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
+init : String -> ( Model, Cmd Msg )
+init wsUrl =
     ( { screen = WsConnectingScreen
       , jeopardyPlaying = False
       , now = 0
@@ -355,9 +357,11 @@ init _ =
       , pendingStartTime = Nothing
       , wsClientId = Nothing
       , timerEndsAt = 0
+      , myUuid = Nothing
+      , wsUrl = wsUrl
       }
     , Cmd.batch
-        [ initWebSocketClient wsUrl
+        [ readFile "app-uuid.json"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -946,40 +950,62 @@ update msg model =
                     ( model, Cmd.none )
 
         WsClientReady wsId ->
-            ( { model | wsClientId = Just wsId, screen = WsLoadingScreen }, Cmd.none )
+            let
+                newModel =
+                    { model | wsClientId = Just wsId, screen = WsLoadingScreen }
+            in
+            case model.myUuid of
+                Just uuid ->
+                    ( newModel
+                    , sendToWs { wsId = wsId, data = Encode.encode 0 (stateRequestEnvelope uuid) }
+                    )
 
-        WsDataReceived json ->
-            case model.screen of
-                WsLoadingScreen ->
-                    if String.trim json == "{}" then
-                        ( { model | screen = BeginScreen, jeopardyPlaying = True }, Cmd.none )
+                Nothing ->
+                    ( { newModel | screen = WsErrorScreen }, Cmd.none )
 
-                    else
-                        case Decode.decodeString decodeModel json of
-                            Ok newModel ->
-                                let
-                                    videoCmd =
-                                        newModel.savedState
-                                            |> Maybe.andThen .videoResumeTime
-                                            |> Maybe.map (\t -> setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t })
-                                            |> Maybe.withDefault Cmd.none
-                                in
-                                ( { newModel
-                                    | wsClientId = model.wsClientId
-                                    , dingKey = model.dingKey
-                                  }
-                                , videoCmd
-                                )
+        WsDataReceived envelopeJson ->
+            case Decode.decodeString decodeServerEnvelope envelopeJson of
+                Ok (ServerStateUpdate inner) ->
+                    case model.screen of
+                        WsLoadingScreen ->
+                            if String.trim inner == "{}" then
+                                ( { model | screen = BeginScreen, jeopardyPlaying = True }, Cmd.none )
 
-                            Err _ ->
-                                ( model, Cmd.none )
+                            else
+                                case Decode.decodeString decodeModel inner of
+                                    Ok newModel ->
+                                        let
+                                            videoCmd =
+                                                newModel.savedState
+                                                    |> Maybe.andThen .videoResumeTime
+                                                    |> Maybe.map (\t -> setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t })
+                                                    |> Maybe.withDefault Cmd.none
+                                        in
+                                        ( { newModel
+                                            | wsClientId = model.wsClientId
+                                            , dingKey = model.dingKey
+                                            , myUuid = model.myUuid
+                                            , wsUrl = model.wsUrl
+                                          }
+                                        , videoCmd
+                                        )
 
-                ConfirmingAnswerScreen nextScreen ->
-                    if isAck json then
-                        ( { model | screen = nextScreen }, Cmd.none )
+                                    Err _ ->
+                                        ( model, Cmd.none )
 
-                    else
-                        ( model, Cmd.none )
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok (ServerRejected _) ->
+                    ( { model | screen = WsErrorScreen, wsClientId = Nothing }, Cmd.none )
+
+                Ok ServerAck ->
+                    case model.screen of
+                        ConfirmingAnswerScreen nextScreen ->
+                            ( { model | screen = nextScreen }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
@@ -997,23 +1023,32 @@ update msg model =
 
                 _ ->
                     ( { model | wsClientId = Nothing, screen = WsConnectingScreen }
-                    , initWebSocketClient wsUrl
+                    , initWebSocketClient model.wsUrl
                     )
 
         WsReconnect ->
             case model.screen of
                 WsErrorScreen ->
-                    ( { model | screen = WsConnectingScreen }, initWebSocketClient wsUrl )
+                    ( { model | screen = WsConnectingScreen }, initWebSocketClient model.wsUrl )
 
                 WsConnectingScreen ->
-                    ( model, initWebSocketClient wsUrl )
+                    ( model, initWebSocketClient model.wsUrl )
 
                 _ ->
                     ( model, Cmd.none )
 
         WsSyncTick ->
-            case model.wsClientId of
-                Just wsId ->
+            case ( model.wsClientId, model.screen ) of
+                ( Just _, WsLoadingScreen ) ->
+                    ( model, Cmd.none )
+
+                ( Just _, WsConnectingScreen ) ->
+                    ( model, Cmd.none )
+
+                ( Just _, WsErrorScreen ) ->
+                    ( model, Cmd.none )
+
+                ( Just wsId, _ ) ->
                     let
                         newModel =
                             case model.screen of
@@ -1023,9 +1058,9 @@ update msg model =
                                 _ ->
                                     model
                     in
-                    ( newModel, sendToWs { wsId = wsId, data = Encode.encode 0 (encodeModel newModel) } )
+                    ( newModel, sendToWs { wsId = wsId, data = Encode.encode 0 (clientStateEnvelope newModel) } )
 
-                Nothing ->
+                ( Nothing, _ ) ->
                     let
                         newModel =
                             case model.screen of
@@ -1036,6 +1071,18 @@ update msg model =
                                     model
                     in
                     ( newModel, Cmd.none )
+
+        UuidLoaded maybeUuid ->
+            case maybeUuid of
+                Just uuid ->
+                    ( { model | myUuid = Just uuid }, initWebSocketClient model.wsUrl )
+
+                Nothing ->
+                    if debug then
+                        ( { model | myUuid = Just "dev-mode" }, initWebSocketClient model.wsUrl )
+
+                    else
+                        ( { model | screen = WsErrorScreen }, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )
@@ -1174,11 +1221,48 @@ encodeMaybeFloat =
     Maybe.map Encode.float >> Maybe.withDefault Encode.null
 
 
-isAck : String -> Bool
-isAck json =
-    Decode.decodeString (Decode.field "tag" Decode.string) json
-        |> Result.map ((==) "ack")
-        |> Result.withDefault False
+type ServerEnvelope
+    = ServerStateUpdate String
+    | ServerAck
+    | ServerAuth
+    | ServerRejected String
+    | ServerUnknown
+
+
+decodeServerEnvelope : Decode.Decoder ServerEnvelope
+decodeServerEnvelope =
+    Decode.field "payload" Decode.string
+        |> Decode.andThen
+            (\variant ->
+                case variant of
+                    "stateUpdate" ->
+                        Decode.at [ "stateUpdate", "json" ] Decode.string
+                            |> Decode.map ServerStateUpdate
+
+                    "ack" ->
+                        Decode.succeed ServerAck
+
+                    "authChallenge" ->
+                        Decode.succeed ServerAuth
+
+                    "authResult" ->
+                        Decode.succeed ServerAuth
+
+                    "stateRequestRejected" ->
+                        Decode.at [ "stateRequestRejected", "reason" ] Decode.string
+                            |> Decode.map ServerRejected
+
+                    _ ->
+                        Decode.succeed ServerUnknown
+            )
+
+
+stateRequestEnvelope : String -> Encode.Value
+stateRequestEnvelope uuid =
+    Encode.object
+        [ ( "payload", Encode.string "stateRequest" )
+        , ( "stateRequest", Encode.object [ ( "uuid", Encode.string uuid ) ] )
+        ]
 
 
 -- For slot index s and the current model.dingKey, returns the largest n ≤ dingKey
@@ -1391,6 +1475,14 @@ encodePausedState s =
         , ( "savedAt", Encode.float s.savedAt )
         , ( "songResumeTime", encodeMaybeFloat s.songResumeTime )
         , ( "videoResumeTime", encodeMaybeFloat s.videoResumeTime )
+        ]
+
+
+clientStateEnvelope : Model -> Encode.Value
+clientStateEnvelope model =
+    Encode.object
+        [ ( "payload", Encode.string "stateUpdate" )
+        , ( "stateUpdate", Encode.object [ ( "json", Encode.string (Encode.encode 0 (encodeModel model)) ) ] )
         ]
 
 
@@ -1666,6 +1758,8 @@ decodeModel =
                 , pendingStartTime = pst
                 , wsClientId = wci
                 , timerEndsAt = tea
+                , myUuid = Nothing
+                , wsUrl = ""
                 }
         )
         (Decode.field "screen" decodeScreen)
@@ -2389,10 +2483,24 @@ subscriptions model =
         , Browser.Events.onAnimationFrame (\posix -> Tick (toFloat (Time.posixToMillis posix)))
         , receiveDomProperty DomPropertyReceived
         , domPropertyError DomPropertyError
+        , readFileResult
+            (\{ contents } ->
+                case contents of
+                    Just raw ->
+                        case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
+                            Ok uuid ->
+                                UuidLoaded (Just uuid)
+
+                            Err _ ->
+                                UuidLoaded Nothing
+
+                    Nothing ->
+                        UuidLoaded Nothing
+            )
         ]
 
 -- TODO extract logic from TrackEnded and WsPong messages
-main : Program () Model Msg
+main : Program String Model Msg
 main =
     Browser.element
         { init = init

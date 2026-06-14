@@ -1,0 +1,91 @@
+syntax = "proto3";
+package birthday;
+
+enum AuthLevel {
+  AUTH_LEVEL_NONE   = 0;
+  AUTH_LEVEL_PLAYER = 1;
+  AUTH_LEVEL_ADMIN  = 2;
+}
+
+message StateUpdate          { string json = 1; }
+message Ack                  {}
+message AuthChallenge        { bytes challenge = 1; AuthLevel level = 2; }
+message StateRequest         { string uuid = 1; }
+message StateRequestRejected { string reason = 1; }
+
+message PasswordAuthResponse {
+  string username   = 1;
+  string password   = 2;
+  bytes  public_key = 3;
+}
+
+message KeyAuthResponse {
+  string uuid               = 1;
+  bytes  challenge_response = 2;
+}
+
+message AuthResponse {
+  oneof method {
+    PasswordAuthResponse password = 1;
+    KeyAuthResponse      key      = 2;
+  }
+}
+
+message PasswordAuthResult {
+  bool      success = 1;
+  AuthLevel level   = 2;
+  string    uuid    = 3;
+}
+
+message KeyAuthResult {
+  bool      success = 1;
+  AuthLevel level   = 2;
+}
+
+message AuthResult {
+  oneof result {
+    PasswordAuthResult password = 1;
+    KeyAuthResult      key      = 2;
+  }
+}
+
+message DistRegister { string uuid = 1; string platform = 2; }
+message DistUpload {
+  string uuid        = 1;
+  string filename    = 2;
+  bytes  contents    = 3;
+  uint32 chunk_index = 4;
+  bool   is_last     = 5;
+}
+message DistUndeploy { string uuid = 1; }
+message DistList     {}
+
+message DistListEntry {
+  string uuid     = 1;
+  string filename = 2;
+  string platform = 3;
+}
+message DistListResult { repeated DistListEntry entries = 1; }
+
+message ServerMessage {
+  oneof payload {
+    StateUpdate          state_update           = 1;
+    Ack                  ack                    = 2;
+    AuthChallenge        auth_challenge         = 3;
+    AuthResult           auth_result            = 4;
+    StateRequestRejected state_request_rejected = 5;
+    DistListResult       dist_list_result       = 6;
+  }
+}
+
+message ClientMessage {
+  oneof payload {
+    StateUpdate  state_update  = 1;
+    AuthResponse auth_response = 2;
+    DistRegister dist_register = 3;
+    DistUpload   dist_upload   = 4;
+    StateRequest state_request = 5;
+    DistUndeploy dist_undeploy = 6;
+    DistList     dist_list     = 7;
+  }
+}
