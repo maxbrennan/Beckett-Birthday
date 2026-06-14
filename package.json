@@ -1,7 +1,7 @@
 {
-  "name": "logan-grad-gift",
-  "productName": "Logan Grad Gift",
-  "version": "2.1.1",
+  "name": "birthday-present",
+  "productName": "Ryan Birthday",
+  "version": "3.0.0",
   "main": "electron.js",
   "scripts": {
     "build:server": "elm make src/Server.elm --output=elm-server.js",
