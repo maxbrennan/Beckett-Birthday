@@ -10,6 +10,9 @@ const auth = require('./auth.js');
 const isDev = process.env.DEV === 'true';
 const PORT = parseInt(isDev ? process.env.DEV_SERVER_PORT : process.env.PROD_SERVER_PORT, 10) || (isDev ? 8443 : 443);
 
+const CERT_FILE = path.join(__dirname, '..', process.env.SSL_CERT_FILE || path.join('certs', 'cert.pem'));
+const KEY_FILE = path.join(__dirname, '..', process.env.SSL_KEY_FILE || path.join('certs', 'key.pem'));
+
 const app = Elm.Server.init({ flags: isDev });
 const clients = new Map();
 const pendingAuths = new Map();
@@ -18,9 +21,23 @@ const pendingListOps = new Set();
 let nextId = 0;
 
 const server = https.createServer({
-        cert: fs.readFileSync(path.join(__dirname, '..', 'certs', 'cert.pem')),
-        key: fs.readFileSync(path.join(__dirname, '..', 'certs', 'key.pem')),
-    });
+    cert: fs.readFileSync(CERT_FILE),
+    key: fs.readFileSync(KEY_FILE),
+});
+// Reload TLS credentials in-place when cert or key files change (e.g. Let's
+// Encrypt renewal). Debounced so a simultaneous cert+key write only triggers once.
+let certReloadTimer = null;
+function reloadCerts() {
+    try {
+        server.setSecureContext({ cert: fs.readFileSync(CERT_FILE), key: fs.readFileSync(KEY_FILE) });
+        console.log('[cert] reloaded TLS certificates');
+    } catch (err) {
+        console.error(`[cert] failed to reload certificates: ${err.message}`);
+    }
+}
+fs.watch(CERT_FILE, () => { clearTimeout(certReloadTimer); certReloadTimer = setTimeout(reloadCerts, 500); });
+fs.watch(KEY_FILE,  () => { clearTimeout(certReloadTimer); certReloadTimer = setTimeout(reloadCerts, 500); });
+
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
