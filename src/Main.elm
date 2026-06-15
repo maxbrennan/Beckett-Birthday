@@ -154,16 +154,16 @@ type alias Question =
 
 questions : List Question
 questions =
-    [ { song = "not-like-us.mp3", answers = [ "Not Like Us" ] }
-    , { song = "golden.mp3", answers = [ "Golden" ] }
-    , { song = "heartless.mp3", answers = [ "Heartless" ] }
+    [ { song = "baby-shark.mp3", answers = [ "Baby Shark (Hip Hip Version)", "Baby Shark Hip Hop", "Baby Shark Hip Hop Edition" ] }
+    , { song = "manchild.mp3", answers = [ "Manchild" ] }
+    , { song = "house-tour.mp3", answers = [ "House Tour" ] }
     , { song = "revenge.mp4", answers = [ "Revenge", "Revenge Parody", "Revenge a Minecraft Parody" ] }
-    , { song = "runaway.mp3", answers = [ "Runaway" ] }
-    , { song = "california-gurls.mp3", answers = [ "California Gurls", "California Girls" ] }
-    , { song = "power.mp3", answers = [ "Power" ] }
-    , { song = "shabang.mp3", answers = [ "Shabang" ] }
-    , { song = "national-treasures.mp3", answers = [ "National Treasures" ] }
-    , { song = "korean.mp3", answers = [ "천 번 차이는 남자" ] }
+    , { song = "style.mp3", answers = [ "Style" ] }
+    , { song = "ready-for-it.mp3", answers = [ "...Ready For It?" ] }
+    , { song = "tit-for-tat.mp3", answers = [ "TIT FOR TAT" ] }
+    , { song = "sports-car.mp3", answers = [ "Sports car" ] }
+    , { song = "revolving-door.mp3", answers = [ "Revolving door" ] }
+    , { song = "korean.mp3", answers = [ "핑크판타지" ] }
     ]
 
 
