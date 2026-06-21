@@ -80,5 +80,8 @@
     "url": "https://github.com/maxbrennan/Beckett-Birthday/issues"
   },
   "homepage": "https://github.com/maxbrennan/Beckett-Birthday#readme",
-  "description": ""
+  "description": "",
+  "allowScripts": {
+    "electron-winstaller@5.4.0": true
+  }
 }
