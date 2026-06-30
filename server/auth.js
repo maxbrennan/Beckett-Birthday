@@ -25,6 +25,10 @@ let _keyAuthFailed = false;
 
 // === Public API ===
 
+function isAdminAuth(variant) {
+    return !!variant.success && (variant.level || 0) >= 2;
+}
+
 function generateAuthChallenge() {
     return {
         challenge: crypto.randomBytes(32),
@@ -258,6 +262,7 @@ function loadStoredUuid() {
 loadStoredUuid();
 
 module.exports = {
+    isAdminAuth,
     generateAuthChallenge,
     handleAuthChallenge,
     handleAuthResponse,

@@ -72,7 +72,7 @@ wss.on('connection', (ws) => {
             if (pendingUndeployOps.has(clientId)) {
                 const undeployUuid = pendingUndeployOps.get(clientId);
                 pendingUndeployOps.delete(clientId);
-                if (variant.success && variant.level >= 2) {
+                if (auth.isAdminAuth(variant)) {
                     performUndeploy(undeployUuid, ws);
                 } else {
                     console.error(`[undeploy] auth failed for ${undeployUuid}`);
@@ -83,7 +83,7 @@ wss.on('connection', (ws) => {
 
             if (pendingListOps.has(clientId)) {
                 pendingListOps.delete(clientId);
-                if (!variant.success || variant.level < 2) {
+                if (!auth.isAdminAuth(variant)) {
                     console.error(`[list] auth failed for ${clientId}`);
                     ws.close();
                     return;
