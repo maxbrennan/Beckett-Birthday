@@ -9,8 +9,8 @@ module.exports = {
     },
     {
       name: 'birthday-client',
-      script: 'electron',
-      args: '.',
+      script: 'npx',
+      args: 'electron .',
       autorestart: false,
       env: { DEV: 'false' },
       env_dev: { DEV: 'true' },
