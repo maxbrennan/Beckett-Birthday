@@ -132,10 +132,11 @@ async function main() {
             const response = await auth.handleAuthChallenge(msg.authChallenge);
             send(ws, { authResponse: response });
         } else if (msg.payload === 'authResult') {
-            const { needsRetry } = auth.handleAuthResult(msg.authResult);
+            auth.handleAuthResult(msg.authResult);
             const variant = msg.authResult.password || msg.authResult.key || {};
-            if (!variant.success && !needsRetry) fail('authentication failed');
-            if (needsRetry) pendingRetry = true;
+            const isKeyFailure = !!(msg.authResult.key && !msg.authResult.key.success);
+            if (isKeyFailure) { pendingRetry = true; }
+            else if (!variant.success) { fail('authentication failed'); }
         } else if (msg.payload === 'ack') {
             break;
         }
