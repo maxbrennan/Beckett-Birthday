@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
+const https = require('https');
 const path = require('path');
 const { spawn } = require('child_process');
 const Ws = require('ws');
@@ -118,6 +119,7 @@ async function main() {
     // Auth loop. If key auth fails the server closes the connection; the
     // _closed sentinel triggers a reconnect and password retry on the new socket.
     let pendingRetry = false;
+    let uploadToken = null;
     while (true) {
         const msg = await nextMessage();
         if (msg.payload === '_closed') {
@@ -138,9 +140,11 @@ async function main() {
             if (isKeyFailure) { pendingRetry = true; }
             else if (!variant.success) { fail('authentication failed'); }
         } else if (msg.payload === 'ack') {
+            uploadToken = msg.ack.uploadToken;
             break;
         }
     }
+    if (!uploadToken) fail('server did not issue an upload token');
 
     console.log('[dist] auth complete; running electron-builder');
     await runElectronBuilder().catch((err) => fail(err.message));
@@ -148,37 +152,32 @@ async function main() {
     const built = findBuiltFile();
     console.log(`[dist] found built file ${built.name} (${built.mtime})`);
     const contents = fs.readFileSync(built.full);
+    console.log(`[dist] uploading ${contents.length} bytes via HTTPS`);
 
-    const CHUNK_SIZE = 1024 * 1024; // 1 MB
-    const totalChunks = Math.max(1, Math.ceil(contents.length / CHUNK_SIZE));
-    console.log(`[dist] uploading ${contents.length} bytes in ${totalChunks} chunk(s)`);
-
-    for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, contents.length);
-        const chunk = contents.subarray(start, end);
-        const isLast = i === totalChunks - 1;
-        await new Promise((resolve, reject) => {
-            ws.send(
-                codec.encodeClient({
-                    distUpload: {
-                        uuid,
-                        filename: built.name,
-                        contents: chunk,
-                        chunkIndex: i,
-                        isLast,
-                    },
-                }),
-                { binary: true },
-                (err) => (err ? reject(err) : resolve()),
-            );
+    await new Promise((resolve, reject) => {
+        const req = https.request({
+            hostname: host,
+            port: parseInt(port, 10),
+            path: '/upload',
+            method: 'POST',
+            rejectUnauthorized: false,
+            headers: {
+                'Authorization': `Bearer ${uploadToken}`,
+                'X-Filename': built.name,
+                'Content-Type': 'application/octet-stream',
+                'Content-Length': contents.length,
+            },
+        }, (res) => {
+            res.resume();
+            if (res.statusCode === 200) resolve();
+            else reject(new Error(`upload failed: HTTP ${res.statusCode}`));
         });
-        // Respect backpressure: drain if the socket has buffered too much.
-        while (ws.bufferedAmount > 8 * CHUNK_SIZE) {
-            await new Promise((r) => setTimeout(r, 25));
-        }
-    }
-    console.log('[dist] all chunks sent');
+        req.on('error', reject);
+        req.end(contents);
+    });
+    console.log('[dist] upload complete');
+
+    send(ws, { distComplete: { uuid, filename: built.name } });
 
     while (true) {
         const msg = await nextMessage();

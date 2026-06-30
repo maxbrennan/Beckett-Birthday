@@ -4,6 +4,7 @@ import Dict exposing (Dict)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Platform
+import Set exposing (Set)
 
 
 type alias DistInfo =
@@ -28,6 +29,7 @@ type alias Model =
     , distClients : Dict String DistStage
     , registry : List RegistryEntry
     , isDev : Bool
+    , pendingStateEdits : Set String
     }
 
 
@@ -50,6 +52,9 @@ type ClientEnvelope
     | ClientStateRequest String
     | ClientDistRegister DistInfo
     | ClientDistUpload { uuid : String, filename : String, contentsBase64 : String, chunkIndex : Int, isLast : Bool }
+    | ClientDistComplete { uuid : String, filename : String }
+    | ClientDistStateEdit String
+    | ClientDistStateEditSave { uuid : String, json : String }
     | ClientUnknown
 
 
@@ -96,6 +101,20 @@ decodeClientEnvelope =
                             (Decode.at [ "distUpload", "contents" ] Decode.string)
                             (Decode.at [ "distUpload", "chunkIndex" ] Decode.int)
                             (Decode.at [ "distUpload", "isLast" ] Decode.bool)
+
+                    "distComplete" ->
+                        Decode.map2 (\u f -> ClientDistComplete { uuid = u, filename = f })
+                            (Decode.at [ "distComplete", "uuid" ] Decode.string)
+                            (Decode.at [ "distComplete", "filename" ] Decode.string)
+
+                    "distStateEdit" ->
+                        Decode.map ClientDistStateEdit
+                            (Decode.at [ "distStateEdit", "uuid" ] Decode.string)
+
+                    "distStateEditSave" ->
+                        Decode.map2 (\u j -> ClientDistStateEditSave { uuid = u, json = j })
+                            (Decode.at [ "distStateEditSave", "uuid" ] Decode.string)
+                            (Decode.at [ "distStateEditSave", "json" ] Decode.string)
 
                     _ ->
                         Decode.succeed ClientUnknown
@@ -260,6 +279,7 @@ init isDev =
       , distClients = Dict.empty
       , registry = []
       , isDev = isDev
+      , pendingStateEdits = Set.empty
       }
     , readFile registryFilePath
     )
@@ -281,6 +301,15 @@ update msg model =
                     ( { model | distClients = cleanedDist }, Cmd.none )
 
                 Just uuid ->
+                    if Set.member uuid model.pendingStateEdits then
+                        ( { model
+                            | connectedPlayers = Dict.remove uuid model.connectedPlayers
+                            , distClients = cleanedDist
+                          }
+                        , Cmd.none
+                        )
+
+                    else
                     let
                         currentState =
                             model.registry
@@ -306,7 +335,15 @@ update msg model =
         MessageReceived { clientId, payload } ->
             case Decode.decodeValue decodeClientEnvelope payload of
                 Ok (ClientStateRequest uuid) ->
-                    if Dict.member uuid model.connectedPlayers then
+                    if Set.member uuid model.pendingStateEdits then
+                        ( model
+                        , Cmd.batch
+                            [ sendToClient { clientId = clientId, payload = rejectEnvelope "state is being edited by admin" }
+                            , closeClient { clientId = clientId, reason = "state is being edited by admin" }
+                            ]
+                        )
+
+                    else if Dict.member uuid model.connectedPlayers then
                         ( model
                         , Cmd.batch
                             [ sendToClient { clientId = clientId, payload = rejectEnvelope "player already connected" }
@@ -410,6 +447,82 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
+                Ok (ClientDistComplete { uuid, filename }) ->
+                    case Dict.get clientId model.distClients of
+                        Just (AwaitingUpload info) ->
+                            if info.uuid == uuid then
+                                let
+                                    newEntry =
+                                        { uuid = uuid
+                                        , filename = filename
+                                        , platform = info.platform
+                                        , state = Nothing
+                                        }
+
+                                    newRegistry =
+                                        List.filter (\e -> e.filename /= filename) model.registry
+                                            ++ [ newEntry ]
+                                in
+                                ( { model
+                                    | distClients = Dict.remove clientId model.distClients
+                                    , registry = newRegistry
+                                  }
+                                , Cmd.batch
+                                    [ writeRegistry newRegistry
+                                    , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                    ]
+                                )
+
+                            else
+                                ( model, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok (ClientDistStateEdit uuid) ->
+                    let
+                        maybePlayerClientId =
+                            Dict.get uuid model.connectedPlayers
+
+                        currentState =
+                            model.registry
+                                |> List.filter (\e -> e.uuid == uuid)
+                                |> List.head
+                                |> Maybe.andThen .state
+                                |> Maybe.withDefault (Encode.object [])
+                    in
+                    ( { model | pendingStateEdits = Set.insert uuid model.pendingStateEdits }
+                    , Cmd.batch
+                        [ case maybePlayerClientId of
+                            Nothing ->
+                                Cmd.none
+
+                            Just playerClientId ->
+                                closeClient { clientId = playerClientId, reason = "admin editing state" }
+                        , stateEditReady { adminClientId = clientId, uuid = uuid, json = Encode.encode 0 currentState }
+                        ]
+                    )
+
+                Ok (ClientDistStateEditSave { uuid, json }) ->
+                    case Decode.decodeString Decode.value json of
+                        Ok parsedState ->
+                            let
+                                newRegistry =
+                                    updateEntryState uuid parsedState model.registry
+                            in
+                            ( { model
+                                | registry = newRegistry
+                                , pendingStateEdits = Set.remove uuid model.pendingStateEdits
+                              }
+                            , Cmd.batch
+                                [ writeRegistry newRegistry
+                                , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                ]
+                            )
+
+                        Err _ ->
+                            ( model, sendToClient { clientId = clientId, payload = rejectEnvelope "invalid json" } )
+
                 _ ->
                     ( model, Cmd.none )
 
@@ -498,3 +611,5 @@ port authResult : ({ clientId : String, success : Bool, level : Int, uuid : Stri
 port writeFile : { path : String, contents : String, encoding : String, append : Bool } -> Cmd msg
 
 port writeFileResult : ({ path : String, ok : Bool, error : Maybe String } -> msg) -> Sub msg
+
+port stateEditReady : { adminClientId : String, uuid : String, json : String } -> Cmd msg
