@@ -11,49 +11,72 @@ const port = process.env.PROD_SERVER_PORT || '443';
 const SERVER_URL = port === '443' ? `wss://${host}` : `wss://${host}:${port}`;
 const fail = (msg) => { console.error(`[undeploy] ${msg}`); process.exit(1); };
 
+function connect() {
+    return new Promise((resolve, reject) => {
+        const sock = new Ws(SERVER_URL, { rejectUnauthorized: false });
+        sock.once('open', () => resolve(sock));
+        sock.once('error', reject);
+    });
+}
+
 function send(ws, payload) {
     ws.send(codec.encodeClient(payload), { binary: true });
 }
 
 async function main() {
-    const ws = await new Promise((resolve, reject) => {
-        const sock = new Ws(SERVER_URL, { rejectUnauthorized: false });
-        sock.once('open', () => resolve(sock));
-        sock.once('error', reject);
-    }).catch((err) => fail(`could not connect to ${SERVER_URL}: ${err.message}`));
-
-    console.log(`[undeploy] connected to ${SERVER_URL}`);
-
     let pendingResolver = null;
     const incoming = [];
+
     const nextMessage = () => new Promise((resolve) => {
         if (incoming.length > 0) resolve(incoming.shift());
         else pendingResolver = resolve;
     });
 
-    ws.on('message', (data) => {
-        let msg;
-        try { msg = codec.decodeServer(data); } catch (err) { console.error('[undeploy] decode error:', err.message); return; }
+    function pushMessage(msg) {
         if (pendingResolver) { const r = pendingResolver; pendingResolver = null; r(msg); }
         else incoming.push(msg);
-    });
+    }
 
-    ws.on('close', () => process.exit(0));
+    // Attach message + close handlers to a socket so both feed the same queue.
+    // Injects a synthetic _closed sentinel so the auth loop can detect disconnects.
+    function wireSocket(socket) {
+        socket.on('message', (data) => {
+            let msg;
+            try { msg = codec.decodeServer(data); }
+            catch (err) { console.error('[undeploy] decode error:', err.message); return; }
+            pushMessage(msg);
+        });
+        socket.on('close', () => pushMessage({ payload: '_closed' }));
+    }
+
+    let ws = await connect().catch((err) => fail(`could not connect to ${SERVER_URL}: ${err.message}`));
+    console.log(`[undeploy] connected to ${SERVER_URL}`);
+    wireSocket(ws);
 
     if (!uuid) {
         // List mode: authenticate then display available builds
-        send(ws, { distList: {} });
         console.log('[undeploy] no UUID provided — fetching list of deployed builds');
+        send(ws, { distList: {} });
 
+        let pendingRetry = false;
         while (true) {
             const msg = await nextMessage();
-            if (msg.payload === 'authChallenge') {
+            if (msg.payload === '_closed') {
+                if (!pendingRetry) fail('connection closed before auth completed');
+                console.log('[undeploy] reconnecting for password authentication');
+                ws = await connect().catch((err) => fail(`could not reconnect to ${SERVER_URL}: ${err.message}`));
+                wireSocket(ws);
+                pendingRetry = false;
+                send(ws, { distList: {} });
+            } else if (msg.payload === 'authChallenge') {
                 const response = await auth.handleAuthChallenge(msg.authChallenge);
                 send(ws, { authResponse: response });
             } else if (msg.payload === 'authResult') {
-                const { needsRetry } = auth.handleAuthResult(msg.authResult);
+                auth.handleAuthResult(msg.authResult);
                 const variant = msg.authResult.password || msg.authResult.key || {};
-                if (!variant.success && !needsRetry) fail('authentication failed');
+                const isKeyFailure = !!(msg.authResult.key && !msg.authResult.key.success);
+                if (isKeyFailure) { pendingRetry = true; }
+                else if (!variant.success) { fail('authentication failed'); }
             } else if (msg.payload === 'distListResult') {
                 const entries = msg.distListResult.entries || [];
                 if (entries.length === 0) {
@@ -70,20 +93,29 @@ async function main() {
         }
     } else {
         // Undeploy mode
-        send(ws, { distUndeploy: { uuid } });
         console.log(`[undeploy] sent undeploy request for ${uuid}`);
+        send(ws, { distUndeploy: { uuid } });
 
+        let pendingRetry = false;
         while (true) {
             const msg = await nextMessage();
-            if (msg.payload === 'authChallenge') {
-                console.log('[undeploy] received auth challenge, responding');
+            if (msg.payload === '_closed') {
+                if (!pendingRetry) fail('connection closed before auth completed');
+                console.log('[undeploy] reconnecting for password authentication');
+                ws = await connect().catch((err) => fail(`could not reconnect to ${SERVER_URL}: ${err.message}`));
+                wireSocket(ws);
+                pendingRetry = false;
+                send(ws, { distUndeploy: { uuid } });
+            } else if (msg.payload === 'authChallenge') {
                 const response = await auth.handleAuthChallenge(msg.authChallenge);
                 send(ws, { authResponse: response });
             } else if (msg.payload === 'authResult') {
-                const { needsRetry } = auth.handleAuthResult(msg.authResult);
+                auth.handleAuthResult(msg.authResult);
                 const variant = msg.authResult.password || msg.authResult.key || {};
-                if (!variant.success && !needsRetry) fail('authentication failed');
-                console.log('[undeploy] authenticated');
+                const isKeyFailure = !!(msg.authResult.key && !msg.authResult.key.success);
+                if (isKeyFailure) { pendingRetry = true; }
+                else if (!variant.success) { fail('authentication failed'); }
+                else { console.log('[undeploy] authenticated'); }
             } else if (msg.payload === 'ack') {
                 console.log('[undeploy] done');
                 ws.close();

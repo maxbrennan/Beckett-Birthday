@@ -100,22 +100,20 @@ function handleAuthResult(resultMsg) {
             } else {
                 console.log('Auth failed.');
             }
-            return { needsRetry: false };
+            break;
         }
         case 'key': {
             const r = resultMsg.key;
             if (r.success) {
                 console.log(`Auth ok (${AUTH_LEVEL_NAME[r.level]}).`);
-                return { needsRetry: false };
             } else {
                 console.log('Key auth failed, retrying with password.');
                 _keyAuthFailed = true;
-                return { needsRetry: true };
             }
+            break;
         }
         default:
             console.log('Auth failed (unknown result variant).');
-            return { needsRetry: false };
     }
 }
 
