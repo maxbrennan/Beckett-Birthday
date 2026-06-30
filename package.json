@@ -4,6 +4,7 @@
   "version": "3.0.0",
   "main": "electron.js",
   "scripts": {
+    "test": "npx elm-test",
     "build:server": "npx elm make src/Server.elm --output=elm-server.js",
     "build:client": "npx elm make src/Main.elm --output=elm-client.js",
     "build": "npm run build:server && npm run build:client",

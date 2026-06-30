@@ -186,14 +186,25 @@ snapshotForJeopardy state =
             Decode.decodeValue (Decode.field name Decode.value) state
                 |> Result.withDefault Encode.null
 
+        screenTag =
+            Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) state
+                |> Result.withDefault ""
+
         savedState =
-            Encode.object
-                [ ( "screen", getField "screen" )
-                , ( "pending", getField "pending" )
-                , ( "savedAt", getField "now" )
-                , ( "songResumeTime", Encode.null )
-                , ( "videoResumeTime", Encode.null )
-                ]
+            if screenTag == "BeginScreen" then
+                -- Screen is already BeginScreen (e.g. client reconnected then immediately
+                -- disconnected). Carry the existing savedState forward so the original
+                -- game position is not clobbered. BeginScreen can never become a savedState.
+                getField "savedState"
+
+            else
+                Encode.object
+                    [ ( "screen", getField "screen" )
+                    , ( "pending", getField "pending" )
+                    , ( "savedAt", getField "now" )
+                    , ( "songResumeTime", Encode.null )
+                    , ( "videoResumeTime", Encode.null )
+                    ]
 
         stateDict =
             Decode.decodeValue (Decode.dict Decode.value) state
