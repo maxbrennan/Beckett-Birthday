@@ -22,6 +22,7 @@
     "deploy:mac": "npm run build:client && node scripts/deploy.js mac",
     "deploy:win": "npm run build:client && node scripts/deploy.js win",
     "undeploy": "node scripts/undeploy.js",
+    "edit:state": "node scripts/edit-state.js",
     "add-admin": "node scripts/add-admin.js"
   },
   "build": {

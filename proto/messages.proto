@@ -8,7 +8,7 @@ enum AuthLevel {
 }
 
 message StateUpdate          { string json = 1; }
-message Ack                  {}
+message Ack                  { string upload_token = 1; }
 message AuthChallenge        { bytes challenge = 1; AuthLevel level = 2; }
 message StateRequest         { string uuid = 1; }
 message StateRequestRejected { string reason = 1; }
@@ -57,8 +57,12 @@ message DistUpload {
   uint32 chunk_index = 4;
   bool   is_last     = 5;
 }
-message DistUndeploy { string uuid = 1; }
-message DistList     {}
+message DistUndeploy        { string uuid = 1; }
+message DistList            {}
+message DistComplete         { string uuid = 1; string filename = 2; }
+message DistStateEdit        { string uuid = 1; }
+message DistStateEditSave    { string uuid = 1; string json = 2; }
+message DistStateEditPayload { string uuid = 1; string json = 2; }
 
 message DistListEntry {
   string uuid     = 1;
@@ -69,23 +73,27 @@ message DistListResult { repeated DistListEntry entries = 1; }
 
 message ServerMessage {
   oneof payload {
-    StateUpdate          state_update           = 1;
-    Ack                  ack                    = 2;
-    AuthChallenge        auth_challenge         = 3;
-    AuthResult           auth_result            = 4;
-    StateRequestRejected state_request_rejected = 5;
-    DistListResult       dist_list_result       = 6;
+    StateUpdate          state_update            = 1;
+    Ack                  ack                     = 2;
+    AuthChallenge        auth_challenge          = 3;
+    AuthResult           auth_result             = 4;
+    StateRequestRejected state_request_rejected  = 5;
+    DistListResult       dist_list_result        = 6;
+    DistStateEditPayload dist_state_edit_payload = 7;
   }
 }
 
 message ClientMessage {
   oneof payload {
-    StateUpdate  state_update  = 1;
-    AuthResponse auth_response = 2;
-    DistRegister dist_register = 3;
-    DistUpload   dist_upload   = 4;
-    StateRequest state_request = 5;
-    DistUndeploy dist_undeploy = 6;
-    DistList     dist_list     = 7;
+    StateUpdate       state_update       = 1;
+    AuthResponse      auth_response      = 2;
+    DistRegister      dist_register      = 3;
+    DistUpload        dist_upload        = 4;
+    StateRequest      state_request      = 5;
+    DistUndeploy      dist_undeploy      = 6;
+    DistList          dist_list          = 7;
+    DistStateEdit     dist_state_edit      = 8;
+    DistStateEditSave dist_state_edit_save = 9;
+    DistComplete      dist_complete        = 10;
   }
 }

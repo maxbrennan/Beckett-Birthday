@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const WebSocket = require('ws');
 const https = require('https');
 const fs = require('fs');
@@ -18,6 +19,11 @@ const clients = new Map();
 const pendingAuths = new Map();
 const pendingUndeployOps = new Map();
 const pendingListOps = new Set();
+const pendingStateEditOps = new Map();
+const activeStateEdits = new Set();
+const pendingDistAuths = new Set();
+const pendingUploadTokens = new Map();
+const validUploadTokens = new Set();
 let nextId = 0;
 
 const server = https.createServer({
@@ -66,7 +72,7 @@ wss.on('connection', (ws) => {
             if (pendingUndeployOps.has(clientId)) {
                 const undeployUuid = pendingUndeployOps.get(clientId);
                 pendingUndeployOps.delete(clientId);
-                if (variant.success) {
+                if (variant.success && variant.level >= 2) {
                     performUndeploy(undeployUuid, ws);
                 } else {
                     console.error(`[undeploy] auth failed for ${undeployUuid}`);
@@ -77,7 +83,7 @@ wss.on('connection', (ws) => {
 
             if (pendingListOps.has(clientId)) {
                 pendingListOps.delete(clientId);
-                if (!variant.success) {
+                if (!variant.success || variant.level < 2) {
                     console.error(`[list] auth failed for ${clientId}`);
                     ws.close();
                     return;
@@ -94,12 +100,33 @@ wss.on('connection', (ws) => {
                 return;
             }
 
+            if (pendingStateEditOps.has(clientId)) {
+                const editUuid = pendingStateEditOps.get(clientId);
+                pendingStateEditOps.delete(clientId);
+                if (variant.success && variant.level >= 2) {
+                    activeStateEdits.add(clientId);
+                    app.ports.onMessage.send({ clientId, payload: { payload: 'distStateEdit', distStateEdit: { uuid: editUuid } } });
+                } else {
+                    console.error(`[edit-state] auth failed for ${editUuid}`);
+                    ws.close();
+                }
+                return;
+            }
+
             app.ports.authResult.send({
                 clientId,
                 success: !!variant.success,
                 level: variant.level || 0,
                 uuid: variant.uuid || '',
             });
+            if (pendingDistAuths.has(clientId)) {
+                pendingDistAuths.delete(clientId);
+                if (variant.success) {
+                    const token = crypto.randomBytes(32).toString('hex');
+                    pendingUploadTokens.set(clientId, token);
+                    validUploadTokens.add(token);
+                }
+            }
             return;
         }
 
@@ -122,12 +149,36 @@ wss.on('connection', (ws) => {
             return;
         }
 
+        if (msg.payload === 'distStateEdit') {
+            const { uuid } = msg.distStateEdit;
+            console.log(`[edit-state] received edit request for ${uuid}`);
+            pendingStateEditOps.set(clientId, uuid);
+            const { challenge } = auth.generateAuthChallenge();
+            pendingAuths.set(clientId, { challenge, level: 2 });
+            ws.send(codec.encodeServer({ authChallenge: { challenge, level: 2 } }), { binary: true });
+            return;
+        }
+
+        if (msg.payload === 'distStateEditSave') {
+            if (!activeStateEdits.has(clientId)) {
+                console.error(`[edit-state] unauthorized distStateEditSave from ${clientId}`);
+                ws.close();
+                return;
+            }
+            activeStateEdits.delete(clientId);
+            app.ports.onMessage.send({ clientId, payload: msg });
+            return;
+        }
+
+        if (msg.payload === 'distRegister') pendingDistAuths.add(clientId);
         app.ports.onMessage.send({ clientId, payload: msg });
     });
 
     ws.on('close', () => {
         clients.delete(clientId);
         pendingAuths.delete(clientId);
+        pendingStateEditOps.delete(clientId);
+        activeStateEdits.delete(clientId);
         app.ports.onDisconnection.send(clientId);
     });
 });
@@ -135,7 +186,19 @@ wss.on('connection', (ws) => {
 app.ports.sendToClient.subscribe(({ clientId, payload }) => {
     const ws = clients.get(clientId);
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(codec.encodeServer(payload), { binary: true });
+    let serverPayload = payload;
+    if (payload.ack !== undefined && pendingUploadTokens.has(clientId)) {
+        const token = pendingUploadTokens.get(clientId);
+        pendingUploadTokens.delete(clientId);
+        serverPayload = { ack: { uploadToken: token } };
+    }
+    ws.send(codec.encodeServer(serverPayload), { binary: true });
+});
+
+app.ports.stateEditReady.subscribe(({ adminClientId, uuid, json }) => {
+    const ws = clients.get(adminClientId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(codec.encodeServer({ distStateEditPayload: { uuid, json } }), { binary: true });
 });
 
 app.ports.closeClient.subscribe(({ clientId, reason }) => {
@@ -225,6 +288,39 @@ function performUndeploy(uuid, ws) {
 }
 
 server.on('request', (req, res) => {
+    if (req.method === 'POST' && req.url === '/upload') {
+        const authHeader = req.headers['authorization'] || '';
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+        if (!validUploadTokens.has(token)) {
+            console.error('[upload] invalid or missing upload token');
+            res.writeHead(401); res.end('Unauthorized'); return;
+        }
+        validUploadTokens.delete(token);
+
+        const filename = req.headers['x-filename'] || '';
+        if (!filename || filename.includes('..') || filename.includes('/')) {
+            console.error(`[upload] bad filename: "${filename}"`);
+            res.writeHead(400); res.end('Bad filename'); return;
+        }
+
+        console.log(`[upload] receiving ${filename}`);
+        fs.mkdir(BUILDS_DIR, { recursive: true }, () => {
+            const filePath = path.join(BUILDS_DIR, filename);
+            const out = fs.createWriteStream(filePath);
+            req.pipe(out);
+            out.on('finish', () => {
+                console.log(`[upload] saved ${filename}`);
+                res.writeHead(200); res.end('OK');
+            });
+            out.on('error', (err) => {
+                console.error(`[upload] write error: ${err.message}`);
+                res.writeHead(500); res.end('Write error');
+            });
+            req.on('error', () => out.destroy());
+        });
+        return;
+    }
+
     const uuid = req.url.slice(1);
     console.log(`[download] request: ${req.method} ${req.url}`);
     if (!/^[0-9a-f-]{36}$/.test(uuid)) {
