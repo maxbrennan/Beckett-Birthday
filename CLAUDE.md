@@ -2,49 +2,82 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## What This Is
-
-A macOS desktop Electron + Elm quiz game built as a birthday gift. It detects AirPods Max 2 via a native C binary, runs a 10-question music quiz, and punishes wrong answers with an increasingly brutal IQ test (spacebar-press reaction game).
-
 ## Commands
 
 ```bash
-npm run build:c    # Compile native C binary (list_audio_devices)
-npm run build:elm  # Compile Elm → elm.js
-npm run build      # Both of the above
-npm start          # Build + launch Electron app
-```
+# Build
+npm run build              # compile both Elm apps (elm-server.js + elm-client.js)
+npm run build:server       # compile src/Server.elm → elm-server.js
+npm run build:client       # compile src/Main.elm → elm-client.js
 
-No tests or linter configured.
+# Run (via PM2)
+npm run start:dev          # build + start both server and client in dev mode (DEV=true)
+npm run start:server:dev   # build + start server only in dev mode
+npm run start:client:dev   # build + start client (Electron) only in dev mode
+npm run stop               # stop all PM2 processes
+
+# Tests
+npm test                   # runs elm-test (tests/ directory)
+
+# Distribution (admin only — requires credentials in .auth/)
+npm run deploy:mac         # build Electron DMG and upload to production server
+npm run deploy:win         # build Electron EXE and upload to production server
+npm run undeploy           # remove a deployed build from the server
+npm run add-admin          # add an admin user to .auth/users.jsonl
+```
 
 ## Architecture
 
-**Elm (`Main.elm`)** owns all game logic and state. The app is a state machine with 8 screen types driven by `update` and a pending-event queue that fires messages at `model.now >= fireAt`. Browser `AnimationFrame` ticks at 60fps to drive this clock.
+This is a birthday-present interactive game delivered as an Electron desktop app, with a shared-state WebSocket server so multiple clients stay in sync.
 
-**`renderer.js`** bridges Elm ports to Electron APIs: plays audio/video files, runs the native binary every 100ms to detect AirPods, manages the flash overlay DOM element.
+### Two Elm programs
 
-**`electron.js`** is minimal — creates a 900×600 window with `nodeIntegration: true`, `contextIsolation: false`, and autoplay enabled.
+**Client** (`src/Main.elm` → `elm-client.js`): A `Browser.application` Elm app running inside Electron. It manages all game screens (IQ test, music quiz, etc.) and syncs state with the server after every user action. The file `client/bridge.js` (bundled into the Electron app) is the JS glue: it initialises `Elm.Main`, wires all Elm ports to Node.js/Electron APIs (WebSocket via `ws`, file reads, DOM property manipulation, Protobuf codec).
 
-**`list_audio_devices.c`** uses CoreAudio + Foundation to enumerate output devices and identify AirPods Max 2 by manufacturer/transport type. Compiled to a binary and invoked by `renderer.js` via `child_process`.
+**Server** (`src/Server.elm` → `elm-server.js`): A `Platform.worker` Elm app (no UI). It manages connected players, persists game state, and handles app distribution. The Node.js host (`server/index.js`) manages raw WebSocket/HTTPS connections and delegates to the Elm worker via ports.
 
-## Key Design Details
+### Communication
 
-**Debug flag** (`Main.elm` lines 37–39): `debug = True` in source right now. This shortens ding intervals, reduces required correct presses, and bypasses the AirPods requirement. Flip to `False` before deployment.
+All WebSocket messages use Protobuf, defined in `proto/messages.proto` and encoded/decoded by `server/codec.js` (protobufjs). The Elm client communicates with its JS host via ports; the JS host serialises to/from Protobuf before sending over the wire.
 
-**Pending event queue**: Timed transitions (e.g., show flash → hide flash → resume game) are scheduled as `{ fireAt : Int, msg : Msg }` entries evaluated on each `Tick`. Chained animations use recursive `update` calls.
+Client→Server flow: Elm port → `bridge.js` → `codec.encodeClient` → WebSocket → `server/index.js` → `codec.decodeClient` → Elm port → `Server.elm` update.
 
-**IQ test mechanics**:
-- Dings fire every 2–15 seconds (debug: 5s fixed)
-- 10–100 correct presses required (debug: 10)
-- Wrong answer doubles `totalDings`
-- A fake flash trap fires at 85–95% through the ding sequence (debug: 65–75%) to catch spacebar-on-visual responses
-- A 50% random ding phase starts after the fake flash to prevent pattern detection
+### State persistence
 
-**Ports (Elm ↔ JS)**:
-- `receiveDevices` — JSON array of detected audio devices
-- `playMusic` / `stopMusic` / `playVideo` — media playback
-- `playDing` / `showFlash` — IQ test stimulus feedback
-- `receiveTrackInfo` / `trackEnded` — media lifecycle callbacks
-- `logToFile` — appends to `debug.log` with before/after state snapshots
+The server stores each player's game state as JSON in `app-builds/builds.jsonl` (a JSONL file keyed by UUID). When a client sends a `stateUpdate`, the server writes the new state. When a client disconnects, the server snapshots the current screen into a `savedState` field and resets to `BeginScreen` so the next connection resumes from the saved position.
 
-**Assets** (`Assets/`): mp3 music tracks, mp4 videos, png images — loaded by `renderer.js` using `path.join(__dirname, 'Assets', ...)`.
+### Auth system
+
+Two-level challenge–response auth (Ed25519 keys or username/password), implemented in `server/auth.js`:
+- **Admin (level 2)**: required for deploying builds, undeploying, and listing. Credentials stored in `.auth/users.jsonl`; per-session UUIDs + public keys in `.auth/uuids.jsonl`.
+- On first password auth, the client generates an Ed25519 keypair, stores it in `~/.birthday-auth/keys/`, and the server registers the public key so future logins are passwordless via key signing.
+- If key auth fails, `auth.js` sets `_keyAuthFailed = true`, reconnects, and retries with password auth.
+
+### Distribution system
+
+`scripts/deploy.js` authenticates with the server, runs `electron-builder`, then uploads the built DMG/EXE in 1 MB chunks over WebSocket (`distRegister` → auth → `distUpload` messages). The server stores uploads under `app-builds/` and records them in `builds.jsonl`. Players download their build via HTTPS GET `/<uuid>`.
+
+### Dev vs. production
+
+Controlled by `DEV=true/false` in `.env`. Dev uses port 8443 (localhost); production uses port 443 with TLS certs from `certs/`. In dev mode, unknown UUIDs are accepted with an empty initial state; in production they are rejected. The Electron client opens DevTools automatically when `DEV=true`.
+
+### Elm module layout
+
+```
+src/
+  Main.elm          — client entry point, top-level Model/Msg/update/view
+  Server.elm        — server entry point, top-level Model/Msg/update
+  View.elm          — rendering helpers (stub; view logic lives in Main.elm)
+  Audio.elm         — audio port helpers
+  Sync.elm          — WebSocket connection handling / state sync (stub)
+  Types.elm         — shared type aliases (stub)
+  Game/
+    IQTest.elm      — IQ test screen: ding scheduling, fake-flash trap, scoring
+    Quiz.elm        — music quiz: questions, answer validation, flow
+  Server/
+    Distribution.elm — dist register/upload/auth handlers (stub)
+    Protocol.elm     — client envelope decoder, server envelope builders (stub)
+    Registry.elm     — RegistryEntry JSONL encode/decode, writeRegistry (stub)
+```
+
+Stubs marked above are planned modules; their logic currently lives in the monolithic `Main.elm` and `Server.elm` files.

@@ -61,12 +61,13 @@
   },
   "dependencies": {
     "dotenv": "^17.4.2",
-    "protobufjs": "^8.3.0",
-    "ws": "^8.20.0"
+    "elm-test": "^0.19.1-revision17",
+    "protobufjs": "^8.6.5",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "concurrently": "^10.0.3",
-    "electron": "^42.4.0",
+    "electron": "^42.5.2",
     "electron-builder": "^26.15.3",
     "pm2": "^6.0.14"
   },
@@ -83,9 +84,11 @@
   "homepage": "https://github.com/maxbrennan/Beckett-Birthday#readme",
   "description": "",
   "allowScripts": {
-    "electron-winstaller@5.4.0": true
+    "electron-winstaller@5.4.0": true,
+    "fsevents@2.3.3": true
   },
-  "overrides": {
-    "@noble/hashes": "^1.6.1"
-  }
+  "directories": {
+    "test": "tests"
+  },
+  "type": "commonjs"
 }
