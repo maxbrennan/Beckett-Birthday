@@ -4,7 +4,9 @@
   "version": "3.0.0",
   "main": "electron.js",
   "scripts": {
-    "test": "npx elm-test && node --test tests/*.test.js",
+    "test": "npm run test:elm && npm run test:js",
+    "test:elm": "npx elm-coverage",
+    "test:js": "npx jest --coverage",
     "build:server": "npx elm make src/Server.elm --output=elm-server.js",
     "build:client": "npx elm make src/Main.elm --output=elm-client.js",
     "build": "npm run build:server && npm run build:client",
@@ -71,7 +73,7 @@
     "electron": "^42.5.2",
     "electron-builder": "^26.15.3",
     "elm-coverage": "^0.4.1",
-    "jest": "^30.4.2",
+    "jest": "^29.0.0",
     "pm2": "^6.0.14"
   },
   "repository": {
