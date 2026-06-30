@@ -81,3 +81,9 @@ src/
 ```
 
 Stubs marked above are planned modules; their logic currently lives in the monolithic `Main.elm` and `Server.elm` files.
+
+## Plan Implementation Workflow
+
+When implementing changes from an approved plan:
+1. Call `EnterWorktree` before making any file edits, to create an isolated branch. This keeps changes off `main` and prevents conflicts with other active Claude sessions.
+2. After implementation is complete and committed, create a PR with `gh pr create`.

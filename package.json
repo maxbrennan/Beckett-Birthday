@@ -70,6 +70,8 @@
     "concurrently": "^10.0.3",
     "electron": "^42.5.2",
     "electron-builder": "^26.15.3",
+    "elm-coverage": "^0.4.1",
+    "jest": "^30.4.2",
     "pm2": "^6.0.14"
   },
   "repository": {
@@ -87,9 +89,6 @@
   "allowScripts": {
     "electron-winstaller@5.4.0": true,
     "fsevents@2.3.3": true
-  },
-  "directories": {
-    "test": "tests"
   },
   "type": "commonjs"
 }

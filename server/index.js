@@ -113,12 +113,6 @@ wss.on('connection', (ws) => {
                 return;
             }
 
-            app.ports.authResult.send({
-                clientId,
-                success: !!variant.success,
-                level: variant.level || 0,
-                uuid: variant.uuid || '',
-            });
             if (pendingDistAuths.has(clientId)) {
                 pendingDistAuths.delete(clientId);
                 if (variant.success) {
@@ -127,6 +121,12 @@ wss.on('connection', (ws) => {
                     validUploadTokens.add(token);
                 }
             }
+            app.ports.authResult.send({
+                clientId,
+                success: !!variant.success,
+                level: variant.level || 0,
+                uuid: variant.uuid || '',
+            });
             return;
         }
 
