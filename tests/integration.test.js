@@ -1,6 +1,5 @@
 'use strict';
 
-const { describe, test, before, after } = require('node:test');
 const { spawn, execSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -21,7 +20,7 @@ let tempDir;
 let generatedCerts = false;
 
 describe('integration', () => {
-    before(async () => {
+    beforeAll(async () => {
         if (!fs.existsSync(ELM_SERVER_JS)) {
             throw new Error('elm-server.js not found — run: npm run build:server');
         }
@@ -83,9 +82,9 @@ describe('integration', () => {
                 ));
             });
         });
-    });
+    }, 20000);
 
-    after(async () => {
+    afterAll(async () => {
         // child.exitCode is null while the process is still running; skip kill if already dead
         if (child && child.exitCode === null) {
             await new Promise((resolve) => {
@@ -104,9 +103,9 @@ describe('integration', () => {
                 try { fs.rmSync(f); } catch (_) {}
             }
         }
-    });
+    }, 10000);
 
-    test('server accepts WebSocket connections', { timeout: 10000 }, async () => {
+    test('server accepts WebSocket connections', async () => {
         // rejectUnauthorized: false required for the self-signed certs
         const ws = new WebSocket(`wss://localhost:${TEST_PORT}`, { rejectUnauthorized: false });
         await new Promise((resolve, reject) => {
@@ -115,5 +114,5 @@ describe('integration', () => {
         });
         ws.close();
         await new Promise((resolve) => ws.on('close', resolve));
-    });
+    }, 10000);
 });
