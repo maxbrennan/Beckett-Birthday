@@ -4,7 +4,9 @@
       "Bash(node -e ' *)",
       "Read(//Users/maxbrennan/.birthday-auth/keys/**)",
       "Read(//Users/maxbrennan/.birthday-auth/**)",
-      "Bash(npx pm2 *)"
+      "Bash(npx pm2 *)",
+      "Bash(npm install)",
+      "Bash(npx jest *)"
     ]
   }
 }
