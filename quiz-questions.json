@@ -1,0 +1,12 @@
+[
+  { "song": "baby-shark.mp3", "answers": ["Baby Shark (Hip Hip Version)", "Baby Shark Hip Hop", "Baby Shark Hip Hop Edition"] },
+  { "song": "manchild.mp3", "answers": ["Manchild"] },
+  { "song": "house-tour.mp3", "answers": ["House Tour"] },
+  { "song": "revenge.mp4", "answers": ["Revenge", "Revenge Parody", "Revenge a Minecraft Parody"] },
+  { "song": "style.mp3", "answers": ["Style"] },
+  { "song": "ready-for-it.mp3", "answers": ["...Ready For It?"] },
+  { "song": "tit-for-tat.mp3", "answers": ["TIT FOR TAT"] },
+  { "song": "sports-car.mp3", "answers": ["Sports car"] },
+  { "song": "revolving-door.mp3", "answers": ["Revolving door"] },
+  { "song": "korean.mp3", "answers": ["핑크판타지"] }
+]
