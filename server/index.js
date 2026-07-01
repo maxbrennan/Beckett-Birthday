@@ -212,7 +212,7 @@ app.ports.closeClient.subscribe(({ clientId, reason }) => {
 });
 
 app.ports.readFile.subscribe((filePath) => {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, '..', filePath);
+    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
     fs.readFile(fullPath, 'utf8', (err, data) => {
         if (err) {
             app.ports.readFileResult.send({ path: filePath, contents: null, error: err.message });
@@ -224,7 +224,7 @@ app.ports.readFile.subscribe((filePath) => {
 
 const writeQueues = new Map();
 app.ports.writeFile.subscribe(({ path: filePath, contents, encoding, append }) => {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, '..', filePath);
+    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
     const prev = writeQueues.get(fullPath) || Promise.resolve();
     const next = prev.then(() => new Promise((resolve) => {
         fs.mkdir(path.dirname(fullPath), { recursive: true }, () => {
@@ -252,8 +252,8 @@ app.ports.requestAuth.subscribe(({ clientId, level }) => {
     }), { binary: true });
 });
 
-const REGISTRY_FILE = path.join(__dirname, '..', 'app-builds', 'builds.jsonl');
-const BUILDS_DIR = path.join(__dirname, '..', 'app-builds');
+const REGISTRY_FILE = path.join(process.cwd(), 'app-builds', 'builds.jsonl');
+const BUILDS_DIR = path.join(process.cwd(), 'app-builds');
 
 function performUndeploy(uuid, ws) {
     fs.readFile(REGISTRY_FILE, 'utf8', (err, data) => {
