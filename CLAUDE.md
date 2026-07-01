@@ -86,5 +86,5 @@ Stubs marked above are planned modules; their logic currently lives in the monol
 
 When implementing changes from an approved plan:
 1. Call `EnterWorktree` before making any file edits, to create an isolated branch. This keeps changes off `main` and prevents conflicts with other active Claude sessions.
-2. After implementation is complete and committed, create a PR with `gh pr create`.
+2. After implementation is complete and committed, create a draft PR with `gh pr create --draft`. Draft PRs prevent accidental merging and defer the Claude Code Review action until the PR is explicitly marked ready.
 3. Call `ExitWorktree` with `action: "keep"` after the PR is created. This releases the branch so the user can check it out locally.
