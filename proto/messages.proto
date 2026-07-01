@@ -93,8 +93,8 @@ message ClientMessage {
     StateRequest      state_request      = 5;
     DistUndeploy      dist_undeploy      = 6;
     DistList          dist_list          = 7;
-    DistStateEdit     dist_state_edit      = 8;
-    DistStateEditSave dist_state_edit_save = 9;
+    DistStateEdit        dist_state_edit       = 8;
+    DistStateEditSave    dist_state_edit_save  = 9;
     DistComplete         dist_complete         = 10;
     DistReplaceComplete  dist_replace_complete = 11;
   }
