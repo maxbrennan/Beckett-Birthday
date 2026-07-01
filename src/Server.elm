@@ -292,6 +292,54 @@ update msg model =
                         Err _ ->
                             ( model, sendToClient { clientId = clientId, payload = rejectEnvelope "invalid json" } )
 
+                Ok (ClientDistReplaceComplete { newUuid, oldUuid, filename }) ->
+                    case Dict.get clientId model.distClients of
+                        Just (AwaitingUpload info) ->
+                            if info.uuid == newUuid then
+                                let
+                                    oldState =
+                                        model.registry
+                                            |> List.filter (\e -> e.uuid == oldUuid)
+                                            |> List.head
+                                            |> Maybe.andThen .state
+
+                                    newEntry =
+                                        { uuid = newUuid
+                                        , filename = filename
+                                        , platform = info.platform
+                                        , state = oldState
+                                        }
+
+                                    newRegistry =
+                                        List.filter (\e -> e.uuid /= oldUuid && e.filename /= filename) model.registry
+                                            ++ [ newEntry ]
+
+                                    closeOldPlayerCmd =
+                                        case Dict.get oldUuid model.connectedPlayers of
+                                            Just playerClientId ->
+                                                closeClient { clientId = playerClientId, reason = "build replaced" }
+
+                                            Nothing ->
+                                                Cmd.none
+                                in
+                                ( { model
+                                    | distClients = Dict.remove clientId model.distClients
+                                    , connectedPlayers = Dict.remove oldUuid model.connectedPlayers
+                                    , registry = newRegistry
+                                  }
+                                , Cmd.batch
+                                    [ closeOldPlayerCmd
+                                    , writeRegistry newRegistry
+                                    , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                    ]
+                                )
+
+                            else
+                                ( model, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
                 _ ->
                     ( model, Cmd.none )
 

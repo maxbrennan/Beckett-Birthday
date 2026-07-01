@@ -13,6 +13,7 @@ type ClientEnvelope
     | ClientDistComplete { uuid : String, filename : String }
     | ClientDistStateEdit String
     | ClientDistStateEditSave { uuid : String, json : String }
+    | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String }
     | ClientUnknown
 
 
@@ -73,6 +74,13 @@ decodeClientEnvelope =
                         Decode.map2 (\u j -> ClientDistStateEditSave { uuid = u, json = j })
                             (Decode.at [ "distStateEditSave", "uuid" ] Decode.string)
                             (Decode.at [ "distStateEditSave", "json" ] Decode.string)
+
+                    "distReplaceComplete" ->
+                        Decode.map3
+                            (\n o f -> ClientDistReplaceComplete { newUuid = n, oldUuid = o, filename = f })
+                            (Decode.at [ "distReplaceComplete", "newUuid" ] Decode.string)
+                            (Decode.at [ "distReplaceComplete", "oldUuid" ] Decode.string)
+                            (Decode.at [ "distReplaceComplete", "filename" ] Decode.string)
 
                     _ ->
                         Decode.succeed ClientUnknown
