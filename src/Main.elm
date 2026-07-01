@@ -62,9 +62,11 @@ init wsUrl =
       , timerEndsAt = 0
       , myUuid = Nothing
       , wsUrl = wsUrl
+      , questions = []
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
+        , readFile "quiz-questions.json"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -210,7 +212,7 @@ update msg model =
             case innerBlankIdx model.screen of
                 Just blankIdx ->
                     if blankIdx == idx then
-                        case getQuestion idx of
+                        case getQuestion model.questions idx of
                             Just q ->
                                 if isVideo q.song then
                                     ( { model | screen = VideoScreen idx q.song }, Cmd.none )
@@ -239,7 +241,7 @@ update msg model =
             else
                 case model.screen of
                     BlankScreen idx ->
-                        case getQuestion idx of
+                        case getQuestion model.questions idx of
                             Just q ->
                                 if q.song == name then
                                     ( schedule 1000 (ShowQuestion idx) model, Cmd.none )
@@ -284,14 +286,14 @@ update msg model =
         AnswerSubmitted ->
             case model.screen of
                 QuestionScreen idx answer ->
-                    case getQuestion idx of
+                    case getQuestion model.questions idx of
                         Just q ->
                             if List.any (\a -> normalize answer == normalize a) q.answers then
                                 let
                                     nextIdx =
                                         idx + 1
                                 in
-                                case getQuestion nextIdx of
+                                case getQuestion model.questions nextIdx of
                                     Just _ ->
                                         ( { model | screen = CheckingAnswerScreen (BlankScreen nextIdx) }
                                             |> clearPending
@@ -766,6 +768,9 @@ update msg model =
                     else
                         ( { model | screen = WsErrorScreen }, Cmd.none )
 
+        QuestionsLoaded loadedQuestions ->
+            ( { model | questions = loadedQuestions }, Cmd.none )
+
         NoOp ->
             ( model, Cmd.none )
 
@@ -868,18 +873,23 @@ subscriptions model =
         , receiveDomProperty DomPropertyReceived
         , domPropertyError DomPropertyError
         , readFileResult
-            (\{ contents } ->
-                case contents of
-                    Just raw ->
-                        case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
-                            Ok uuid ->
-                                UuidLoaded (Just uuid)
+            (\{ path, contents } ->
+                case path of
+                    "quiz-questions.json" ->
+                        QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
 
-                            Err _ ->
+                    _ ->
+                        case contents of
+                            Just raw ->
+                                case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
+                                    Ok uuid ->
+                                        UuidLoaded (Just uuid)
+
+                                    Err _ ->
+                                        UuidLoaded Nothing
+
+                            Nothing ->
                                 UuidLoaded Nothing
-
-                    Nothing ->
-                        UuidLoaded Nothing
             )
         ]
 

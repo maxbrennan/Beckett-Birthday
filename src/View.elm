@@ -192,7 +192,7 @@ viewScreen model =
         BlankScreen idx ->
             let
                 bg =
-                    case getQuestion idx of
+                    case getQuestion model.questions idx of
                         Just q ->
                             if isVideo q.song then
                                 "#000000"
@@ -248,7 +248,7 @@ viewScreen model =
                         "What song just played?"
 
                 total =
-                    List.length questions
+                    List.length model.questions
 
                 progress =
                     "Question " ++ String.fromInt (idx + 1) ++ " of " ++ String.fromInt total
@@ -319,7 +319,7 @@ viewScreen model =
         WrongAnswerScreen idx ->
             let
                 correctAnswer =
-                    case getQuestion idx of
+                    case getQuestion model.questions idx of
                         Just q ->
                             List.head q.answers
                                 |> Maybe.map capitalize

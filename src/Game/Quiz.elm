@@ -1,12 +1,17 @@
 module Game.Quiz exposing (..)
 
 import Char
+import Json.Decode as Decode
 
 
 -- ── Music Quiz Questions ──────────────────────────────────────────────────────
 --
 -- Each entry: song file in assets/ and the list of accepted answer strings.
 -- Answers are compared case-insensitively after normalization (see `normalize`).
+--
+-- The question list itself lives in `quiz-questions.json` (repo root) so it can
+-- be edited per-version without touching Elm source. It is loaded at startup via
+-- the `readFile` port and decoded with `decodeQuestions` below.
 
 
 type alias Question =
@@ -15,26 +20,24 @@ type alias Question =
     }
 
 
-questions : List Question
-questions =
-    [ { song = "baby-shark.mp3", answers = [ "Baby Shark (Hip Hip Version)", "Baby Shark Hip Hop", "Baby Shark Hip Hop Edition" ] }
-    , { song = "manchild.mp3", answers = [ "Manchild" ] }
-    , { song = "house-tour.mp3", answers = [ "House Tour" ] }
-    , { song = "revenge.mp4", answers = [ "Revenge", "Revenge Parody", "Revenge a Minecraft Parody" ] }
-    , { song = "style.mp3", answers = [ "Style" ] }
-    , { song = "ready-for-it.mp3", answers = [ "...Ready For It?" ] }
-    , { song = "tit-for-tat.mp3", answers = [ "TIT FOR TAT" ] }
-    , { song = "sports-car.mp3", answers = [ "Sports car" ] }
-    , { song = "revolving-door.mp3", answers = [ "Revolving door" ] }
-    , { song = "korean.mp3", answers = [ "핑크판타지" ] }
-    ]
+questionDecoder : Decode.Decoder Question
+questionDecoder =
+    Decode.map2 Question
+        (Decode.field "song" Decode.string)
+        (Decode.field "answers" (Decode.list Decode.string))
+
+
+decodeQuestions : String -> List Question
+decodeQuestions raw =
+    Decode.decodeString (Decode.list questionDecoder) raw
+        |> Result.withDefault []
 
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-getQuestion : Int -> Maybe Question
-getQuestion idx =
+getQuestion : List Question -> Int -> Maybe Question
+getQuestion questions idx =
     List.head (List.drop idx questions)
 
 

@@ -1,6 +1,7 @@
 module Types exposing (..)
 
 import Game.IQTest exposing (..)
+import Game.Quiz exposing (..)
 import Json.Decode as Decode
 
 
@@ -51,6 +52,7 @@ type alias Model =
     , timerEndsAt : Float
     , myUuid : Maybe String
     , wsUrl : String
+    , questions : List Question
     }
 
 
@@ -84,4 +86,5 @@ type Msg
     | WsDisconnected String
     | WsReconnect
     | UuidLoaded (Maybe String)
+    | QuestionsLoaded (List Question)
     | NoOp

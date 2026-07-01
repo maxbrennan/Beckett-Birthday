@@ -15,7 +15,7 @@ currentQuizSong : Model -> Maybe String
 currentQuizSong model =
     case model.screen of
         BlankScreen idx ->
-            getQuestion idx
+            getQuestion model.questions idx
                 |> Maybe.andThen
                     (\q ->
                         if isVideo q.song then
