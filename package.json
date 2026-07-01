@@ -35,7 +35,8 @@
       "server/codec.js",
       "proto/**/*",
       "assets/**/*",
-      "app-uuid.json"
+      "app-uuid.json",
+      "quiz-questions.json"
     ],
     "mac": {
       "icon": "assets/icon.icns",

@@ -3,7 +3,7 @@ module ServerTest exposing (..)
 import Expect
 import Json.Decode as Decode
 import Json.Encode as Encode
-import Server exposing (snapshotForJeopardy)
+import Server.Registry exposing (snapshotForJeopardy)
 import Test exposing (Test, describe, test)
 
 
