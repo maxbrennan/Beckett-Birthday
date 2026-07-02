@@ -59,7 +59,7 @@ Two-level challenge–response auth (Ed25519 keys or username/password), impleme
 
 ### Dev vs. production
 
-Controlled by `DEV=true/false` in `.env`. Dev uses port 8443 (localhost); production uses port 443 with TLS certs from `certs/`. In dev mode, unknown UUIDs are accepted with an empty initial state; in production they are rejected. The Electron client opens DevTools automatically when `DEV=true`.
+`DEV` is set to `true`/`false` via PM2's `env`/`env_dev` blocks in `ecosystem.config.js` (not `.env` — `.env` only holds ports/TLS paths). Dev uses port 8443 (localhost); production uses port 443 with TLS certs from `certs/`. Uuid validation is identical in both modes: a uuid must have a matching entry in `app-builds/builds.jsonl` or the connection is rejected — the only difference between dev and prod is which host/port the client connects to. The Electron client opens DevTools automatically when `DEV=true`.
 
 ### Elm module layout
 
@@ -85,6 +85,7 @@ Stubs marked above are planned modules; their logic currently lives in the monol
 ## Plan Implementation Workflow
 
 When implementing changes from an approved plan:
-1. Call `EnterWorktree` before making any file edits, to create an isolated branch. This keeps changes off `main` and prevents conflicts with other active Claude sessions.
-2. After implementation is complete and committed, create a draft PR with `gh pr create --draft`. Draft PRs prevent accidental merging and defer the Claude Code Review action until the PR is explicitly marked ready.
-3. Call `ExitWorktree` with `action: "keep"` after the PR is created. This releases the branch so the user can check it out locally.
+1. Choose a short, meaningful, kebab-case branch name that describes the task itself (e.g. `refactor-dev-mode`, `add-integration-tests`) — never a random slug, and never the plan file's own filename.
+2. Create the branch and worktree manually, then switch into it: `git worktree add .claude/worktrees/<branch-name> -b <branch-name> origin/main`, followed by `EnterWorktree` with `path: .claude/worktrees/<branch-name>`. This avoids `EnterWorktree name:`'s automatic `worktree-` branch prefix while still giving an isolated worktree that keeps changes off `main` and prevents conflicts with other active Claude sessions.
+3. After implementation is complete and committed, create a draft PR with `gh pr create --draft`. Draft PRs prevent accidental merging and defer the Claude Code Review action until the PR is explicitly marked ready.
+4. Call `ExitWorktree` with `action: "keep"` after the PR is created. This releases the branch so the user can check it out locally.

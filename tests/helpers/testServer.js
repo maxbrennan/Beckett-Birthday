@@ -24,8 +24,8 @@ function seedUser(authDir, { username, password, level }) {
 // Spawns a real `server/index.js` in production mode (DEV unset/false) against an
 // isolated temp cwd, so `.auth/` (server/auth.js) and `app-builds/` (server/index.js)
 // don't touch the real project's data or collide with other test files' servers.
-// Production mode is used deliberately, not DEV mode: none of these tests exercise the
-// dev-only "accept unknown uuid" bypass in src/Server.elm's ClientStateRequest handler,
+// Production mode is used deliberately, not DEV mode: uuid validation is identical in
+// both modes (src/Server.elm's ClientStateRequest handler always rejects unknown uuids),
 // and PROD_SERVER_PORT can be overridden to an unprivileged test port just as well as
 // DEV_SERVER_PORT could.
 // `existingTempDir` restarts a server against a directory a previous startTestServer
