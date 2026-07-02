@@ -34,3 +34,6 @@ assets/*
 app-uuid.json
 app-builds/*
 !app-builds/.gitkeep
+
+# Claude Code worktree scratch directories (local only, never commit)
+.claude/worktrees/
