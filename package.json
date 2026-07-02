@@ -4,9 +4,10 @@
   "version": "3.0.0",
   "main": "electron.js",
   "scripts": {
-    "test": "npm run test:elm && npm run test:js",
+    "test": "npm run test:elm && npm run test:js && npm run test:gui",
     "test:elm": "npx elm-coverage",
     "test:js": "npx jest --coverage",
+    "test:gui": "node tests/gui.electron.js",
     "build:server": "npx elm make src/Server.elm --output=elm-server.js",
     "build:client": "npx elm make src/Main.elm --output=elm-client.js",
     "build": "npm run build:server && npm run build:client",
@@ -21,8 +22,10 @@
     "start:dev": "npm run build && npx pm2 startOrRestart ecosystem.config.js --env dev --update-env",
     "dist:win": "npm run build:client && npx electron-builder --win",
     "dist:mac": "npm run build:client && npx electron-builder --mac",
+    "dist:linux": "npm run build:client && npx electron-builder --linux",
     "deploy:mac": "npm run build:client && node scripts/deploy.js mac",
     "deploy:win": "npm run build:client && node scripts/deploy.js win",
+    "deploy:linux": "npm run build:client && node scripts/deploy.js linux",
     "undeploy": "node scripts/undeploy.js",
     "edit:state": "node scripts/edit-state.js",
     "add-admin": "node scripts/add-admin.js"
@@ -61,6 +64,17 @@
           ]
         }
       ]
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     }
   },
   "dependencies": {
@@ -75,6 +89,7 @@
     "electron-builder": "^26.15.3",
     "elm-coverage": "^0.4.1",
     "jest": "^29.0.0",
+    "playwright": "^1.61.1",
     "pm2": "^6.0.14"
   },
   "repository": {

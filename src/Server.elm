@@ -104,28 +104,19 @@ update msg model =
                 Ok (ClientStateRequest uuid) ->
                     if Set.member uuid model.pendingStateEdits then
                         ( model
-                        , Cmd.batch
-                            [ sendToClient { clientId = clientId, payload = rejectEnvelope "state is being edited by admin" }
-                            , closeClient { clientId = clientId, reason = "state is being edited by admin" }
-                            ]
+                        , rejectAndClose { clientId = clientId, reason = "state is being edited by admin", payload = rejectEnvelope "state is being edited by admin" }
                         )
 
                     else if Dict.member uuid model.connectedPlayers then
                         ( model
-                        , Cmd.batch
-                            [ sendToClient { clientId = clientId, payload = rejectEnvelope "player already connected" }
-                            , closeClient { clientId = clientId, reason = "duplicate uuid" }
-                            ]
+                        , rejectAndClose { clientId = clientId, reason = "duplicate uuid", payload = rejectEnvelope "player already connected" }
                         )
 
                     else
                         case List.filter (\e -> e.uuid == uuid) model.registry of
                             [] ->
                                 ( model
-                                , Cmd.batch
-                                    [ sendToClient { clientId = clientId, payload = rejectEnvelope "unknown uuid" }
-                                    , closeClient { clientId = clientId, reason = "unknown uuid" }
-                                    ]
+                                , rejectAndClose { clientId = clientId, reason = "unknown uuid", payload = rejectEnvelope "unknown uuid" }
                                 )
 
                             entry :: _ ->
@@ -284,6 +275,41 @@ update msg model =
                         Err _ ->
                             ( model, sendToClient { clientId = clientId, payload = rejectEnvelope "invalid json" } )
 
+                Ok (ClientDistUndeploy uuid) ->
+                    let
+                        maybePlayerClientId =
+                            Dict.get uuid model.connectedPlayers
+
+                        maybeTarget =
+                            model.registry
+                                |> List.filter (\e -> e.uuid == uuid)
+                                |> List.head
+
+                        newRegistry =
+                            List.filter (\e -> e.uuid /= uuid) model.registry
+                    in
+                    ( { model
+                        | registry = newRegistry
+                        , connectedPlayers = Dict.remove uuid model.connectedPlayers
+                      }
+                    , Cmd.batch
+                        [ case maybePlayerClientId of
+                            Nothing ->
+                                Cmd.none
+
+                            Just playerClientId ->
+                                closeClient { clientId = playerClientId, reason = "admin undeployed build" }
+                        , case maybeTarget of
+                            Nothing ->
+                                Cmd.none
+
+                            Just target ->
+                                deleteBuildFile target.filename
+                        , writeRegistry newRegistry
+                        , sendToClient { clientId = clientId, payload = ackEnvelope }
+                        ]
+                    )
+
                 _ ->
                     ( model, Cmd.none )
 
@@ -361,6 +387,8 @@ port sendToClient : { clientId : String, payload : Encode.Value } -> Cmd msg
 
 port closeClient : { clientId : String, reason : String } -> Cmd msg
 
+port rejectAndClose : { clientId : String, reason : String, payload : Encode.Value } -> Cmd msg
+
 port readFile : String -> Cmd msg
 
 port readFileResult : ({ path : String, contents : Maybe String, error : Maybe String } -> msg) -> Sub msg
@@ -374,3 +402,5 @@ port writeFile : { path : String, contents : String, encoding : String, append :
 port writeFileResult : ({ path : String, ok : Bool, error : Maybe String } -> msg) -> Sub msg
 
 port stateEditReady : { adminClientId : String, uuid : String, json : String } -> Cmd msg
+
+port deleteBuildFile : String -> Cmd msg

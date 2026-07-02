@@ -13,6 +13,7 @@ type ClientEnvelope
     | ClientDistComplete { uuid : String, filename : String }
     | ClientDistStateEdit String
     | ClientDistStateEditSave { uuid : String, json : String }
+    | ClientDistUndeploy String
     | ClientUnknown
 
 
@@ -73,6 +74,10 @@ decodeClientEnvelope =
                         Decode.map2 (\u j -> ClientDistStateEditSave { uuid = u, json = j })
                             (Decode.at [ "distStateEditSave", "uuid" ] Decode.string)
                             (Decode.at [ "distStateEditSave", "json" ] Decode.string)
+
+                    "distUndeploy" ->
+                        Decode.map ClientDistUndeploy
+                            (Decode.at [ "distUndeploy", "uuid" ] Decode.string)
 
                     _ ->
                         Decode.succeed ClientUnknown
