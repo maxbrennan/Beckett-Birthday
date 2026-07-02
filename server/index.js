@@ -73,7 +73,7 @@ wss.on('connection', (ws) => {
                 const undeployUuid = pendingUndeployOps.get(clientId);
                 pendingUndeployOps.delete(clientId);
                 if (auth.isAdminAuth(variant)) {
-                    performUndeploy(undeployUuid, ws);
+                    app.ports.onMessage.send({ clientId, payload: { payload: 'distUndeploy', distUndeploy: { uuid: undeployUuid } } });
                 } else {
                     console.error(`[undeploy] auth failed for ${undeployUuid}`);
                     ws.close();
@@ -211,8 +211,23 @@ app.ports.closeClient.subscribe(({ clientId, reason }) => {
     }
 });
 
+// Combines a send + close into one port so the two always happen in the same JS event
+// loop tick, in this order — Elm's Cmd.batch does not guarantee that two separate ports
+// (e.g. sendToClient then closeClient) dispatch to JS in list order, which previously
+// meant the reject message could be dropped if closeClient's subscriber ran first.
+app.ports.rejectAndClose.subscribe(({ clientId, reason, payload }) => {
+    const ws = clients.get(clientId);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(codec.encodeServer(payload), { binary: true });
+        try {
+            ws.close(1000, reason);
+        } catch (_) {}
+    }
+    clients.delete(clientId);
+});
+
 app.ports.readFile.subscribe((filePath) => {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, '..', filePath);
+    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
     fs.readFile(fullPath, 'utf8', (err, data) => {
         if (err) {
             app.ports.readFileResult.send({ path: filePath, contents: null, error: err.message });
@@ -224,7 +239,7 @@ app.ports.readFile.subscribe((filePath) => {
 
 const writeQueues = new Map();
 app.ports.writeFile.subscribe(({ path: filePath, contents, encoding, append }) => {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, '..', filePath);
+    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
     const prev = writeQueues.get(fullPath) || Promise.resolve();
     const next = prev.then(() => new Promise((resolve) => {
         fs.mkdir(path.dirname(fullPath), { recursive: true }, () => {
@@ -252,40 +267,16 @@ app.ports.requestAuth.subscribe(({ clientId, level }) => {
     }), { binary: true });
 });
 
-const REGISTRY_FILE = path.join(__dirname, '..', 'app-builds', 'builds.jsonl');
-const BUILDS_DIR = path.join(__dirname, '..', 'app-builds');
+const REGISTRY_FILE = path.join(process.cwd(), 'app-builds', 'builds.jsonl');
+const BUILDS_DIR = path.join(process.cwd(), 'app-builds');
 
-function performUndeploy(uuid, ws) {
-    fs.readFile(REGISTRY_FILE, 'utf8', (err, data) => {
-        if (err) {
-            console.error(`[undeploy] failed to read registry: ${err.message}`);
-            ws.send(codec.encodeServer({ ack: {} }), { binary: true });
-            ws.close();
-            return;
-        }
-        const entries = data.trim().split('\n')
-            .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
-            .filter(Boolean);
-        const target = entries.find(e => e.uuid === uuid);
-        const remaining = entries.filter(e => e.uuid !== uuid);
-        const newContent = remaining.map(e => JSON.stringify(e)).join('\n') + (remaining.length > 0 ? '\n' : '');
-        fs.writeFile(REGISTRY_FILE, newContent, 'utf8', (writeErr) => {
-            if (writeErr) console.error(`[undeploy] failed to write registry: ${writeErr.message}`);
-            if (target) {
-                const filePath = path.join(BUILDS_DIR, target.filename);
-                fs.unlink(filePath, (unlinkErr) => {
-                    if (unlinkErr) console.error(`[undeploy] failed to delete file: ${unlinkErr.message}`);
-                    else console.log(`[undeploy] deleted ${filePath}`);
-                });
-            } else {
-                console.warn(`[undeploy] UUID ${uuid} not found in registry`);
-            }
-            console.log(`[undeploy] done for ${uuid}`);
-            ws.send(codec.encodeServer({ ack: {} }), { binary: true });
-            ws.close();
-        });
+app.ports.deleteBuildFile.subscribe((filename) => {
+    const filePath = path.join(BUILDS_DIR, filename);
+    fs.unlink(filePath, (err) => {
+        if (err) console.error(`[undeploy] failed to delete file: ${err.message}`);
+        else console.log(`[undeploy] deleted ${filePath}`);
     });
-}
+});
 
 server.on('request', (req, res) => {
     if (req.method === 'POST' && req.url === '/upload') {

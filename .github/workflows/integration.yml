@@ -16,5 +16,6 @@ jobs:
           node-version: '24.18.0'
           cache: 'npm'
       - run: npm ci
-      - run: npm run build:server
-      - run: npm test
+      - run: sudo apt-get update && sudo apt-get install -y xvfb ffmpeg
+      - run: npm run build
+      - run: xvfb-run --auto-servernum npm test

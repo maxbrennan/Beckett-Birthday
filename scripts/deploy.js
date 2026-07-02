@@ -9,8 +9,8 @@ const codec = require('../server/codec.js');
 const auth = require('../server/auth.js');
 
 const PLATFORM = process.argv[2];
-if (PLATFORM !== 'mac' && PLATFORM !== 'win') {
-    console.error('Usage: node scripts/deploy.js <mac|win>');
+if (PLATFORM !== 'mac' && PLATFORM !== 'win' && PLATFORM !== 'linux') {
+    console.error('Usage: node scripts/deploy.js <mac|win|linux>');
     process.exit(1);
 }
 
@@ -19,7 +19,7 @@ const port = process.env.PROD_SERVER_PORT || '443';
 const SERVER_URL = port === '443' ? `wss://${host}` : `wss://${host}:${port}`;
 const UUID_FILE = path.join(__dirname, '..', 'app-uuid.json');
 const DIST_DIR = path.join(__dirname, '..', 'dist');
-const EXTENSION = PLATFORM === 'mac' ? '.dmg' : '.exe';
+const EXTENSION = PLATFORM === 'mac' ? '.dmg' : PLATFORM === 'win' ? '.exe' : '.AppImage';
 
 const fail = (msg) => {
     console.error(`[dist] ${msg}`);
@@ -47,7 +47,7 @@ function send(ws, payload) {
 
 function runElectronBuilder() {
     return new Promise((resolve, reject) => {
-        const args = [PLATFORM === 'mac' ? '--mac' : '--win'];
+        const args = [PLATFORM === 'mac' ? '--mac' : PLATFORM === 'win' ? '--win' : '--linux'];
         console.log(`[dist] running electron-builder ${args.join(' ')}`);
         const child = spawn('npx', ['electron-builder', ...args], {
             cwd: path.join(__dirname, '..'),
@@ -63,7 +63,7 @@ function runElectronBuilder() {
 
 function findBuiltFile() {
     const entries = fs.readdirSync(DIST_DIR)
-        .filter((name) => name.toLowerCase().endsWith(EXTENSION))
+        .filter((name) => name.toLowerCase().endsWith(EXTENSION.toLowerCase()))
         .map((name) => {
             const full = path.join(DIST_DIR, name);
             return { name, full, mtime: fs.statSync(full).mtimeMs };
