@@ -14,7 +14,7 @@ const PORT = parseInt(isDev ? process.env.DEV_SERVER_PORT : process.env.PROD_SER
 const CERT_FILE = path.join(__dirname, '..', process.env.SSL_CERT_FILE || path.join('certs', 'cert.pem'));
 const KEY_FILE = path.join(__dirname, '..', process.env.SSL_KEY_FILE || path.join('certs', 'key.pem'));
 
-const app = Elm.Server.init({ flags: isDev });
+const app = Elm.Server.init();
 const clients = new Map();
 const pendingAuths = new Map();
 const pendingUndeployOps = new Map();
