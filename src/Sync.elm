@@ -549,6 +549,7 @@ decodeModel =
                 , timerEndsAt = tea
                 , myUuid = Nothing
                 , wsUrl = ""
+                , questions = []
                 }
         )
         (Decode.field "screen" decodeScreen)

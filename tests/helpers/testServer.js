@@ -24,16 +24,22 @@ function seedUser(authDir, { username, password, level }) {
 // dev-only "accept unknown uuid" bypass in src/Server.elm's ClientStateRequest handler,
 // and PROD_SERVER_PORT can be overridden to an unprivileged test port just as well as
 // DEV_SERVER_PORT could.
-async function startTestServer({ port, seedUsers = [] }) {
+// `existingTempDir` restarts a server against a directory a previous startTestServer
+// call already set up (same .auth/ and app-builds/, so the same uuids stay registered
+// across a stop-then-restart) — used by the GUI stop/reconnect test, which needs the
+// reconnecting client's uuid to still be in the registry after the server comes back.
+async function startTestServer({ port, seedUsers = [], existingTempDir } = {}) {
     if (!fs.existsSync(ELM_SERVER_JS)) {
         throw new Error('elm-server.js not found — run: npm run build:server');
     }
 
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beckett-test-'));
-    const authDir = path.join(tempDir, '.auth');
-    fs.mkdirSync(authDir, { recursive: true });
-    for (const user of seedUsers) seedUser(authDir, user);
-    fs.mkdirSync(path.join(tempDir, 'app-builds'), { recursive: true });
+    const tempDir = existingTempDir || fs.mkdtempSync(path.join(os.tmpdir(), 'beckett-test-'));
+    if (!existingTempDir) {
+        const authDir = path.join(tempDir, '.auth');
+        fs.mkdirSync(authDir, { recursive: true });
+        for (const user of seedUsers) seedUser(authDir, user);
+        fs.mkdirSync(path.join(tempDir, 'app-builds'), { recursive: true });
+    }
 
     const child = spawn(process.execPath, [SERVER_SCRIPT], {
         cwd: tempDir,
@@ -70,7 +76,10 @@ async function startTestServer({ port, seedUsers = [] }) {
         });
     });
 
-    async function stop() {
+    // `keepData: true` kills the process but leaves tempDir (and its registry) on disk,
+    // so a later startTestServer({ existingTempDir: tempDir }) can restart against the
+    // same state.
+    async function stop({ keepData = false } = {}) {
         if (child.exitCode === null) {
             await new Promise((resolve) => {
                 // Escalate to SIGKILL after 5s; resolve regardless so teardown always completes
@@ -79,7 +88,7 @@ async function startTestServer({ port, seedUsers = [] }) {
                 child.kill('SIGTERM');
             });
         }
-        fs.rmSync(tempDir, { recursive: true, force: true });
+        if (!keepData) fs.rmSync(tempDir, { recursive: true, force: true });
     }
 
     return { tempDir, stop };

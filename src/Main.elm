@@ -78,6 +78,19 @@ schedule delay msg model =
     { model | pending = { fireAt = model.now + delay, msg = msg } :: model.pending }
 
 
+-- Same as `schedule 3000 WsReconnect`, but first drops any WsReconnect already queued.
+-- Without this, a burst of disconnects while the server is unreachable (a real client
+-- can see several in quick succession, e.g. from both the socket's error and close
+-- events firing for the same failure) queues one WsReconnect per disconnect, all with
+-- nearly the same fireAt — when the server comes back, every one of them fires in the
+-- same Tick and each independently reopens a socket, flooding the server with duplicate
+-- connections for the same uuid (all but one correctly rejected, but the client can
+-- spend a long time cycling through the pile-up before it settles).
+scheduleReconnect : Model -> Model
+scheduleReconnect model =
+    { model | pending = { fireAt = model.now + 3000, msg = WsReconnect } :: List.filter (\e -> e.msg /= WsReconnect) model.pending }
+
+
 -- Drop all pending events (use on major screen transitions to avoid stale firings).
 clearPending : Model -> Model
 clearPending model =
@@ -700,10 +713,10 @@ update msg model =
             in
             case model.screen of
                 WsConnectingScreen ->
-                    ( model |> schedule 3000 WsReconnect, Cmd.none )
+                    ( model |> scheduleReconnect, Cmd.none )
 
                 WsLoadingScreen ->
-                    ( { model | screen = WsConnectingScreen, wsClientId = Nothing } |> schedule 3000 WsReconnect, Cmd.none )
+                    ( { model | screen = WsConnectingScreen, wsClientId = Nothing } |> scheduleReconnect, Cmd.none )
 
                 _ ->
                     ( { model | wsClientId = Nothing, screen = WsConnectingScreen }

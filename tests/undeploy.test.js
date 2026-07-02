@@ -65,10 +65,11 @@ describe('undeploy', () => {
         expect(authResult.success).toBe(true);
         expect(ack).toBeTruthy();
 
-        // the registry rewrite completes before the ack is sent (performUndeploy sends it
-        // from inside the fs.writeFile callback), so that check is race-free. The fs.unlink
-        // of the build file, though, is fired-and-forget relative to the ack — poll for it.
-        expect(readRegistry().some((e) => e.uuid === build.uuid)).toBe(false);
+        // distUndeploy is handled in src/Server.elm (so it can kick a live player via
+        // connectedPlayers), which dispatches the registry write, the file unlink, and the
+        // admin ack as separate ports in one Cmd.batch — same as deploy/edit-state, this
+        // doesn't guarantee the write lands before the ack arrives, so poll for both.
+        await waitUntil(() => !readRegistry().some((e) => e.uuid === build.uuid));
         await waitUntil(() => !fs.existsSync(buildFilePath(build.filename)));
     });
 });
