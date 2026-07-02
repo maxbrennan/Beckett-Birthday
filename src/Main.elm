@@ -762,11 +762,7 @@ update msg model =
                     ( { model | myUuid = Just uuid }, initWebSocketClient model.wsUrl )
 
                 Nothing ->
-                    if debug then
-                        ( { model | myUuid = Just "dev-mode" }, initWebSocketClient model.wsUrl )
-
-                    else
-                        ( { model | screen = WsErrorScreen }, Cmd.none )
+                    ( { model | screen = WsErrorScreen }, Cmd.none )
 
         QuestionsLoaded loadedQuestions ->
             ( { model | questions = loadedQuestions }, Cmd.none )

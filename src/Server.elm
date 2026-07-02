@@ -15,7 +15,6 @@ type alias Model =
     { connectedPlayers : Dict String String
     , distClients : Dict String DistStage
     , registry : List RegistryEntry
-    , isDev : Bool
     , pendingStateEdits : Set String
     }
 
@@ -42,12 +41,11 @@ writeRegistry entries =
         }
 
 
-init : Bool -> ( Model, Cmd Msg )
-init isDev =
+init : () -> ( Model, Cmd Msg )
+init () =
     ( { connectedPlayers = Dict.empty
       , distClients = Dict.empty
       , registry = []
-      , isDev = isDev
       , pendingStateEdits = Set.empty
       }
     , readFile registryFilePath
@@ -123,18 +121,12 @@ update msg model =
                     else
                         case List.filter (\e -> e.uuid == uuid) model.registry of
                             [] ->
-                                if model.isDev then
-                                    ( { model | connectedPlayers = Dict.insert uuid clientId model.connectedPlayers }
-                                    , sendToClient { clientId = clientId, payload = stateEnvelope (Encode.object []) }
-                                    )
-
-                                else
-                                    ( model
-                                    , Cmd.batch
-                                        [ sendToClient { clientId = clientId, payload = rejectEnvelope "unknown uuid" }
-                                        , closeClient { clientId = clientId, reason = "unknown uuid" }
-                                        ]
-                                    )
+                                ( model
+                                , Cmd.batch
+                                    [ sendToClient { clientId = clientId, payload = rejectEnvelope "unknown uuid" }
+                                    , closeClient { clientId = clientId, reason = "unknown uuid" }
+                                    ]
+                                )
 
                             entry :: _ ->
                                 let
@@ -350,7 +342,7 @@ subscriptions _ =
         ]
 
 
-main : Program Bool Model Msg
+main : Program () Model Msg
 main =
     Platform.worker
         { init = init
