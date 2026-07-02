@@ -14,14 +14,14 @@ const USERS_FILE = path.join(SERVER_DIR, 'users.jsonl');
 const UUIDS_FILE = path.join(SERVER_DIR, 'uuids.jsonl');
 
 const CLIENT_DIR = path.join(os.homedir(), '.birthday-auth');
-const KEYS_DIR = path.join(CLIENT_DIR, 'keys');
-const UUID_ENV_FILE = path.join(CLIENT_DIR, 'uuid.env');
 
 const AUTH_LEVEL_NAME = { 0: 'none', 1: 'player', 2: 'admin' };
 
-// Set when key auth fails so the next handleAuthChallenge call falls through to
-// password auth and regenerates the keypair.
-let _keyAuthFailed = false;
+// Default session for the real CLI clients (scripts/deploy.js, scripts/add-admin.js):
+// a single process acting as one identity, so module-level state is fine. Callers that
+// need multiple independent identities in one process (tests driving several admin
+// clients) pass their own `session` object instead of relying on this one.
+const _defaultSession = { keyAuthFailed: false, uuid: null };
 
 // === Public API ===
 
@@ -36,25 +36,38 @@ function generateAuthChallenge() {
     };
 }
 
-async function handleAuthChallenge(challengeMsg) {
+// `opts.clientDir` overrides where keys/uuid are stored (defaults to the real
+// ~/.birthday-auth); `opts.credentials` overrides the interactive username/password
+// prompt; `opts.session` overrides the module-level identity state; `opts.forcePassword`
+// skips a usable stored key even if one exists. All default to the real CLI behavior so
+// scripts/deploy.js and scripts/add-admin.js are unaffected when called with no opts.
+async function handleAuthChallenge(challengeMsg, opts = {}) {
+    const {
+        clientDir = CLIENT_DIR,
+        credentials = promptCredentials,
+        session = _defaultSession,
+        forcePassword = false,
+    } = opts;
     const level = challengeMsg.level;
     const challenge = toBuffer(challengeMsg.challenge);
 
-    if (hasKeys(level) && !_keyAuthFailed) {
-        const privateKeyPem = fs.readFileSync(privateKeyPath(level), 'utf8');
+    if (!forcePassword && hasKeys(level, clientDir) && !session.keyAuthFailed) {
+        const privateKeyPem = fs.readFileSync(privateKeyPath(level, clientDir), 'utf8');
         const signature = signWithKey(privateKeyPem, challenge);
         return {
             key: {
-                uuid: process.env.AUTH_UUID || '',
+                uuid: session.uuid || process.env.AUTH_UUID || '',
                 challengeResponse: signature,
             },
         };
     }
 
-    const { username, password } = await promptCredentials();
+    const { username, password } = await credentials();
     // Force-generate new keys when retrying after key failure so the stale
     // keypair is overwritten and the fresh public key is registered with the server.
-    const { publicKeyPem } = _keyAuthFailed ? generateNewKeys(level) : loadOrGenerateKeys(level);
+    const { publicKeyPem } = session.keyAuthFailed
+        ? generateNewKeys(level, clientDir)
+        : loadOrGenerateKeys(level, clientDir);
     return {
         password: {
             username,
@@ -93,14 +106,16 @@ function handleAuthResponse(responseMsg, originalChallenge) {
 
 // Returns { needsRetry: boolean }. Callers must re-run the full challenge/response
 // cycle (including fetching a fresh challenge) when needsRetry is true.
-function handleAuthResult(resultMsg) {
+function handleAuthResult(resultMsg, opts = {}) {
+    const { clientDir = CLIENT_DIR, session = _defaultSession } = opts;
     switch (resultMsg.result) {
         case 'password': {
             const r = resultMsg.password;
             if (r.success) {
                 console.log(`Auth ok (${AUTH_LEVEL_NAME[r.level]}). UUID: ${r.uuid}`);
-                persistUuid(r.uuid);
-                _keyAuthFailed = false;
+                session.uuid = r.uuid;
+                persistUuid(r.uuid, clientDir);
+                session.keyAuthFailed = false;
             } else {
                 console.log('Auth failed.');
             }
@@ -112,7 +127,7 @@ function handleAuthResult(resultMsg) {
                 console.log(`Auth ok (${AUTH_LEVEL_NAME[r.level]}).`);
             } else {
                 console.log('Key auth failed, retrying with password.');
-                _keyAuthFailed = true;
+                session.keyAuthFailed = true;
             }
             break;
         }
@@ -182,42 +197,46 @@ function verifyWithKey(publicKeyPem, data, signature) {
 
 // Client-side
 
-function privateKeyPath(level) {
-    return path.join(KEYS_DIR, `${AUTH_LEVEL_NAME[level]}.pem`);
+function keysDir(clientDir) {
+    return path.join(clientDir, 'keys');
 }
 
-function publicKeyPath(level) {
-    return path.join(KEYS_DIR, `${AUTH_LEVEL_NAME[level]}.pub.pem`);
+function privateKeyPath(level, clientDir = CLIENT_DIR) {
+    return path.join(keysDir(clientDir), `${AUTH_LEVEL_NAME[level]}.pem`);
 }
 
-function hasKeys(level) {
-    return fs.existsSync(privateKeyPath(level)) && fs.existsSync(publicKeyPath(level));
+function publicKeyPath(level, clientDir = CLIENT_DIR) {
+    return path.join(keysDir(clientDir), `${AUTH_LEVEL_NAME[level]}.pub.pem`);
 }
 
-function generateNewKeys(level) {
-    ensureDir(KEYS_DIR);
+function hasKeys(level, clientDir = CLIENT_DIR) {
+    return fs.existsSync(privateKeyPath(level, clientDir)) && fs.existsSync(publicKeyPath(level, clientDir));
+}
+
+function generateNewKeys(level, clientDir = CLIENT_DIR) {
+    ensureDir(keysDir(clientDir));
     const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
     const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' });
     const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
-    fs.writeFileSync(privateKeyPath(level), privateKeyPem, { mode: 0o600 });
-    fs.writeFileSync(publicKeyPath(level), publicKeyPem);
+    fs.writeFileSync(privateKeyPath(level, clientDir), privateKeyPem, { mode: 0o600 });
+    fs.writeFileSync(publicKeyPath(level, clientDir), publicKeyPem);
     return { publicKeyPem, privateKeyPem };
 }
 
-function loadOrGenerateKeys(level) {
-    if (hasKeys(level)) {
+function loadOrGenerateKeys(level, clientDir = CLIENT_DIR) {
+    if (hasKeys(level, clientDir)) {
         return {
-            publicKeyPem: fs.readFileSync(publicKeyPath(level), 'utf8'),
-            privateKeyPem: fs.readFileSync(privateKeyPath(level), 'utf8'),
+            publicKeyPem: fs.readFileSync(publicKeyPath(level, clientDir), 'utf8'),
+            privateKeyPem: fs.readFileSync(privateKeyPath(level, clientDir), 'utf8'),
             isNew: false,
         };
     }
-    ensureDir(KEYS_DIR);
+    ensureDir(keysDir(clientDir));
     const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
     const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' });
     const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
-    fs.writeFileSync(privateKeyPath(level), privateKeyPem, { mode: 0o600 });
-    fs.writeFileSync(publicKeyPath(level), publicKeyPem);
+    fs.writeFileSync(privateKeyPath(level, clientDir), privateKeyPem, { mode: 0o600 });
+    fs.writeFileSync(publicKeyPath(level, clientDir), publicKeyPem);
     return { publicKeyPem, privateKeyPem, isNew: true };
 }
 
@@ -244,18 +263,26 @@ function promptCredentials() {
     });
 }
 
-function persistUuid(uuid) {
-    ensureDir(CLIENT_DIR);
-    fs.writeFileSync(UUID_ENV_FILE, `AUTH_UUID=${uuid}\n`);
-    process.env.AUTH_UUID = uuid;
+function uuidEnvFile(clientDir) {
+    return path.join(clientDir, 'uuid.env');
 }
 
-function loadStoredUuid() {
-    if (!fs.existsSync(UUID_ENV_FILE)) return null;
-    const line = fs.readFileSync(UUID_ENV_FILE, 'utf8').trim();
+// Only mutates the process-wide AUTH_UUID env var for the real ~/.birthday-auth
+// identity; a test-provided clientDir just gets its own uuid.env file, so multiple
+// AdminClient identities in one process don't stomp on each other's env state (each
+// tracks its own uuid via its `session` object instead).
+function persistUuid(uuid, clientDir = CLIENT_DIR) {
+    ensureDir(clientDir);
+    fs.writeFileSync(uuidEnvFile(clientDir), `AUTH_UUID=${uuid}\n`);
+    if (clientDir === CLIENT_DIR) process.env.AUTH_UUID = uuid;
+}
+
+function loadStoredUuid(clientDir = CLIENT_DIR) {
+    if (!fs.existsSync(uuidEnvFile(clientDir))) return null;
+    const line = fs.readFileSync(uuidEnvFile(clientDir), 'utf8').trim();
     const match = line.match(/^AUTH_UUID=(.*)$/);
     if (!match) return null;
-    process.env.AUTH_UUID = match[1];
+    if (clientDir === CLIENT_DIR) process.env.AUTH_UUID = match[1];
     return match[1];
 }
 
@@ -268,5 +295,17 @@ module.exports = {
     handleAuthResponse,
     handleAuthResult,
     // Exposed for fixtures / scripts:
-    _internals: { hashPassword, loadOrGenerateKeys, persistUuid, loadStoredUuid, promptCredentials, USERS_FILE, SERVER_DIR },
+    _internals: {
+        hashPassword,
+        loadOrGenerateKeys,
+        persistUuid,
+        loadStoredUuid,
+        promptCredentials,
+        privateKeyPath,
+        publicKeyPath,
+        hasKeys,
+        USERS_FILE,
+        SERVER_DIR,
+        CLIENT_DIR,
+    },
 };
