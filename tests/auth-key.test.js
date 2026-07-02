@@ -92,8 +92,9 @@ describe('key auth', () => {
 
         admin.deleteKey();
 
-        // preferKey defaults true, but hasUsableKey() is false with no key files on disk,
-        // so this already takes the password path — same as the real client's fallback.
+        // preferKey defaults true, but server/auth.js's hasKeys() is false with no key
+        // files on disk, so this already takes the password path — same as the real
+        // client's fallback.
         const { conn, result } = await authOnce(admin);
         expect(result.method).toBe('password');
         expect(result.success).toBe(true);

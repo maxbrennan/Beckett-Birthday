@@ -6,10 +6,13 @@
 // aren't sequenced relative to each other, so the ack can arrive slightly before the
 // write actually lands on disk. Tests that read app-builds/builds.jsonl right after an
 // ack should poll for the expected state rather than assume it's already there.
+//
+// Also used by tests/gui.electron.js (a plain Node script, not a Jest file) to poll the
+// Electron window's DOM/audio state, so `predicateFn` may return a promise.
 async function waitUntil(predicateFn, { timeoutMs = 2000, intervalMs = 20 } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-        const result = predicateFn();
+        const result = await predicateFn();
         if (result) return result;
         if (Date.now() > deadline) {
             throw new Error(`waitUntil: timed out after ${timeoutMs}ms waiting for condition`);

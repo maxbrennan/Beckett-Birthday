@@ -4,42 +4,26 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const auth = require('../../server/auth.js');
 
-// A self-contained reference "admin CLI" test double for the challenge/response auth
-// flow in server/auth.js. Deliberately does NOT reuse server/auth.js's own client-side
-// functions (handleAuthChallenge/promptCredentials/loadOrGenerateKeys) — those persist
-// keys under the real ~/.birthday-auth on whatever machine runs the tests and block on
-// interactive stdin, neither of which is appropriate here. This class independently
-// implements the same wire behavior, scoped to a temp keys directory it owns, so tests
-// validate the *server's* signature verification/challenge gating/fallback logic without
-// touching real developer/CI-runner credentials.
+// Drives the real client-side challenge/response functions in server/auth.js — the same
+// handleAuthChallenge/handleAuthResult scripts/deploy.js and scripts/add-admin.js use —
+// against an isolated temp keys directory and injected credentials, instead of the real
+// ~/.birthday-auth and an interactive stdin prompt. This validates the *server's*
+// signature verification/challenge gating/fallback logic using the real client logic on
+// both ends of the wire.
 class AdminClient {
     constructor({ username, password, keysDir } = {}) {
         this.username = username;
         this.password = password;
-        this.keysDir = keysDir || fs.mkdtempSync(path.join(os.tmpdir(), 'beckett-admin-keys-'));
-        fs.mkdirSync(this.keysDir, { recursive: true });
-        // Set once a password auth succeeds and the server mints/registers a uuid for
-        // the public key we sent. Key auth is only attempted once this is set, mirroring
-        // the real client's "no identity to sign in as until password auth succeeds" rule.
-        this.uuid = null;
+        this.clientDir = keysDir || fs.mkdtempSync(path.join(os.tmpdir(), 'beckett-admin-keys-'));
+        // Independent identity state per AdminClient instance — see server/auth.js's
+        // _defaultSession comment for why this can't just be the module-level default.
+        this.session = { keyAuthFailed: false, uuid: null };
     }
 
-    get privateKeyPath() { return path.join(this.keysDir, 'admin.pem'); }
-    get publicKeyPath() { return path.join(this.keysDir, 'admin.pub.pem'); }
-
-    hasUsableKey() {
-        return !!this.uuid && fs.existsSync(this.privateKeyPath) && fs.existsSync(this.publicKeyPath);
-    }
-
-    generateKeypair() {
-        const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
-        const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' });
-        const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
-        fs.writeFileSync(this.privateKeyPath, privateKeyPem, { mode: 0o600 });
-        fs.writeFileSync(this.publicKeyPath, publicKeyPem);
-        return { publicKeyPem, privateKeyPem };
-    }
+    get privateKeyPath() { return auth._internals.privateKeyPath(2, this.clientDir); }
+    get publicKeyPath() { return auth._internals.publicKeyPath(2, this.clientDir); }
 
     // Simulates the stored private key file being tampered with / replaced: swaps in an
     // unrelated, syntactically valid Ed25519 key the server has never seen. Signing still
@@ -62,46 +46,32 @@ class AdminClient {
     // attempt the server closes `conn` (matching every admin-gated path in
     // server/index.js and src/Server.elm's AuthCompleted) — reconnecting and retrying,
     // if desired, is left to the caller so tests demonstrate that behavior explicitly.
+    //
+    // `preferKey: false` forces the password path (via auth.js's forcePassword option)
+    // even if a usable stored key exists, so tests can exercise password auth on demand.
     async respondToChallenge(conn, { preferKey = true } = {}) {
         const challengeMsg = await conn.waitFor((m) => m.payload === 'authChallenge');
-        const { challenge, level } = challengeMsg.authChallenge;
-        const useKey = preferKey && this.hasUsableKey();
 
-        if (useKey) {
-            const privateKeyPem = fs.readFileSync(this.privateKeyPath, 'utf8');
-            const challengeBuf = Buffer.from(challenge, 'base64');
-            const signature = crypto.sign(null, challengeBuf, privateKeyPem);
-            conn.send({ authResponse: { key: { uuid: this.uuid, challengeResponse: signature } } });
-        } else {
-            if (!fs.existsSync(this.privateKeyPath) || !fs.existsSync(this.publicKeyPath)) {
-                this.generateKeypair();
-            }
-            const publicKeyPem = fs.readFileSync(this.publicKeyPath, 'utf8');
-            conn.send({
-                authResponse: {
-                    password: {
-                        username: this.username,
-                        password: this.password,
-                        publicKey: Buffer.from(publicKeyPem, 'utf8'),
-                    },
-                },
-            });
-        }
+        const response = await auth.handleAuthChallenge(challengeMsg.authChallenge, {
+            clientDir: this.clientDir,
+            session: this.session,
+            forcePassword: !preferKey,
+            credentials: async () => ({ username: this.username, password: this.password }),
+        });
+        conn.send({ authResponse: response });
 
         const resultMsg = await conn.waitFor((m) => m.payload === 'authResult');
+        auth.handleAuthResult(resultMsg.authResult, { clientDir: this.clientDir, session: this.session });
+
         const method = resultMsg.authResult.password ? 'password' : 'key';
         const variant = resultMsg.authResult[method];
-
-        if (method === 'password' && variant.success) {
-            this.uuid = variant.uuid;
-        }
 
         return {
             method,
             success: !!variant.success,
             level: variant.level || 0,
-            uuid: variant.uuid || this.uuid || '',
-            requestedLevel: level,
+            uuid: variant.uuid || this.session.uuid || '',
+            requestedLevel: challengeMsg.authChallenge.level,
         };
     }
 }

@@ -6,13 +6,17 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { PROJECT_ROOT } = require('./certPaths');
+const auth = require('../../server/auth.js');
 
 const SERVER_SCRIPT = path.join(PROJECT_ROOT, 'server', 'index.js');
 const ELM_SERVER_JS = path.join(PROJECT_ROOT, 'elm-server.js');
 
+// Mirrors the row shape scripts/add-admin.js writes, reusing the same hashPassword the
+// server verifies against (server/auth.js's findUser/verifyPassword), rather than a
+// second reimplementation of the password hashing scheme.
 function seedUser(authDir, { username, password, level }) {
     const saltHex = crypto.randomBytes(16).toString('hex');
-    const hash = crypto.scryptSync(password, Buffer.from(saltHex, 'hex'), 64).toString('hex');
+    const hash = auth._internals.hashPassword(password, saltHex);
     const row = { username, salt: saltHex, hash, level };
     fs.appendFileSync(path.join(authDir, 'users.jsonl'), JSON.stringify(row) + '\n');
 }

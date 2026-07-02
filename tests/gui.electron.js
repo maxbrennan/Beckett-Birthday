@@ -20,22 +20,14 @@ const distClient = require('./helpers/distClient');
 const { PROJECT_ROOT } = require('./helpers/certPaths');
 const globalSetup = require('./helpers/globalSetup');
 const globalTeardown = require('./helpers/globalTeardown');
+const { waitUntil } = require('./helpers/waitUntil');
 
 const TEST_PORT = 19451;
 const USERNAME = 'testadmin';
 const PASSWORD = 'correct-horse-battery-staple';
 const APP_UUID_PATH = path.join(PROJECT_ROOT, 'app-uuid.json');
 const AUDIO_ASSET_PATH = path.join(PROJECT_ROOT, 'assets', 'jeopardy-theme.mp3');
-
-async function waitUntil(fn, { timeoutMs = 8000, intervalMs = 150 } = {}) {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-        const result = await fn();
-        if (result) return result;
-        if (Date.now() > deadline) throw new Error('timed out waiting for condition');
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-}
+const GUI_WAIT_OPTS = { timeoutMs: 8000, intervalMs: 150 };
 
 async function readAudioState(window) {
     return window.evaluate(() => {
@@ -56,7 +48,7 @@ async function assertAudioPlaying(window) {
     const playing = await waitUntil(async () => {
         const state = await readAudioState(window);
         return state.exists && state.paused === false ? state : null;
-    }, { timeoutMs: 10000 });
+    }, { timeoutMs: 10000, intervalMs: GUI_WAIT_OPTS.intervalMs });
 
     await new Promise((resolve) => setTimeout(resolve, 500));
     const later = await readAudioState(window);
@@ -133,7 +125,7 @@ async function main() {
         const tempDir = server.tempDir;
         await server.stop({ keepData: true });
 
-        await waitUntil(async () => (await bodyText(window)).includes('Connecting to server...'));
+        await waitUntil(async () => (await bodyText(window)).includes('Connecting to server...'), GUI_WAIT_OPTS);
         console.log('  ✓ client shows "Connecting to server..." after the server stops');
 
         server = await startTestServer({ port: TEST_PORT, existingTempDir: tempDir });

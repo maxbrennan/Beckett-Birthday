@@ -3,41 +3,11 @@
 const crypto = require('crypto');
 const https = require('https');
 const { connect } = require('./protocolClient');
+const { uploadBuild: httpUpload } = require('../../scripts/deploy.js');
 
-function httpUpload(port, { token, filename, contents }) {
-    return new Promise((resolve, reject) => {
-        const req = https.request(
-            {
-                hostname: 'localhost',
-                port,
-                path: '/upload',
-                method: 'POST',
-                rejectUnauthorized: false, // self-signed test cert
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'X-Filename': filename,
-                    'Content-Type': 'application/octet-stream',
-                    'Content-Length': contents.length,
-                },
-            },
-            (res) => {
-                let body = '';
-                res.on('data', (chunk) => { body += chunk; });
-                res.on('end', () => {
-                    if (res.statusCode !== 200) {
-                        reject(new Error(`upload failed: ${res.statusCode} ${body}`));
-                    } else {
-                        resolve();
-                    }
-                });
-            }
-        );
-        req.on('error', reject);
-        req.end(contents);
-    });
-}
-
-// GET /<uuid> — mirrors how a player's browser/download link hits the server.
+// GET /<uuid> — mirrors how a player's browser/download link hits the server. There's no
+// existing production "download client" to reuse here — real downloads are just a
+// browser GETing the URL directly, so this is the test-only counterpart to that.
 function download(port, uuid) {
     return new Promise((resolve, reject) => {
         const req = https.request(
@@ -73,7 +43,7 @@ async function deployBuild(port, admin, { platform = 'mac', filename, contents }
     const ackMsg = await conn.waitFor((m) => m.payload === 'ack');
     const uploadToken = ackMsg.ack.uploadToken;
 
-    await httpUpload(port, { token: uploadToken, filename: finalFilename, contents: finalContents });
+    await httpUpload({ host: 'localhost', port, token: uploadToken, filename: finalFilename, contents: finalContents });
 
     conn.send({ distComplete: { uuid, filename: finalFilename } });
     await conn.waitFor((m) => m.payload === 'ack');
@@ -128,4 +98,4 @@ async function saveStateEdit(conn, uuid, json) {
     return conn.waitFor((m) => m.payload === 'ack' || m.payload === 'stateRequestRejected');
 }
 
-module.exports = { deployBuild, undeploy, listBuilds, requestStateEdit, saveStateEdit, download, httpUpload };
+module.exports = { deployBuild, undeploy, listBuilds, requestStateEdit, saveStateEdit, download };
