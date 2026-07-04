@@ -10,6 +10,7 @@ type alias RegistryEntry =
     , filename : String
     , platform : String
     , state : Maybe Encode.Value
+    , pendingStateEdit : Bool
     }
 
 
@@ -28,6 +29,7 @@ encodeRegistryEntry entry =
         , ( "filename", Encode.string entry.filename )
         , ( "platform", Encode.string entry.platform )
         , ( "state", Maybe.withDefault Encode.null entry.state )
+        , ( "pendingStateEdit", Encode.bool entry.pendingStateEdit )
         ]
 
 
@@ -48,7 +50,7 @@ encodeRegistry entries =
 
 decodeRegistryEntry : Decode.Decoder RegistryEntry
 decodeRegistryEntry =
-    Decode.map4 RegistryEntry
+    Decode.map5 RegistryEntry
         (Decode.field "uuid" Decode.string)
         (Decode.field "filename" Decode.string)
         (Decode.field "platform" Decode.string)
@@ -63,6 +65,10 @@ decodeRegistryEntry =
                             Just v
                     )
                 )
+        )
+        -- older builds.jsonl rows predate this field; treat missing as unlocked.
+        (Decode.maybe (Decode.field "pendingStateEdit" Decode.bool)
+            |> Decode.map (Maybe.withDefault False)
         )
 
 
@@ -135,7 +141,19 @@ updateEntryState uuid newState =
     List.map
         (\e ->
             if e.uuid == uuid then
-                { e | state = Just newState }
+                { e | state = Just newState, pendingStateEdit = False }
+
+            else
+                e
+        )
+
+
+setPendingStateEdit : String -> List RegistryEntry -> List RegistryEntry
+setPendingStateEdit uuid =
+    List.map
+        (\e ->
+            if e.uuid == uuid then
+                { e | pendingStateEdit = True }
 
             else
                 e

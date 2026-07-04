@@ -334,6 +334,11 @@ server.on('request', (req, res) => {
             res.writeHead(404); res.end('Not found'); return;
         }
 
+        if (entry.pendingStateEdit) {
+            console.log(`[download] rejected — pending state edit: ${uuid}`);
+            res.writeHead(423); res.end('Locked'); return;
+        }
+
         const filePath = path.join(BUILDS_DIR, entry.filename);
         console.log(`[download] resolved path: ${filePath}`);
         fs.stat(filePath, (statErr, stats) => {
