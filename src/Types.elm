@@ -55,7 +55,6 @@ type alias Model =
     , myUuid : Maybe String
     , wsUrl : String
     , questions : List Question
-    , iqFailedOnce : Bool
     , iqOfferMade : Bool
     }
 

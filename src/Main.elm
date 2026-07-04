@@ -63,7 +63,6 @@ init wsUrl =
       , myUuid = Nothing
       , wsUrl = wsUrl
       , questions = []
-      , iqFailedOnce = False
       , iqOfferMade = False
       }
     , Cmd.batch
@@ -102,16 +101,22 @@ clearPending model =
 
 iqFail : Model -> IQTestState -> ( Model, Cmd Msg )
 iqFail model state =
+    let
+        screenState =
+            { questionIdx = state.questionIdx
+            , totalDings = state.totalDings
+            , fakeFlashUsed = state.fakeFlashUsed
+            , in50PercentPhase = state.in50PercentPhase
+            }
+    in
     ( clearPending
         { model
-            | iqFailedOnce = True
-            , screen =
-                IQTestScreen
-                    { questionIdx = state.questionIdx
-                    , totalDings = state.totalDings
-                    , fakeFlashUsed = state.fakeFlashUsed
-                    , in50PercentPhase = state.in50PercentPhase
-                    }
+            | screen =
+                if not model.iqOfferMade && state.dingCount >= iqOfferMinDings then
+                    IQTestSkipOfferScreen screenState
+
+                else
+                    IQTestScreen screenState
         }
     , Cmd.none
     )
@@ -351,15 +356,9 @@ update msg model =
         IQTestBeginPressed ->
             case model.screen of
                 IQTestScreen iqScreen ->
-                    if model.iqFailedOnce && not model.iqOfferMade then
-                        ( { model | screen = IQTestSkipOfferScreen iqScreen }
-                        , Cmd.none
-                        )
-
-                    else
-                        ( model
-                        , Random.generate IQTestStarted (iqTestInitGen iqScreen.totalDings)
-                        )
+                    ( model
+                    , Random.generate IQTestStarted (iqTestInitGen iqScreen.totalDings)
+                    )
 
                 _ ->
                     ( model, Cmd.none )
@@ -368,7 +367,7 @@ update msg model =
             case model.screen of
                 IQTestSkipOfferScreen iqScreen ->
                     ( { model | iqOfferMade = True, screen = IQTestScreen iqScreen }
-                    , Random.generate IQTestStarted (iqTestInitGen iqScreen.totalDings)
+                    , Cmd.none
                     )
 
                 _ ->
@@ -723,15 +722,22 @@ update msg model =
                             )
 
                         FfCounterOut ->
+                            let
+                                screenState =
+                                    { questionIdx = state.questionIdx
+                                    , totalDings = state.originalTotal * 2
+                                    , fakeFlashUsed = True
+                                    , in50PercentPhase = False
+                                    }
+                            in
                             ( clearPending
                                 { model
                                     | screen =
-                                        IQTestScreen
-                                            { questionIdx = state.questionIdx
-                                            , totalDings = state.originalTotal * 2
-                                            , fakeFlashUsed = True
-                                            , in50PercentPhase = False
-                                            }
+                                        if not model.iqOfferMade then
+                                            IQTestSkipOfferScreen screenState
+
+                                        else
+                                            IQTestScreen screenState
                                 }
                             , Cmd.none
                             )

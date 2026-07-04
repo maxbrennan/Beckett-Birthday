@@ -23,6 +23,14 @@ iqQuestionCount =
         100
 
 
+-- Minimum dings the player must have cleared in a run for the one-time skip
+-- offer to be triggered by a failure. Below this, a failure just returns to the
+-- instructions screen as usual.
+iqOfferMinDings : Int
+iqOfferMinDings =
+    5
+
+
 -- Lower bound (as a fraction of iqQuestionCount) for the fake-flash trap position.
 -- Debug: 0.65  |  Production: 0.85
 fakeFlashRangeLo : Float

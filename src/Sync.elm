@@ -319,7 +319,6 @@ encodeModel model =
         , ( "pendingStartTime", encodeMaybeFloat model.pendingStartTime )
         , ( "wsClientId", encodeMaybeString model.wsClientId )
         , ( "timerEndsAt", Encode.float model.timerEndsAt )
-        , ( "iqFailedOnce", Encode.bool model.iqFailedOnce )
         , ( "iqOfferMade", Encode.bool model.iqOfferMade )
         ]
 
@@ -606,7 +605,7 @@ decodeModel : Decoder Model
 decodeModel =
     Decode.map7
         (\scr jp n pend ss dk pst ->
-            \wci tea failedOnce offerMade ->
+            \wci tea offerMade ->
                 { screen = scr
                 , jeopardyPlaying = jp
                 , now = n
@@ -619,7 +618,6 @@ decodeModel =
                 , myUuid = Nothing
                 , wsUrl = ""
                 , questions = []
-                , iqFailedOnce = failedOnce
                 , iqOfferMade = offerMade
                 }
         )
@@ -632,9 +630,8 @@ decodeModel =
         (Decode.field "pendingStartTime" (Decode.nullable Decode.float))
         |> Decode.andThen
             (\partial ->
-                Decode.map4 partial
+                Decode.map3 partial
                     (Decode.field "wsClientId" (Decode.nullable Decode.string))
                     (Decode.field "timerEndsAt" Decode.float)
-                    (Decode.oneOf [ Decode.field "iqFailedOnce" Decode.bool, Decode.succeed False ])
                     (Decode.oneOf [ Decode.field "iqOfferMade" Decode.bool, Decode.succeed False ])
             )
