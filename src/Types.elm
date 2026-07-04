@@ -53,6 +53,7 @@ type alias Model =
     , myUuid : Maybe String
     , wsUrl : String
     , questions : List Question
+    , winText : String
     }
 
 
@@ -87,4 +88,5 @@ type Msg
     | WsReconnect
     | UuidLoaded (Maybe String)
     | QuestionsLoaded (List Question)
+    | WinTextLoaded String
     | NoOp

@@ -53,7 +53,7 @@ viewAudio model =
             if model.jeopardyPlaying then
                 audio
                     [ id "jeopardy-audio"
-                    , src "assets/jeopardy-theme.mp3"
+                    , src "assets/songs/jeopardy-theme.mp3"
                     , autoplay True
                     , loop True
                     ]
@@ -67,7 +67,7 @@ viewAudio model =
                 Just songSrc ->
                     audio
                         [ id "quiz-audio"
-                        , src ("assets/" ++ songSrc)
+                        , src ("assets/songs/" ++ songSrc)
                         , autoplay True
                         , on "loadedmetadata" (Decode.succeed SongMetadataLoaded)
                         , on "ended" (Decode.succeed (TrackEnded songSrc))
