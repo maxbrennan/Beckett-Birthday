@@ -224,7 +224,7 @@ viewScreen model =
                 ]
                 [ video
                     [ id "playing-video"
-                    , src ("assets/" ++ filename)
+                    , src ("assets/songs/" ++ filename)
                     , autoplay True
                     , on "ended" (Decode.succeed (TrackEnded filename))
                     , style "position" "absolute"
@@ -585,7 +585,7 @@ viewScreen model =
                     , style "margin" "0"
                     , style "font-weight" "bold"
                     ]
-                    [ text "Text \"creeper... awwww man\" to Max to claim your reward!" ]
+                    [ text model.winText ]
                 ]
 
         TimedOutScreen ->
