@@ -9,15 +9,11 @@ const codec = require('../server/codec.js');
 const auth = require('../server/auth.js');
 
 const PLATFORM = process.argv[2];
+// OLD_UUID is optional: when omitted, we list the deployed builds and exit rather
+// than error, so the admin can find the uuid they meant (see fetchBuildList/main).
+// Platform validation is deferred to the require.main CLI guard so this module can be
+// require()d by tests (for resolveReplacement) without exiting.
 const OLD_UUID = process.argv[3];
-if (PLATFORM !== 'mac' && PLATFORM !== 'win') {
-    console.error('Usage: node scripts/deploy-replacement.js <mac|win> <old-uuid>');
-    process.exit(1);
-}
-if (!OLD_UUID) {
-    console.error('Usage: node scripts/deploy-replacement.js <mac|win> <old-uuid>');
-    process.exit(1);
-}
 
 const host = process.env.PROD_SERVER_HOST;
 const port = process.env.PROD_SERVER_PORT || '443';
@@ -48,6 +44,91 @@ function connect() {
 
 function send(ws, payload) {
     ws.send(codec.encodeClient(payload), { binary: true });
+}
+
+// Pure decision over a distList-shaped `entries` array ([{ uuid, filename, platform }]):
+//   - falsy oldUuid            -> 'list'    (no uuid given: show the deployed builds)
+//   - oldUuid not in entries   -> 'abort'   (nonexistent uuid: refuse before building)
+//   - oldUuid matches an entry -> 'proceed' (run the real build/upload/replace flow)
+// Exported for tests; keep it side-effect free.
+function resolveReplacement(entries, oldUuid) {
+    if (!oldUuid) return { action: 'list' };
+    const exists = (entries || []).some((e) => e.uuid === oldUuid);
+    return exists ? { action: 'proceed' } : { action: 'abort' };
+}
+
+function printBuilds(entries) {
+    if (!entries || entries.length === 0) {
+        console.log('[dist] no builds deployed');
+        return;
+    }
+    console.log('\nDeployed builds:');
+    for (const e of entries) {
+        console.log(`  ${e.uuid}  ${e.filename}  (${e.platform})`);
+    }
+    console.log(`\nRun: npm run deploy:replacement:${PLATFORM} -- <uuid>`);
+}
+
+// Admin-authenticated distList fetch, returning the entries array. Mirrors the
+// auth/reconnect dance in scripts/undeploy.js (key-auth first; on key failure the
+// server closes the socket, so we reconnect and retry with password auth), but
+// resolves the entries instead of printing and exiting.
+function fetchBuildList() {
+    return new Promise((resolve) => {
+        let pendingResolver = null;
+        const incoming = [];
+        const nextMessage = () => new Promise((r) => {
+            if (incoming.length > 0) r(incoming.shift());
+            else pendingResolver = r;
+        });
+        function pushMessage(msg) {
+            if (pendingResolver) { const r = pendingResolver; pendingResolver = null; r(msg); }
+            else incoming.push(msg);
+        }
+        function wireSocket(socket) {
+            socket.on('message', (data) => {
+                let msg;
+                try { msg = codec.decodeServer(data); }
+                catch (err) { console.error('[dist] decode error:', err.message); return; }
+                pushMessage(msg);
+            });
+            socket.on('close', () => pushMessage({ payload: '_closed' }));
+        }
+
+        (async () => {
+            let ws = await connect().catch((err) => fail(`could not connect to ${SERVER_URL}: ${err.message}`));
+            wireSocket(ws);
+            send(ws, { distList: {} });
+
+            let pendingRetry = false;
+            while (true) {
+                const msg = await nextMessage();
+                if (msg.payload === '_closed') {
+                    if (!pendingRetry) fail('connection closed before auth completed');
+                    console.log('[dist] reconnecting for password authentication');
+                    ws = await connect().catch((err) => fail(`could not reconnect to ${SERVER_URL}: ${err.message}`));
+                    wireSocket(ws);
+                    pendingRetry = false;
+                    send(ws, { distList: {} });
+                } else if (msg.payload === 'authChallenge') {
+                    const response = await auth.handleAuthChallenge(msg.authChallenge);
+                    send(ws, { authResponse: response });
+                } else if (msg.payload === 'authResult') {
+                    auth.handleAuthResult(msg.authResult);
+                    const variant = msg.authResult.password || msg.authResult.key || {};
+                    const isKeyFailure = !!(msg.authResult.key && !msg.authResult.key.success);
+                    if (isKeyFailure) { pendingRetry = true; }
+                    else if (!variant.success) { fail('authentication failed'); }
+                } else if (msg.payload === 'distListResult') {
+                    const entries = msg.distListResult.entries || [];
+                    // The server closes the socket right after sending distListResult; we
+                    // have what we need, so resolve (a trailing _closed is harmless).
+                    resolve(entries);
+                    return;
+                }
+            }
+        })();
+    });
 }
 
 function runElectronBuilder() {
@@ -81,6 +162,22 @@ function findBuiltFile() {
 }
 
 async function main() {
+    // List-first validation: fetch the deployed builds and decide what to do before
+    // generating a uuid or running electron-builder, so a missing/nonexistent oldUuid
+    // never wastes a build.
+    const entries = await fetchBuildList();
+    const decision = resolveReplacement(entries, OLD_UUID);
+    if (decision.action === 'list') {
+        console.log('[dist] no uuid provided — listing deployed builds');
+        printBuilds(entries);
+        process.exit(0);
+    }
+    if (decision.action === 'abort') {
+        console.error(`[dist] uuid ${OLD_UUID} not found — cannot deploy a replacement for it`);
+        printBuilds(entries);
+        process.exit(1);
+    }
+
     const newUuid = generateUuid();
 
     let pendingMessageResolver = null;
@@ -197,4 +294,14 @@ async function main() {
     process.exit(result.status || 0);
 }
 
-main().catch((err) => fail(err.stack || err.message));
+// Exported for tests (tests/deploy-replacement.test.js) before the CLI guard so a
+// require() gets the pure decision helper without running the deploy flow.
+module.exports = { resolveReplacement };
+
+if (require.main === module) {
+    if (PLATFORM !== 'mac' && PLATFORM !== 'win') {
+        console.error('Usage: node scripts/deploy-replacement.js <mac|win> [old-uuid]');
+        process.exit(1);
+    }
+    main().catch((err) => fail(err.stack || err.message));
+}
