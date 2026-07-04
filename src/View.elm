@@ -224,7 +224,7 @@ viewScreen model =
                 ]
                 [ video
                     [ id "playing-video"
-                    , src ("assets/" ++ filename)
+                    , src ("assets/songs/" ++ filename)
                     , autoplay True
                     , on "ended" (Decode.succeed (TrackEnded filename))
                     , style "position" "absolute"
