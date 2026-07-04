@@ -173,6 +173,7 @@ update msg model =
                                             , filename = upload.filename
                                             , platform = info.platform
                                             , state = Nothing
+                                            , pendingStateEdit = False
                                             }
 
                                         newRegistry =
@@ -209,6 +210,7 @@ update msg model =
                                         , filename = filename
                                         , platform = info.platform
                                         , state = Nothing
+                                        , pendingStateEdit = False
                                         }
 
                                     newRegistry =
@@ -242,8 +244,14 @@ update msg model =
                                 |> List.head
                                 |> Maybe.andThen .state
                                 |> Maybe.withDefault (Encode.object [])
+
+                        newRegistry =
+                            setPendingStateEdit uuid model.registry
                     in
-                    ( { model | pendingStateEdits = Set.insert uuid model.pendingStateEdits }
+                    ( { model
+                        | pendingStateEdits = Set.insert uuid model.pendingStateEdits
+                        , registry = newRegistry
+                      }
                     , Cmd.batch
                         [ case maybePlayerClientId of
                             Nothing ->
@@ -251,6 +259,7 @@ update msg model =
 
                             Just playerClientId ->
                                 closeClient { clientId = playerClientId, reason = "admin editing state" }
+                        , writeRegistry newRegistry
                         , stateEditReady { adminClientId = clientId, uuid = uuid, json = Encode.encode 0 currentState }
                         ]
                     )
@@ -274,6 +283,62 @@ update msg model =
 
                         Err _ ->
                             ( model, sendToClient { clientId = clientId, payload = rejectEnvelope "invalid json" } )
+
+                Ok (ClientDistReplaceComplete { newUuid, oldUuid, filename }) ->
+                    case Dict.get clientId model.distClients of
+                        Just (AwaitingUpload info) ->
+                            if info.uuid == newUuid then
+                                let
+                                    oldState =
+                                        model.registry
+                                            |> List.filter (\e -> e.uuid == oldUuid)
+                                            |> List.head
+                                            |> Maybe.andThen .state
+
+                                    newEntry =
+                                        { uuid = newUuid
+                                        , filename = filename
+                                        , platform = info.platform
+                                        , state = oldState
+                                        , pendingStateEdit = True
+                                        }
+
+                                    newRegistry =
+                                        List.filter (\e -> e.uuid /= oldUuid && e.filename /= filename) model.registry
+                                            ++ [ newEntry ]
+
+                                    closeOldPlayerCmd =
+                                        case Dict.get oldUuid model.connectedPlayers of
+                                            Just playerClientId ->
+                                                closeClient { clientId = playerClientId, reason = "build replaced" }
+
+                                            Nothing ->
+                                                Cmd.none
+                                in
+                                -- newUuid starts locked (pendingStateEdit = True): the admin must
+                                -- resolve it via distStateEdit/distStateEditSave before players can
+                                -- connect or download. Note: if that save is ever invalid JSON, this
+                                -- uuid is stuck the same way the pre-existing edit-state quirk gets
+                                -- stuck (see tests/edit-state.test.js) -- except every replacement now
+                                -- requires a save to unlock, not just an optional admin edit.
+                                ( { model
+                                    | distClients = Dict.remove clientId model.distClients
+                                    , connectedPlayers = Dict.remove oldUuid model.connectedPlayers
+                                    , registry = newRegistry
+                                    , pendingStateEdits = Set.insert newUuid model.pendingStateEdits
+                                  }
+                                , Cmd.batch
+                                    [ closeOldPlayerCmd
+                                    , writeRegistry newRegistry
+                                    , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                    ]
+                                )
+
+                            else
+                                ( model, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
 
                 Ok (ClientDistUndeploy uuid) ->
                     let
@@ -333,7 +398,26 @@ update msg model =
             if path == registryFilePath then
                 case result of
                     Ok contents ->
-                        ( { model | registry = parseRegistryJsonl contents }, Cmd.none )
+                        let
+                            parsedRegistry =
+                                parseRegistryJsonl contents
+
+                            -- Rehydrate in-memory WS-connect gating from the persisted
+                            -- flag so it agrees with on-disk download gating after a
+                            -- restart mid-edit (otherwise connects would reopen while
+                            -- downloads stayed locked until the next save).
+                            rehydratedPendingStateEdits =
+                                parsedRegistry
+                                    |> List.filter .pendingStateEdit
+                                    |> List.map .uuid
+                                    |> Set.fromList
+                        in
+                        ( { model
+                            | registry = parsedRegistry
+                            , pendingStateEdits = rehydratedPendingStateEdits
+                          }
+                        , Cmd.none
+                        )
 
                     Err _ ->
                         ( model, Cmd.none )

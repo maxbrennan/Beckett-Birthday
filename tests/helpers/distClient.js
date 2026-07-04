@@ -52,6 +52,34 @@ async function deployBuild(port, admin, { platform = 'mac', filename, contents }
     return { uuid, filename: finalFilename, platform, contents: finalContents };
 }
 
+// Full distRegister -> admin auth -> HTTPS upload -> distReplaceComplete cycle, mirroring
+// deployBuild but carrying forward oldUuid's state (see ClientDistReplaceComplete in
+// src/Server.elm) instead of starting fresh.
+async function replaceBuild(port, admin, oldUuid, { platform = 'mac', filename, contents } = {}) {
+    const uuid = crypto.randomUUID();
+    const finalFilename = filename || `test-build-${uuid}.bin`;
+    const finalContents = contents !== undefined ? contents : Buffer.from(`dummy build ${uuid}`);
+
+    const conn = await connect(port);
+    conn.send({ distRegister: { uuid, platform } });
+    const authResult = await admin.respondToChallenge(conn);
+    if (!authResult.success) {
+        await conn.closed();
+        throw new Error(`admin auth failed while replacing (level=${authResult.level})`);
+    }
+
+    const ackMsg = await conn.waitFor((m) => m.payload === 'ack');
+    const uploadToken = ackMsg.ack.uploadToken;
+
+    await httpUpload({ host: 'localhost', port, token: uploadToken, filename: finalFilename, contents: finalContents });
+
+    conn.send({ distReplaceComplete: { newUuid: uuid, oldUuid, filename: finalFilename } });
+    await conn.waitFor((m) => m.payload === 'ack');
+    await conn.close();
+
+    return { uuid, filename: finalFilename, platform, contents: finalContents };
+}
+
 async function undeploy(port, admin, uuid) {
     const conn = await connect(port);
     conn.send({ distUndeploy: { uuid } });
@@ -98,4 +126,4 @@ async function saveStateEdit(conn, uuid, json) {
     return conn.waitFor((m) => m.payload === 'ack' || m.payload === 'stateRequestRejected');
 }
 
-module.exports = { deployBuild, undeploy, listBuilds, requestStateEdit, saveStateEdit, download };
+module.exports = { deployBuild, replaceBuild, undeploy, listBuilds, requestStateEdit, saveStateEdit, download };

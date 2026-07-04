@@ -25,6 +25,8 @@
     "dist:linux": "npm run build:client && npx electron-builder --linux",
     "deploy:mac": "npm run build:client && node scripts/deploy.js mac",
     "deploy:win": "npm run build:client && node scripts/deploy.js win",
+    "deploy:replacement:mac": "npm run build:client && node scripts/deploy-replacement.js mac",
+    "deploy:replacement:win": "npm run build:client && node scripts/deploy-replacement.js win",
     "deploy:linux": "npm run build:client && node scripts/deploy.js linux",
     "undeploy": "node scripts/undeploy.js",
     "edit:state": "node scripts/edit-state.js",

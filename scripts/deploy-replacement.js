@@ -1,0 +1,200 @@
+const crypto = require('crypto');
+const fs = require('fs');
+const https = require('https');
+const path = require('path');
+const { spawn, spawnSync } = require('child_process');
+const Ws = require('ws');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+const codec = require('../server/codec.js');
+const auth = require('../server/auth.js');
+
+const PLATFORM = process.argv[2];
+const OLD_UUID = process.argv[3];
+if (PLATFORM !== 'mac' && PLATFORM !== 'win') {
+    console.error('Usage: node scripts/deploy-replacement.js <mac|win> <old-uuid>');
+    process.exit(1);
+}
+if (!OLD_UUID) {
+    console.error('Usage: node scripts/deploy-replacement.js <mac|win> <old-uuid>');
+    process.exit(1);
+}
+
+const host = process.env.PROD_SERVER_HOST;
+const port = process.env.PROD_SERVER_PORT || '443';
+const SERVER_URL = port === '443' ? `wss://${host}` : `wss://${host}:${port}`;
+const UUID_FILE = path.join(__dirname, '..', 'app-uuid.json');
+const DIST_DIR = path.join(__dirname, '..', 'dist');
+const EXTENSION = PLATFORM === 'mac' ? '.dmg' : '.exe';
+
+const fail = (msg) => {
+    console.error(`[dist] ${msg}`);
+    process.exit(1);
+};
+
+function generateUuid() {
+    const uuid = crypto.randomUUID();
+    fs.writeFileSync(UUID_FILE, JSON.stringify({ uuid }, null, 2) + '\n');
+    console.log(`[dist] generated uuid ${uuid}, wrote ${UUID_FILE}`);
+    return uuid;
+}
+
+function connect() {
+    return new Promise((resolve, reject) => {
+        const ws = new Ws(SERVER_URL, { rejectUnauthorized: false });
+        ws.once('open', () => resolve(ws));
+        ws.once('error', (err) => reject(err));
+    });
+}
+
+function send(ws, payload) {
+    ws.send(codec.encodeClient(payload), { binary: true });
+}
+
+function runElectronBuilder() {
+    return new Promise((resolve, reject) => {
+        const args = [PLATFORM === 'mac' ? '--mac' : '--win'];
+        console.log(`[dist] running electron-builder ${args.join(' ')}`);
+        const child = spawn('npx', ['electron-builder', ...args], {
+            cwd: path.join(__dirname, '..'),
+            stdio: 'inherit',
+        });
+        child.on('exit', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`electron-builder exited with code ${code}`));
+        });
+        child.on('error', reject);
+    });
+}
+
+function findBuiltFile() {
+    const entries = fs.readdirSync(DIST_DIR)
+        .filter((name) => name.toLowerCase().endsWith(EXTENSION))
+        .map((name) => {
+            const full = path.join(DIST_DIR, name);
+            return { name, full, mtime: fs.statSync(full).mtimeMs };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+    if (entries.length === 0) {
+        throw new Error(`no ${EXTENSION} file found in ${DIST_DIR}`);
+    }
+    return entries[0];
+}
+
+async function main() {
+    const newUuid = generateUuid();
+
+    let pendingMessageResolver = null;
+    const incoming = [];
+
+    const nextMessage = () => new Promise((resolve) => {
+        if (incoming.length > 0) resolve(incoming.shift());
+        else pendingMessageResolver = resolve;
+    });
+
+    function pushMessage(msg) {
+        if (pendingMessageResolver) {
+            const r = pendingMessageResolver;
+            pendingMessageResolver = null;
+            r(msg);
+        } else {
+            incoming.push(msg);
+        }
+    }
+
+    function wireSocket(socket) {
+        socket.on('message', (data) => {
+            let msg;
+            try { msg = codec.decodeServer(data); }
+            catch (err) { console.error('[dist] decode error:', err.message); return; }
+            pushMessage(msg);
+        });
+        socket.on('close', () => pushMessage({ payload: '_closed' }));
+    }
+
+    let ws = await connect().catch((err) => fail(`could not connect to ${SERVER_URL}: ${err.message}`));
+    console.log(`[dist] connected to ${SERVER_URL}`);
+    wireSocket(ws);
+
+    send(ws, { distRegister: { uuid: newUuid, platform: PLATFORM } });
+    console.log(`[dist] sent dist_register`);
+
+    let pendingRetry = false;
+    let uploadToken = null;
+    while (true) {
+        const msg = await nextMessage();
+        if (msg.payload === '_closed') {
+            if (!pendingRetry) fail('connection closed before auth completed');
+            console.log('[dist] reconnecting for password authentication');
+            ws = await connect().catch((err) => fail(`could not reconnect to ${SERVER_URL}: ${err.message}`));
+            wireSocket(ws);
+            pendingRetry = false;
+            send(ws, { distRegister: { uuid: newUuid, platform: PLATFORM } });
+        } else if (msg.payload === 'authChallenge') {
+            console.log('[dist] received auth_challenge, responding');
+            const response = await auth.handleAuthChallenge(msg.authChallenge);
+            send(ws, { authResponse: response });
+        } else if (msg.payload === 'authResult') {
+            auth.handleAuthResult(msg.authResult);
+            const variant = msg.authResult.password || msg.authResult.key || {};
+            const isKeyFailure = !!(msg.authResult.key && !msg.authResult.key.success);
+            if (isKeyFailure) { pendingRetry = true; }
+            else if (!variant.success) { fail('authentication failed'); }
+        } else if (msg.payload === 'ack') {
+            uploadToken = msg.ack.uploadToken;
+            break;
+        }
+    }
+    if (!uploadToken) fail('server did not issue an upload token');
+
+    console.log('[dist] auth complete; running electron-builder');
+    await runElectronBuilder().catch((err) => fail(err.message));
+
+    const built = findBuiltFile();
+    console.log(`[dist] found built file ${built.name} (${built.mtime})`);
+    const contents = fs.readFileSync(built.full);
+    console.log(`[dist] uploading ${contents.length} bytes via HTTPS`);
+
+    await new Promise((resolve, reject) => {
+        const req = https.request({
+            hostname: host,
+            port: parseInt(port, 10),
+            path: '/upload',
+            method: 'POST',
+            rejectUnauthorized: false,
+            headers: {
+                'Authorization': `Bearer ${uploadToken}`,
+                'X-Filename': built.name,
+                'Content-Type': 'application/octet-stream',
+                'Content-Length': contents.length,
+            },
+        }, (res) => {
+            res.resume();
+            if (res.statusCode === 200) resolve();
+            else reject(new Error(`upload failed: HTTP ${res.statusCode}`));
+        });
+        req.on('error', reject);
+        req.end(contents);
+    });
+    console.log('[dist] upload complete');
+
+    send(ws, { distReplaceComplete: { newUuid, oldUuid: OLD_UUID, filename: built.name } });
+
+    while (true) {
+        const msg = await nextMessage();
+        if (msg.payload === '_closed') fail('connection closed before replacement acknowledged');
+        if (msg.payload === 'ack') break;
+    }
+
+    console.log(`[dist] replacement acknowledged — old uuid ${OLD_UUID} replaced by ${newUuid}`);
+    ws.close();
+
+    console.log(`[dist] launching edit:state for ${newUuid}`);
+    const result = spawnSync('node', [path.join(__dirname, 'edit-state.js'), newUuid], {
+        stdio: 'inherit',
+        cwd: path.join(__dirname, '..'),
+    });
+    if (result.error) fail(`edit-state failed: ${result.error.message}`);
+    process.exit(result.status || 0);
+}
+
+main().catch((err) => fail(err.stack || err.message));

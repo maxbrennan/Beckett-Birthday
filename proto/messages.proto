@@ -63,6 +63,7 @@ message DistComplete         { string uuid = 1; string filename = 2; }
 message DistStateEdit        { string uuid = 1; }
 message DistStateEditSave    { string uuid = 1; string json = 2; }
 message DistStateEditPayload { string uuid = 1; string json = 2; }
+message DistReplaceComplete  { string new_uuid = 1; string old_uuid = 2; string filename = 3; }
 
 message DistListEntry {
   string uuid     = 1;
@@ -92,8 +93,9 @@ message ClientMessage {
     StateRequest      state_request      = 5;
     DistUndeploy      dist_undeploy      = 6;
     DistList          dist_list          = 7;
-    DistStateEdit     dist_state_edit      = 8;
-    DistStateEditSave dist_state_edit_save = 9;
-    DistComplete      dist_complete        = 10;
+    DistStateEdit        dist_state_edit       = 8;
+    DistStateEditSave    dist_state_edit_save  = 9;
+    DistComplete         dist_complete         = 10;
+    DistReplaceComplete  dist_replace_complete = 11;
   }
 }
