@@ -63,6 +63,8 @@ init wsUrl =
       , myUuid = Nothing
       , wsUrl = wsUrl
       , questions = []
+      , iqFailedOnce = False
+      , iqOfferMade = False
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
@@ -102,7 +104,8 @@ iqFail : Model -> IQTestState -> ( Model, Cmd Msg )
 iqFail model state =
     ( clearPending
         { model
-            | screen =
+            | iqFailedOnce = True
+            , screen =
                 IQTestScreen
                     { questionIdx = state.questionIdx
                     , totalDings = state.totalDings
@@ -348,9 +351,102 @@ update msg model =
         IQTestBeginPressed ->
             case model.screen of
                 IQTestScreen iqScreen ->
-                    ( model
+                    if model.iqFailedOnce && not model.iqOfferMade then
+                        ( { model | screen = IQTestSkipOfferScreen iqScreen }
+                        , Cmd.none
+                        )
+
+                    else
+                        ( model
+                        , Random.generate IQTestStarted (iqTestInitGen iqScreen.totalDings)
+                        )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        IQSkipOfferDeclined ->
+            case model.screen of
+                IQTestSkipOfferScreen iqScreen ->
+                    ( { model | iqOfferMade = True, screen = IQTestScreen iqScreen }
                     , Random.generate IQTestStarted (iqTestInitGen iqScreen.totalDings)
                     )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        IQSkipOfferAccepted ->
+            case model.screen of
+                IQTestSkipOfferScreen iqScreen ->
+                    ( clearPending
+                        { model
+                            | iqOfferMade = True
+                            , screen =
+                                IQTestSkipAnimScreen
+                                    { questionIdx = iqScreen.questionIdx
+                                    , displayCount = 0
+                                    , total = iqScreen.totalDings
+                                    , phase = SkipCounterIn
+                                    }
+                        }
+                        |> schedule 800 IQSkipAnimNextPhase
+                    , Cmd.none
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        IQSkipAnimNextPhase ->
+            case model.screen of
+                IQTestSkipAnimScreen state ->
+                    case state.phase of
+                        SkipCounterIn ->
+                            ( { model | screen = IQTestSkipAnimScreen { state | phase = SkipTick } }
+                                |> schedule counterTickMs IQSkipCounterTick
+                            , Cmd.none
+                            )
+
+                        SkipCounterOut ->
+                            let
+                                nextIdx =
+                                    state.questionIdx + 1
+                            in
+                            ( clearPending { model | screen = BlankScreen nextIdx }
+                                |> schedule 1000 (PlaySong nextIdx)
+                            , Cmd.none
+                            )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        IQSkipCounterTick ->
+            case model.screen of
+                IQTestSkipAnimScreen state ->
+                    case state.phase of
+                        SkipTick ->
+                            if state.displayCount < state.total then
+                                let
+                                    targetId =
+                                        "ding-audio-" ++ String.fromInt (modBy dingSlotCount model.dingKey)
+                                in
+                                ( { model
+                                    | screen = IQTestSkipAnimScreen { state | displayCount = state.displayCount + 1 }
+                                    , dingKey = model.dingKey + 1
+                                  }
+                                    |> schedule counterTickMs IQSkipCounterTick
+                                , setDomProperty { elementId = targetId, property = "volume", value = Encode.float 0.3 }
+                                )
+
+                            else
+                                ( { model | screen = IQTestSkipAnimScreen { state | phase = SkipCounterOut } }
+                                    |> schedule 1500 IQSkipAnimNextPhase
+                                , Cmd.none
+                                )
+
+                        _ ->
+                            ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )

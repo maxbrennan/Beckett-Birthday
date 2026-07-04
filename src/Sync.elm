@@ -85,6 +85,26 @@ encodeFakeFlashPhase phase =
         )
 
 
+encodeIQSkipPhase : IQSkipPhase -> Encode.Value
+encodeIQSkipPhase phase =
+    Encode.string
+        (case phase of
+            SkipCounterIn -> "SkipCounterIn"
+            SkipTick -> "SkipTick"
+            SkipCounterOut -> "SkipCounterOut"
+        )
+
+
+encodeIQSkipAnimState : IQSkipAnimState -> Encode.Value
+encodeIQSkipAnimState s =
+    Encode.object
+        [ ( "questionIdx", Encode.int s.questionIdx )
+        , ( "displayCount", Encode.int s.displayCount )
+        , ( "total", Encode.int s.total )
+        , ( "phase", encodeIQSkipPhase s.phase )
+        ]
+
+
 encodeIQTestScreenState : IQTestScreenState -> Encode.Value
 encodeIQTestScreenState s =
     Encode.object
@@ -183,6 +203,12 @@ encodeScreen scr =
         FakeFlashCaughtScreen state ->
             Encode.object [ ( "tag", Encode.string "FakeFlashCaughtScreen" ), ( "state", encodeFakeFlashCaughtState state ) ]
 
+        IQTestSkipOfferScreen state ->
+            Encode.object [ ( "tag", Encode.string "IQTestSkipOfferScreen" ), ( "state", encodeIQTestScreenState state ) ]
+
+        IQTestSkipAnimScreen state ->
+            Encode.object [ ( "tag", Encode.string "IQTestSkipAnimScreen" ), ( "state", encodeIQSkipAnimState state ) ]
+
         WinScreen ->
             Encode.object [ ( "tag", Encode.string "WinScreen" ) ]
 
@@ -231,6 +257,12 @@ encodeMsg msg =
 
         FakeFlashNextPhase ->
             Encode.object [ ( "tag", Encode.string "FakeFlashNextPhase" ) ]
+
+        IQSkipAnimNextPhase ->
+            Encode.object [ ( "tag", Encode.string "IQSkipAnimNextPhase" ) ]
+
+        IQSkipCounterTick ->
+            Encode.object [ ( "tag", Encode.string "IQSkipCounterTick" ) ]
 
         CountdownTick ->
             Encode.object [ ( "tag", Encode.string "CountdownTick" ) ]
@@ -287,6 +319,8 @@ encodeModel model =
         , ( "pendingStartTime", encodeMaybeFloat model.pendingStartTime )
         , ( "wsClientId", encodeMaybeString model.wsClientId )
         , ( "timerEndsAt", Encode.float model.timerEndsAt )
+        , ( "iqFailedOnce", Encode.bool model.iqFailedOnce )
+        , ( "iqOfferMade", Encode.bool model.iqOfferMade )
         ]
 
 
@@ -313,6 +347,29 @@ decodeFakeFlashPhase =
                     "FfCounterOut" -> Decode.succeed FfCounterOut
                     _ -> Decode.fail ("Unknown FakeFlashPhase: " ++ s)
             )
+
+
+decodeIQSkipPhase : Decoder IQSkipPhase
+decodeIQSkipPhase =
+    Decode.string
+        |> Decode.andThen
+            (\s ->
+                case s of
+                    "SkipCounterIn" -> Decode.succeed SkipCounterIn
+                    "SkipTick" -> Decode.succeed SkipTick
+                    "SkipCounterOut" -> Decode.succeed SkipCounterOut
+                    _ -> Decode.fail ("Unknown IQSkipPhase: " ++ s)
+            )
+
+
+decodeIQSkipAnimState : Decoder IQSkipAnimState
+decodeIQSkipAnimState =
+    Decode.map4
+        (\qi dc t ph -> { questionIdx = qi, displayCount = dc, total = t, phase = ph })
+        (Decode.field "questionIdx" Decode.int)
+        (Decode.field "displayCount" Decode.int)
+        (Decode.field "total" Decode.int)
+        (Decode.field "phase" decodeIQSkipPhase)
 
 
 decodeIQTestScreenState : Decoder IQTestScreenState
@@ -436,6 +493,12 @@ decodeScreen =
                     "FakeFlashCaughtScreen" ->
                         Decode.map FakeFlashCaughtScreen (Decode.field "state" decodeFakeFlashCaughtState)
 
+                    "IQTestSkipOfferScreen" ->
+                        Decode.map IQTestSkipOfferScreen (Decode.field "state" decodeIQTestScreenState)
+
+                    "IQTestSkipAnimScreen" ->
+                        Decode.map IQTestSkipAnimScreen (Decode.field "state" decodeIQSkipAnimState)
+
                     "WinScreen" ->
                         Decode.succeed WinScreen
 
@@ -494,6 +557,12 @@ decodeMsg =
                     "FakeFlashNextPhase" ->
                         Decode.succeed FakeFlashNextPhase
 
+                    "IQSkipAnimNextPhase" ->
+                        Decode.succeed IQSkipAnimNextPhase
+
+                    "IQSkipCounterTick" ->
+                        Decode.succeed IQSkipCounterTick
+
                     "CountdownTick" ->
                         Decode.succeed CountdownTick
 
@@ -537,7 +606,7 @@ decodeModel : Decoder Model
 decodeModel =
     Decode.map7
         (\scr jp n pend ss dk pst ->
-            \wci tea ->
+            \wci tea failedOnce offerMade ->
                 { screen = scr
                 , jeopardyPlaying = jp
                 , now = n
@@ -550,6 +619,8 @@ decodeModel =
                 , myUuid = Nothing
                 , wsUrl = ""
                 , questions = []
+                , iqFailedOnce = failedOnce
+                , iqOfferMade = offerMade
                 }
         )
         (Decode.field "screen" decodeScreen)
@@ -561,7 +632,9 @@ decodeModel =
         (Decode.field "pendingStartTime" (Decode.nullable Decode.float))
         |> Decode.andThen
             (\partial ->
-                Decode.map2 partial
+                Decode.map4 partial
                     (Decode.field "wsClientId" (Decode.nullable Decode.string))
                     (Decode.field "timerEndsAt" Decode.float)
+                    (Decode.oneOf [ Decode.field "iqFailedOnce" Decode.bool, Decode.succeed False ])
+                    (Decode.oneOf [ Decode.field "iqOfferMade" Decode.bool, Decode.succeed False ])
             )

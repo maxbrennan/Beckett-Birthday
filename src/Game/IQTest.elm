@@ -179,6 +179,23 @@ type alias FakeFlashCaughtState =
     }
 
 
+-- Phases of the one-step count-up animation shown when the user accepts the
+-- skip offer: the counter fades in at 0/total, ticks up to total/total, then
+-- fades out before advancing to the next song.
+type IQSkipPhase
+    = SkipCounterIn
+    | SkipTick
+    | SkipCounterOut
+
+
+type alias IQSkipAnimState =
+    { questionIdx : Int
+    , displayCount : Int
+    , total : Int
+    , phase : IQSkipPhase
+    }
+
+
 -- ── Generators ────────────────────────────────────────────────────────────────
 
 

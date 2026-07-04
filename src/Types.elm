@@ -27,6 +27,8 @@ type Screen
     | IQTestCountdownScreen IQTestCountdownState
     | IQTestActiveScreen IQTestState
     | FakeFlashCaughtScreen FakeFlashCaughtState
+    | IQTestSkipOfferScreen IQTestScreenState
+    | IQTestSkipAnimScreen IQSkipAnimState
     | WinScreen
     | TimedOutScreen
     | CheckingAnswerScreen Screen
@@ -53,6 +55,8 @@ type alias Model =
     , myUuid : Maybe String
     , wsUrl : String
     , questions : List Question
+    , iqFailedOnce : Bool
+    , iqOfferMade : Bool
     }
 
 
@@ -77,6 +81,10 @@ type Msg
     | FakeFlashNextPhase
     | FakeFlashCounterTick
     | FakeFlashWindowExpired
+    | IQSkipOfferAccepted
+    | IQSkipOfferDeclined
+    | IQSkipAnimNextPhase
+    | IQSkipCounterTick
     | SongMetadataLoaded
     | DomPropertyReceived { elementId : String, property : String, value : Decode.Value }
     | DomPropertyError String
