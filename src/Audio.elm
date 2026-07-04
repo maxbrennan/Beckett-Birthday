@@ -67,7 +67,7 @@ viewAudio model =
                 Just songSrc ->
                     audio
                         [ id "quiz-audio"
-                        , src ("assets/" ++ songSrc)
+                        , src ("assets/songs/" ++ songSrc)
                         , autoplay True
                         , on "loadedmetadata" (Decode.succeed SongMetadataLoaded)
                         , on "ended" (Decode.succeed (TrackEnded songSrc))

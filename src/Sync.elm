@@ -550,6 +550,7 @@ decodeModel =
                 , myUuid = Nothing
                 , wsUrl = ""
                 , questions = []
+                , winText = ""
                 }
         )
         (Decode.field "screen" decodeScreen)

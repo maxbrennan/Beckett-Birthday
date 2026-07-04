@@ -43,7 +43,7 @@
       "proto/**/*",
       "assets/**/*",
       "app-uuid.json",
-      "quiz-questions.json"
+      "config/**/*"
     ],
     "mac": {
       "icon": "assets/icon.icns",

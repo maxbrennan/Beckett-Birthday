@@ -6,10 +6,10 @@ import Json.Decode as Decode
 
 -- ── Music Quiz Questions ──────────────────────────────────────────────────────
 --
--- Each entry: song file in assets/ and the list of accepted answer strings.
+-- Each entry: song file in assets/songs/ and the list of accepted answer strings.
 -- Answers are compared case-insensitively after normalization (see `normalize`).
 --
--- The question list itself lives in `quiz-questions.json` (repo root) so it can
+-- The question list itself lives in `config/quiz-questions.json` so it can
 -- be edited per-version without touching Elm source. It is loaded at startup via
 -- the `readFile` port and decoded with `decodeQuestions` below.
 
