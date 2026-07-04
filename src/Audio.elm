@@ -53,7 +53,7 @@ viewAudio model =
             if model.jeopardyPlaying then
                 audio
                     [ id "jeopardy-audio"
-                    , src "assets/songs/jeopardy-theme.mp3"
+                    , src "assets/jeopardy-theme.mp3"
                     , autoplay True
                     , loop True
                     ]

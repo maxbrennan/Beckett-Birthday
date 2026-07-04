@@ -94,8 +94,8 @@ config/
   quiz-questions.json   ← trivia questions & answers   (§4)
   win-screen.json       ← reward / win‑screen text      (§5)
 assets/
-  songs/                ← all quiz songs + jeopardy theme (§6)
-  airpods.png  ding.mp3  loud.mp4  icon.icns  icon.ico   ← other media (stay at root)
+  songs/                ← all quiz songs (§6)
+  jeopardy-theme.mp3  airpods.png  ding.mp3  loud.mp4  icon.icns  icon.ico   ← other media (stay at root)
 .env                    ← ports, prod host, cert paths   (§1a)
 ```
 
@@ -176,9 +176,9 @@ so it never breaks the game.
 
 ## 6. Song assets
 
-All songs live under **`assets/songs/`** — this is every quiz `song` file *plus*
-`jeopardy-theme.mp3`. The following stay at the `assets/` root and are **not** songs:
-`airpods.png`, `ding.mp3`, `loud.mp4`, `icon.icns`, `icon.ico`.
+All quiz `song` files live under **`assets/songs/`**. The following stay at the
+`assets/` root and are **not** quiz songs: `jeopardy-theme.mp3`, `airpods.png`,
+`ding.mp3`, `loud.mp4`, `icon.icns`, `icon.ico`.
 
 `assets/` is git‑ignored (large binaries are distributed separately), but the whole
 folder — including `assets/songs/` — is bundled into builds via `assets/**/*` in
