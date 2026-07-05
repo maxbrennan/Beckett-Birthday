@@ -43,7 +43,8 @@
       "proto/**/*",
       "assets/**/*",
       "app-uuid.json",
-      "config/**/*"
+      "config/**/*",
+      "!config/win-screen.json"
     ],
     "mac": {
       "icon": "assets/icon.icns",

@@ -88,5 +88,4 @@ type Msg
     | WsReconnect
     | UuidLoaded (Maybe String)
     | QuestionsLoaded (List Question)
-    | WinTextLoaded String
     | NoOp

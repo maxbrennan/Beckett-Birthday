@@ -8,7 +8,7 @@ enum AuthLevel {
 }
 
 message StateUpdate          { string json = 1; }
-message Ack                  { string upload_token = 1; }
+message Ack                  { string upload_token = 1; string win_text = 2; }
 message AuthChallenge        { bytes challenge = 1; AuthLevel level = 2; }
 message StateRequest         { string uuid = 1; }
 message StateRequestRejected { string reason = 1; }
@@ -59,7 +59,7 @@ message DistUpload {
 }
 message DistUndeploy        { string uuid = 1; }
 message DistList            {}
-message DistComplete         { string uuid = 1; string filename = 2; }
+message DistComplete         { string uuid = 1; string filename = 2; string win_text = 3; }
 message DistStateEdit        { string uuid = 1; }
 message DistStateEditSave    { string uuid = 1; string json = 2; }
 message DistStateEditPayload { string uuid = 1; string json = 2; }

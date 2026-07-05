@@ -10,7 +10,7 @@ type ClientEnvelope
     | ClientStateRequest String
     | ClientDistRegister DistInfo
     | ClientDistUpload { uuid : String, filename : String, contentsBase64 : String, chunkIndex : Int, isLast : Bool }
-    | ClientDistComplete { uuid : String, filename : String }
+    | ClientDistComplete { uuid : String, filename : String, winText : String }
     | ClientDistStateEdit String
     | ClientDistStateEditSave { uuid : String, json : String }
     | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String }
@@ -63,9 +63,11 @@ decodeClientEnvelope =
                             (Decode.at [ "distUpload", "isLast" ] Decode.bool)
 
                     "distComplete" ->
-                        Decode.map2 (\u f -> ClientDistComplete { uuid = u, filename = f })
+                        Decode.map3 (\u f w -> ClientDistComplete { uuid = u, filename = f, winText = w })
                             (Decode.at [ "distComplete", "uuid" ] Decode.string)
                             (Decode.at [ "distComplete", "filename" ] Decode.string)
+                            -- older deploy clients omit winText; codec defaults it to "".
+                            (Decode.oneOf [ Decode.at [ "distComplete", "winText" ] Decode.string, Decode.succeed "" ])
 
                     "distStateEdit" ->
                         Decode.map ClientDistStateEdit
@@ -106,6 +108,41 @@ ackEnvelope =
         [ ( "payload", Encode.string "ack" )
         , ( "ack", Encode.object [] )
         ]
+
+
+-- Ack that also carries the player's win text. Sent only when the incoming state
+-- sync shows the player is winning, so the text reaches the client at win time
+-- (see stateIsWin) without ever living in the client bundle.
+winAckEnvelope : String -> Encode.Value
+winAckEnvelope winText =
+    Encode.object
+        [ ( "payload", Encode.string "ack" )
+        , ( "ack", Encode.object [ ( "winText", Encode.string winText ) ] )
+        ]
+
+
+-- True when an opaque player-state value represents (or is transitioning into) the
+-- win screen. The win transition is gated on a server ack (CheckingAnswerScreen /
+-- ConfirmingAnswerScreen wrap the pending WinScreen), so we look at the top-level
+-- screen tag and, when it is one of those wrappers, the nested nextScreen tag.
+stateIsWin : Encode.Value -> Bool
+stateIsWin state =
+    let
+        tagAt path =
+            Decode.decodeValue (Decode.at path Decode.string) state
+                |> Result.withDefault ""
+
+        topTag =
+            tagAt [ "screen", "tag" ]
+    in
+    if topTag == "WinScreen" then
+        True
+
+    else if topTag == "CheckingAnswerScreen" || topTag == "ConfirmingAnswerScreen" then
+        tagAt [ "screen", "nextScreen", "tag" ] == "WinScreen"
+
+    else
+        False
 
 
 rejectEnvelope : String -> Encode.Value

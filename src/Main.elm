@@ -47,13 +47,6 @@ port readFile : String -> Cmd msg
 port readFileResult : ({ path : String, contents : Maybe String, error : Maybe String } -> msg) -> Sub msg
 
 
--- Shown on the win screen. Overridable at runtime via config/win-screen.json;
--- this is the fallback used if that file is missing or malformed.
-defaultWinText : String
-defaultWinText =
-    "Text \"creeper... awwww man\" to Max to claim your reward!"
-
-
 init : String -> ( Model, Cmd Msg )
 init wsUrl =
     ( { screen = WsConnectingScreen
@@ -68,12 +61,11 @@ init wsUrl =
       , myUuid = Nothing
       , wsUrl = wsUrl
       , questions = []
-      , winText = defaultWinText
+      , winText = ""
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
         , readFile "config/quiz-questions.json"
-        , readFile "config/win-screen.json"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -704,8 +696,13 @@ update msg model =
                 Ok (ServerRejected _) ->
                     ( { model | screen = WsErrorScreen, wsClientId = Nothing }, Cmd.none )
 
-                Ok ServerAck ->
+                Ok (ServerAck winText) ->
                     case model.screen of
+                        ConfirmingAnswerScreen WinScreen ->
+                            -- The server delivers the win text on this ack, at the moment
+                            -- the win screen is revealed, so it never ships in the bundle.
+                            ( { model | screen = WinScreen, winText = winText }, Cmd.none )
+
                         ConfirmingAnswerScreen nextScreen ->
                             ( { model | screen = nextScreen }, Cmd.none )
 
@@ -787,9 +784,6 @@ update msg model =
 
         QuestionsLoaded loadedQuestions ->
             ( { model | questions = loadedQuestions }, Cmd.none )
-
-        WinTextLoaded text ->
-            ( { model | winText = text }, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )
@@ -897,13 +891,6 @@ subscriptions model =
                 case path of
                     "config/quiz-questions.json" ->
                         QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
-
-                    "config/win-screen.json" ->
-                        WinTextLoaded
-                            (contents
-                                |> Maybe.andThen (Decode.decodeString (Decode.field "text" Decode.string) >> Result.toMaybe)
-                                |> Maybe.withDefault defaultWinText
-                            )
 
                     _ ->
                         case contents of

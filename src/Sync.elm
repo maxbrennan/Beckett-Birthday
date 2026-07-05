@@ -11,7 +11,7 @@ import Types exposing (..)
 
 type ServerEnvelope
     = ServerStateUpdate String
-    | ServerAck
+    | ServerAck String
     | ServerAuth
     | ServerRejected String
     | ServerUnknown
@@ -28,7 +28,10 @@ decodeServerEnvelope =
                             |> Decode.map ServerStateUpdate
 
                     "ack" ->
-                        Decode.succeed ServerAck
+                        -- The win text rides on the ack that gates the win-screen
+                        -- transition; ordinary acks default it to "".
+                        Decode.oneOf [ Decode.at [ "ack", "winText" ] Decode.string, Decode.succeed "" ]
+                            |> Decode.map ServerAck
 
                     "authChallenge" ->
                         Decode.succeed ServerAuth
