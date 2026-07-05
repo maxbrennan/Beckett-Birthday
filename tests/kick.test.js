@@ -83,6 +83,58 @@ describe('kick behavior', () => {
         expect(JSON.parse(afterSaveResult.stateUpdate.json)).toEqual(newState);
     });
 
+    // The two tests below pin the intended rejoin behavior for admin-edited state, using the
+    // real `{ tag: … }` screen shape (the reconnect test above uses an opaque string screen,
+    // which sidesteps the BeginScreen-vs-mid-game branch this behavior actually turns on).
+    test('editing a player onto a mid-game screen: the reconnect resumes via BeginScreen with that screen stowed in savedState', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'Ryan Birthday-edit-midgame.dmg',
+        });
+
+        const midGameState = { screen: { tag: 'QuizScreen' }, pending: [], now: 1234, jeopardyPlaying: false, savedState: null };
+        const { conn: adminConn } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
+        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(midGameState));
+        expect(saveResult.payload).toBe('ack');
+        await adminConn.close();
+
+        // The edited screen isn't BeginScreen, so the reconnect snapshots it: reset to
+        // BeginScreen and stow the mid-game screen under savedState, so the player resumes
+        // via the jeopardy Start flow rather than being dropped straight into the quiz.
+        const { result } = await connectAsPlayer(TEST_PORT, build.uuid);
+        expect(result.payload).toBe('stateUpdate');
+        const delivered = JSON.parse(result.stateUpdate.json);
+        expect(delivered.screen.tag).toBe('BeginScreen');
+        expect(delivered.jeopardyPlaying).toBe(true);
+        expect(delivered.savedState.screen.tag).toBe('QuizScreen');
+    });
+
+    test('editing a player onto a BeginScreen state: the reconnect delivers it verbatim, savedState preserved', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'Ryan Birthday-edit-begin.dmg',
+        });
+
+        // A BeginScreen state that already carries a savedState (e.g. an admin parking a
+        // player at the resume prompt for a specific screen).
+        const beginState = {
+            screen: { tag: 'BeginScreen' },
+            jeopardyPlaying: true,
+            pending: [],
+            savedState: { screen: { tag: 'QuizScreen' }, pending: [], savedAt: 500, songResumeTime: null, videoResumeTime: null },
+        };
+        const { conn: adminConn } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
+        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(beginState));
+        expect(saveResult.payload).toBe('ack');
+        await adminConn.close();
+
+        // Already on BeginScreen, so the reconnect delivers it untouched — no re-snapshot,
+        // and the existing savedState is carried through rather than clobbered.
+        const { result } = await connectAsPlayer(TEST_PORT, build.uuid);
+        expect(result.payload).toBe('stateUpdate');
+        expect(JSON.parse(result.stateUpdate.json)).toEqual(beginState);
+    });
+
     test('undeploying kicks the live player, and reconnecting with the now-unregistered uuid is rejected', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
