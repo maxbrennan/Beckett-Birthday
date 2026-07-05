@@ -3,6 +3,7 @@ module Server.Protocol exposing (..)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Server.Distribution exposing (DistInfo)
+import Server.Registry exposing (RegistryEntry)
 
 
 type ClientEnvelope
@@ -10,11 +11,12 @@ type ClientEnvelope
     | ClientStateRequest String
     | ClientDistRegister DistInfo
     | ClientDistUpload { uuid : String, filename : String, contentsBase64 : String, chunkIndex : Int, isLast : Bool }
-    | ClientDistComplete { uuid : String, filename : String }
+    | ClientDistComplete { uuid : String, filename : String, winText : String }
     | ClientDistStateEdit String
     | ClientDistStateEditSave { uuid : String, json : String }
     | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String }
     | ClientDistUndeploy String
+    | ClientDistList
     | ClientUnknown
 
 
@@ -63,9 +65,11 @@ decodeClientEnvelope =
                             (Decode.at [ "distUpload", "isLast" ] Decode.bool)
 
                     "distComplete" ->
-                        Decode.map2 (\u f -> ClientDistComplete { uuid = u, filename = f })
+                        Decode.map3 (\u f w -> ClientDistComplete { uuid = u, filename = f, winText = w })
                             (Decode.at [ "distComplete", "uuid" ] Decode.string)
                             (Decode.at [ "distComplete", "filename" ] Decode.string)
+                            -- older deploy clients omit winText; codec defaults it to "".
+                            (Decode.oneOf [ Decode.at [ "distComplete", "winText" ] Decode.string, Decode.succeed "" ])
 
                     "distStateEdit" ->
                         Decode.map ClientDistStateEdit
@@ -87,6 +91,9 @@ decodeClientEnvelope =
                         Decode.map ClientDistUndeploy
                             (Decode.at [ "distUndeploy", "uuid" ] Decode.string)
 
+                    "distList" ->
+                        Decode.succeed ClientDistList
+
                     _ ->
                         Decode.succeed ClientUnknown
             )
@@ -106,6 +113,76 @@ ackEnvelope =
         [ ( "payload", Encode.string "ack" )
         , ( "ack", Encode.object [] )
         ]
+
+
+{-| A plain ack carrying a marker that tells the JS host to mint and attach an
+upload token (the crypto stays in JS). The marker never reaches the protobuf
+codec: `sendToClient` in server/index.js rewrites the payload to
+`{ ack : { uploadToken } }` before encoding.
+-}
+ackWithUploadTokenEnvelope : Encode.Value
+ackWithUploadTokenEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "ack" )
+        , ( "ack", Encode.object [ ( "mintUploadToken", Encode.bool True ) ] )
+        ]
+
+
+distListResultEnvelope : List RegistryEntry -> Encode.Value
+distListResultEnvelope entries =
+    Encode.object
+        [ ( "payload", Encode.string "distListResult" )
+        , ( "distListResult"
+          , Encode.object
+                [ ( "entries"
+                  , Encode.list
+                        (\e ->
+                            Encode.object
+                                [ ( "uuid", Encode.string e.uuid )
+                                , ( "filename", Encode.string e.filename )
+                                , ( "platform", Encode.string e.platform )
+                                ]
+                        )
+                        entries
+                  )
+                ]
+          )
+        ]
+
+
+-- Dedicated message carrying the player's win text. Sent only when the incoming state
+-- sync shows the player is winning (see stateIsWin), so the text reaches the client at
+-- win time without ever living in the client bundle.
+winTextEnvelope : String -> Encode.Value
+winTextEnvelope text =
+    Encode.object
+        [ ( "payload", Encode.string "winText" )
+        , ( "winText", Encode.object [ ( "text", Encode.string text ) ] )
+        ]
+
+
+-- True when an opaque player-state value represents (or is transitioning into) the
+-- win screen. The client reveals the win screen only on the winText message, so we look
+-- at the top-level screen tag and, when it is a CheckingAnswerScreen/ConfirmingAnswerScreen
+-- wrapper, the nested nextScreen tag, to spot the pending WinScreen.
+stateIsWin : Encode.Value -> Bool
+stateIsWin state =
+    let
+        tagAt path =
+            Decode.decodeValue (Decode.at path Decode.string) state
+                |> Result.withDefault ""
+
+        topTag =
+            tagAt [ "screen", "tag" ]
+    in
+    if topTag == "WinScreen" then
+        True
+
+    else if topTag == "CheckingAnswerScreen" || topTag == "ConfirmingAnswerScreen" then
+        tagAt [ "screen", "nextScreen", "tag" ] == "WinScreen"
+
+    else
+        False
 
 
 rejectEnvelope : String -> Encode.Value

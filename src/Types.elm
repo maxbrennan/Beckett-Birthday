@@ -29,7 +29,10 @@ type Screen
     | FakeFlashCaughtScreen FakeFlashCaughtState
     | IQTestSkipOfferScreen IQTestScreenState
     | IQTestSkipAnimScreen IQSkipAnimState
-    | WinScreen
+      -- Carries the personalized win text, delivered by the server at win time (never
+      -- bundled into the client). The text is dropped on serialization so it never lands
+      -- in persisted state — see encodeScreen/decodeScreen in Sync.elm.
+    | WinScreen String
     | TimedOutScreen
     | CheckingAnswerScreen Screen
     | ConfirmingAnswerScreen Screen
@@ -56,7 +59,6 @@ type alias Model =
     , wsUrl : String
     , questions : List Question
     , iqOfferMade : Bool
-    , winText : String
     }
 
 
@@ -95,5 +97,4 @@ type Msg
     | WsReconnect
     | UuidLoaded (Maybe String)
     | QuestionsLoaded (List Question)
-    | WinTextLoaded String
     | NoOp

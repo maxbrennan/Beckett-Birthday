@@ -51,6 +51,7 @@ if (require.main === module) {
     const port = process.env.PROD_SERVER_PORT || '443';
     const SERVER_URL = port === '443' ? `wss://${host}` : `wss://${host}:${port}`;
     const UUID_FILE = path.join(__dirname, '..', 'app-uuid.json');
+    const WIN_SCREEN_FILE = path.join(__dirname, '..', 'config', 'win-screen.json');
     const DIST_DIR = path.join(__dirname, '..', 'dist');
     const EXTENSION = PLATFORM === 'mac' ? '.dmg' : PLATFORM === 'win' ? '.exe' : '.AppImage';
 
@@ -58,6 +59,28 @@ if (require.main === module) {
         console.error(`[dist] ${msg}`);
         process.exit(1);
     };
+
+    // The win text lives only on the server (stored per-build in builds.jsonl), so it is
+    // read here at deploy time and sent with distComplete rather than bundled into the
+    // client. config/win-screen.json is excluded from the electron-builder files list.
+    function readWinText() {
+        let raw;
+        try {
+            raw = fs.readFileSync(WIN_SCREEN_FILE, 'utf8');
+        } catch (err) {
+            fail(`could not read ${WIN_SCREEN_FILE}: ${err.message}`);
+        }
+        let text;
+        try {
+            text = JSON.parse(raw).text;
+        } catch (err) {
+            fail(`could not parse ${WIN_SCREEN_FILE}: ${err.message}`);
+        }
+        if (typeof text !== 'string' || text === '') {
+            fail(`${WIN_SCREEN_FILE} must contain a non-empty "text" string`);
+        }
+        return text;
+    }
 
     function generateUuid() {
         const uuid = crypto.randomUUID();
@@ -179,6 +202,10 @@ if (require.main === module) {
         }
         if (!uploadToken) fail('server did not issue an upload token');
 
+        // Read (and validate) the win text before the slow electron-builder run so a
+        // missing/malformed config fails fast rather than after a full build.
+        const winText = readWinText();
+
         console.log('[dist] auth complete; running electron-builder');
         await runElectronBuilder().catch((err) => fail(err.message));
 
@@ -190,7 +217,7 @@ if (require.main === module) {
         await uploadBuild({ host, port, token: uploadToken, filename: built.name, contents });
         console.log('[dist] upload complete');
 
-        send(ws, { distComplete: { uuid, filename: built.name } });
+        send(ws, { distComplete: { uuid, filename: built.name, winText } });
 
         while (true) {
             const msg = await nextMessage();

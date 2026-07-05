@@ -660,7 +660,7 @@ viewScreen model =
                     [ text counterText ]
                 ]
 
-        WinScreen ->
+        WinScreen winText ->
             screen
                 [ p
                     [ style "font-size" "48px"
@@ -669,7 +669,7 @@ viewScreen model =
                     , style "margin" "0"
                     , style "font-weight" "bold"
                     ]
-                    [ text model.winText ]
+                    [ text winText ]
                 ]
 
         TimedOutScreen ->

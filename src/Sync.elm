@@ -12,6 +12,7 @@ import Types exposing (..)
 type ServerEnvelope
     = ServerStateUpdate String
     | ServerAck
+    | ServerWinText String
     | ServerAuth
     | ServerRejected String
     | ServerUnknown
@@ -29,6 +30,10 @@ decodeServerEnvelope =
 
                     "ack" ->
                         Decode.succeed ServerAck
+
+                    "winText" ->
+                        Decode.at [ "winText", "text" ] Decode.string
+                            |> Decode.map ServerWinText
 
                     "authChallenge" ->
                         Decode.succeed ServerAuth
@@ -209,7 +214,9 @@ encodeScreen scr =
         IQTestSkipAnimScreen state ->
             Encode.object [ ( "tag", Encode.string "IQTestSkipAnimScreen" ), ( "state", encodeIQSkipAnimState state ) ]
 
-        WinScreen ->
+        WinScreen _ ->
+            -- Deliberately drop the win text: it must never be written into persisted
+            -- state (builds.jsonl). The server re-delivers it at win time via winText.
             Encode.object [ ( "tag", Encode.string "WinScreen" ) ]
 
         TimedOutScreen ->
@@ -499,7 +506,9 @@ decodeScreen =
                         Decode.map IQTestSkipAnimScreen (Decode.field "state" decodeIQSkipAnimState)
 
                     "WinScreen" ->
-                        Decode.succeed WinScreen
+                        -- Text is not persisted (see encodeScreen); it arrives separately
+                        -- via the winText message at win time.
+                        Decode.succeed (WinScreen "")
 
                     "TimedOutScreen" ->
                         Decode.succeed TimedOutScreen
@@ -619,7 +628,6 @@ decodeModel =
                 , wsUrl = ""
                 , questions = []
                 , iqOfferMade = offerMade
-                , winText = ""
                 }
         )
         (Decode.field "screen" decodeScreen)

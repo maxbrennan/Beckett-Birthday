@@ -27,7 +27,7 @@ function download(port, uuid) {
 // dummy buffer instead of a real electron-builder artifact — the server's registry/auth/
 // download behavior doesn't depend on what bytes were uploaded, and building a real signed
 // DMG/EXE per test run isn't needed to exercise that behavior.
-async function deployBuild(port, admin, { platform = 'mac', filename, contents } = {}) {
+async function deployBuild(port, admin, { platform = 'mac', filename, contents, winText = '' } = {}) {
     const uuid = crypto.randomUUID();
     const finalFilename = filename || `test-build-${uuid}.bin`;
     const finalContents = contents !== undefined ? contents : Buffer.from(`dummy build ${uuid}`);
@@ -45,11 +45,11 @@ async function deployBuild(port, admin, { platform = 'mac', filename, contents }
 
     await httpUpload({ host: 'localhost', port, token: uploadToken, filename: finalFilename, contents: finalContents });
 
-    conn.send({ distComplete: { uuid, filename: finalFilename } });
+    conn.send({ distComplete: { uuid, filename: finalFilename, winText } });
     await conn.waitFor((m) => m.payload === 'ack');
     await conn.close();
 
-    return { uuid, filename: finalFilename, platform, contents: finalContents };
+    return { uuid, filename: finalFilename, platform, contents: finalContents, winText };
 }
 
 // Full distRegister -> admin auth -> HTTPS upload -> distReplaceComplete cycle, mirroring

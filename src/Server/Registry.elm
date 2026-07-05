@@ -11,6 +11,7 @@ type alias RegistryEntry =
     , platform : String
     , state : Maybe Encode.Value
     , pendingStateEdit : Bool
+    , winText : String
     }
 
 
@@ -30,6 +31,7 @@ encodeRegistryEntry entry =
         , ( "platform", Encode.string entry.platform )
         , ( "state", Maybe.withDefault Encode.null entry.state )
         , ( "pendingStateEdit", Encode.bool entry.pendingStateEdit )
+        , ( "winText", Encode.string entry.winText )
         ]
 
 
@@ -50,7 +52,7 @@ encodeRegistry entries =
 
 decodeRegistryEntry : Decode.Decoder RegistryEntry
 decodeRegistryEntry =
-    Decode.map5 RegistryEntry
+    Decode.map6 RegistryEntry
         (Decode.field "uuid" Decode.string)
         (Decode.field "filename" Decode.string)
         (Decode.field "platform" Decode.string)
@@ -69,6 +71,10 @@ decodeRegistryEntry =
         -- older builds.jsonl rows predate this field; treat missing as unlocked.
         (Decode.maybe (Decode.field "pendingStateEdit" Decode.bool)
             |> Decode.map (Maybe.withDefault False)
+        )
+        -- older rows predate the win text; treat missing as empty.
+        (Decode.maybe (Decode.field "winText" Decode.string)
+            |> Decode.map (Maybe.withDefault "")
         )
 
 
