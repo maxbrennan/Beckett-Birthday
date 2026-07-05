@@ -11,7 +11,8 @@ import Types exposing (..)
 
 type ServerEnvelope
     = ServerStateUpdate String
-    | ServerAck String
+    | ServerAck
+    | ServerWinText String
     | ServerAuth
     | ServerRejected String
     | ServerUnknown
@@ -28,10 +29,11 @@ decodeServerEnvelope =
                             |> Decode.map ServerStateUpdate
 
                     "ack" ->
-                        -- The win text rides on the ack that gates the win-screen
-                        -- transition; ordinary acks default it to "".
-                        Decode.oneOf [ Decode.at [ "ack", "winText" ] Decode.string, Decode.succeed "" ]
-                            |> Decode.map ServerAck
+                        Decode.succeed ServerAck
+
+                    "winText" ->
+                        Decode.at [ "winText", "text" ] Decode.string
+                            |> Decode.map ServerWinText
 
                     "authChallenge" ->
                         Decode.succeed ServerAuth
@@ -186,7 +188,9 @@ encodeScreen scr =
         FakeFlashCaughtScreen state ->
             Encode.object [ ( "tag", Encode.string "FakeFlashCaughtScreen" ), ( "state", encodeFakeFlashCaughtState state ) ]
 
-        WinScreen ->
+        WinScreen _ ->
+            -- Deliberately drop the win text: it must never be written into persisted
+            -- state (builds.jsonl). The server re-delivers it at win time via winText.
             Encode.object [ ( "tag", Encode.string "WinScreen" ) ]
 
         TimedOutScreen ->
@@ -440,7 +444,9 @@ decodeScreen =
                         Decode.map FakeFlashCaughtScreen (Decode.field "state" decodeFakeFlashCaughtState)
 
                     "WinScreen" ->
-                        Decode.succeed WinScreen
+                        -- Text is not persisted (see encodeScreen); it arrives separately
+                        -- via the winText message at win time.
+                        Decode.succeed (WinScreen "")
 
                     "TimedOutScreen" ->
                         Decode.succeed TimedOutScreen
@@ -553,7 +559,6 @@ decodeModel =
                 , myUuid = Nothing
                 , wsUrl = ""
                 , questions = []
-                , winText = ""
                 }
         )
         (Decode.field "screen" decodeScreen)

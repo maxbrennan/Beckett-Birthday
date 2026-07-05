@@ -150,23 +150,25 @@ update msg model =
                                 newRegistry =
                                     updateEntryState uuid inner model.registry
 
-                                -- Deliver the win text only at win time, riding on the ack
-                                -- that gates the client's transition to the win screen.
-                                ackPayload =
+                                -- Deliver the win text only at win time, as its own message
+                                -- (never bundled into the client), when the incoming state
+                                -- shows the player is transitioning into the win screen.
+                                winTextCmd =
                                     if stateIsWin inner then
                                         model.registry
                                             |> List.filter (\e -> e.uuid == uuid)
                                             |> List.head
-                                            |> Maybe.map (\e -> winAckEnvelope e.winText)
-                                            |> Maybe.withDefault ackEnvelope
+                                            |> Maybe.map (\e -> sendToClient { clientId = clientId, payload = winTextEnvelope e.winText })
+                                            |> Maybe.withDefault Cmd.none
 
                                     else
-                                        ackEnvelope
+                                        Cmd.none
                             in
                             ( { model | registry = newRegistry }
                             , Cmd.batch
                                 [ writeRegistry newRegistry
-                                , sendToClient { clientId = clientId, payload = ackPayload }
+                                , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                , winTextCmd
                                 ]
                             )
 

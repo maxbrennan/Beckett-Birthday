@@ -110,14 +110,14 @@ ackEnvelope =
         ]
 
 
--- Ack that also carries the player's win text. Sent only when the incoming state
--- sync shows the player is winning, so the text reaches the client at win time
--- (see stateIsWin) without ever living in the client bundle.
-winAckEnvelope : String -> Encode.Value
-winAckEnvelope winText =
+-- Dedicated message carrying the player's win text. Sent only when the incoming state
+-- sync shows the player is winning (see stateIsWin), so the text reaches the client at
+-- win time without ever living in the client bundle.
+winTextEnvelope : String -> Encode.Value
+winTextEnvelope text =
     Encode.object
-        [ ( "payload", Encode.string "ack" )
-        , ( "ack", Encode.object [ ( "winText", Encode.string winText ) ] )
+        [ ( "payload", Encode.string "winText" )
+        , ( "winText", Encode.object [ ( "text", Encode.string text ) ] )
         ]
 
 

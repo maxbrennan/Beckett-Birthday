@@ -61,7 +61,6 @@ init wsUrl =
       , myUuid = Nothing
       , wsUrl = wsUrl
       , questions = []
-      , winText = ""
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
@@ -314,7 +313,9 @@ update msg model =
                                         )
 
                                     Nothing ->
-                                        ( clearPending { model | screen = CheckingAnswerScreen WinScreen }, Cmd.none )
+                                        -- Empty text for now; the server fills it in at win
+                                        -- time via the winText message (see ServerWinText).
+                                        ( clearPending { model | screen = CheckingAnswerScreen (WinScreen "") }, Cmd.none )
 
                             else
                                 ( { model | screen = CheckingAnswerScreen (WrongAnswerScreen idx) }, Cmd.none )
@@ -682,7 +683,6 @@ update msg model =
                                             , dingKey = model.dingKey
                                             , myUuid = model.myUuid
                                             , wsUrl = model.wsUrl
-                                            , winText = model.winText
                                           }
                                         , videoCmd
                                         )
@@ -696,15 +696,29 @@ update msg model =
                 Ok (ServerRejected _) ->
                     ( { model | screen = WsErrorScreen, wsClientId = Nothing }, Cmd.none )
 
-                Ok (ServerAck winText) ->
+                Ok ServerAck ->
                     case model.screen of
-                        ConfirmingAnswerScreen WinScreen ->
-                            -- The server delivers the win text on this ack, at the moment
-                            -- the win screen is revealed, so it never ships in the bundle.
-                            ( { model | screen = WinScreen, winText = winText }, Cmd.none )
+                        ConfirmingAnswerScreen (WinScreen _) ->
+                            -- The win screen is revealed by the separate winText message,
+                            -- not this ack, so the client waits here until it arrives.
+                            ( model, Cmd.none )
 
                         ConfirmingAnswerScreen nextScreen ->
                             ( { model | screen = nextScreen }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok (ServerWinText winText) ->
+                    case model.screen of
+                        CheckingAnswerScreen (WinScreen _) ->
+                            ( { model | screen = WinScreen winText }, Cmd.none )
+
+                        ConfirmingAnswerScreen (WinScreen _) ->
+                            ( { model | screen = WinScreen winText }, Cmd.none )
+
+                        WinScreen _ ->
+                            ( { model | screen = WinScreen winText }, Cmd.none )
 
                         _ ->
                             ( model, Cmd.none )

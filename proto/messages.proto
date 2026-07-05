@@ -8,7 +8,8 @@ enum AuthLevel {
 }
 
 message StateUpdate          { string json = 1; }
-message Ack                  { string upload_token = 1; string win_text = 2; }
+message Ack                  { string upload_token = 1; }
+message WinText              { string text = 1; }
 message AuthChallenge        { bytes challenge = 1; AuthLevel level = 2; }
 message StateRequest         { string uuid = 1; }
 message StateRequestRejected { string reason = 1; }
@@ -81,6 +82,7 @@ message ServerMessage {
     StateRequestRejected state_request_rejected  = 5;
     DistListResult       dist_list_result        = 6;
     DistStateEditPayload dist_state_edit_payload = 7;
+    WinText              win_text                = 8;
   }
 }
 

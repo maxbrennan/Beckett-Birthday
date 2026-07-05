@@ -63,7 +63,7 @@ describe('win text delivery', () => {
         expect(entry.state).toBeNull();
     });
 
-    test('the ack for a win-transition stateUpdate carries the win text', async () => {
+    test('a win-transition stateUpdate triggers a winText message with the text', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'win-deliver.dmg',
@@ -77,8 +77,8 @@ describe('win text delivery', () => {
                 json: stateWithScreen({ tag: 'ConfirmingAnswerScreen', nextScreen: { tag: 'WinScreen' } }),
             },
         });
-        const ackMsg = await conn.waitFor((m) => m.payload === 'ack');
-        expect(ackMsg.ack.winText).toBe(WIN_TEXT);
+        const winMsg = await conn.waitFor((m) => m.payload === 'winText');
+        expect(winMsg.winText.text).toBe(WIN_TEXT);
         await conn.close();
     }, 10000);
 
@@ -98,7 +98,7 @@ describe('win text delivery', () => {
         expect(entry.winText).toBe(WIN_TEXT);
     }, 10000);
 
-    test('the ack for a non-win stateUpdate does not carry the win text', async () => {
+    test('a non-win stateUpdate does not trigger a winText message', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'win-nonwin.dmg',
@@ -108,8 +108,9 @@ describe('win text delivery', () => {
 
         const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
         conn.send({ stateUpdate: { json: stateWithScreen({ tag: 'BeginScreen' }) } });
-        const ackMsg = await conn.waitFor((m) => m.payload === 'ack');
-        expect(ackMsg.ack.winText).toBe('');
+        // The ack still comes back; a winText message must not.
+        await conn.waitFor((m) => m.payload === 'ack');
+        await expect(conn.waitFor((m) => m.payload === 'winText', 500)).rejects.toThrow();
         await conn.close();
     }, 10000);
 });

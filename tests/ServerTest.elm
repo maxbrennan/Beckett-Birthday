@@ -3,7 +3,7 @@ module ServerTest exposing (..)
 import Expect
 import Json.Decode as Decode
 import Json.Encode as Encode
-import Server.Protocol exposing (stateIsWin, winAckEnvelope)
+import Server.Protocol exposing (stateIsWin, winTextEnvelope)
 import Server.Registry exposing (RegistryEntry, decodeRegistryEntry, encodeRegistryEntry, snapshotForJeopardy)
 import Test exposing (Test, describe, test)
 
@@ -66,9 +66,9 @@ wrappedWinValue wrapperTag =
         ]
 
 
-ackWinText : Encode.Value -> Maybe String
-ackWinText value =
-    Decode.decodeValue (Decode.at [ "ack", "winText" ] Decode.string) value
+winTextOf : Encode.Value -> Maybe String
+winTextOf value =
+    Decode.decodeValue (Decode.at [ "winText", "text" ] Decode.string) value
         |> Result.toMaybe
 
 
@@ -115,10 +115,10 @@ protocolSuite =
                     ]
                     |> stateIsWin
                     |> Expect.equal False
-        , test "winAckEnvelope carries the text under ack.winText" <|
+        , test "winTextEnvelope carries the text under winText.text" <|
             \_ ->
-                winAckEnvelope "hello reward"
-                    |> ackWinText
+                winTextEnvelope "hello reward"
+                    |> winTextOf
                     |> Expect.equal (Just "hello reward")
         ]
 
