@@ -16,13 +16,10 @@ const KEY_FILE = path.join(__dirname, '..', process.env.SSL_KEY_FILE || path.joi
 
 const app = Elm.Server.init();
 const clients = new Map();
+// Tracks the outstanding auth challenge per client (populated by the requestAuth
+// port). All admin-op routing that used to live here now lives in the Elm worker.
 const pendingAuths = new Map();
-const pendingUndeployOps = new Map();
-const pendingListOps = new Set();
-const pendingStateEditOps = new Map();
-const activeStateEdits = new Set();
-const pendingDistAuths = new Set();
-const pendingUploadTokens = new Map();
+// Upload tokens minted for the HTTP POST /upload handler (crypto stays in JS).
 const validUploadTokens = new Set();
 let nextId = 0;
 
@@ -68,59 +65,8 @@ wss.on('connection', (ws) => {
             const result = auth.handleAuthResponse(msg.authResponse, pending.challenge);
             ws.send(codec.encodeServer({ authResult: result }), { binary: true });
             const variant = result.password || result.key || {};
-
-            if (pendingUndeployOps.has(clientId)) {
-                const undeployUuid = pendingUndeployOps.get(clientId);
-                pendingUndeployOps.delete(clientId);
-                if (auth.isAdminAuth(variant)) {
-                    app.ports.onMessage.send({ clientId, payload: { payload: 'distUndeploy', distUndeploy: { uuid: undeployUuid } } });
-                } else {
-                    console.error(`[undeploy] auth failed for ${undeployUuid}`);
-                    ws.close();
-                }
-                return;
-            }
-
-            if (pendingListOps.has(clientId)) {
-                pendingListOps.delete(clientId);
-                if (!auth.isAdminAuth(variant)) {
-                    console.error(`[list] auth failed for ${clientId}`);
-                    ws.close();
-                    return;
-                }
-                fs.readFile(REGISTRY_FILE, 'utf8', (err, data) => {
-                    const entries = err ? [] : data.trim().split('\n')
-                        .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
-                        .filter(Boolean)
-                        .map(e => ({ uuid: e.uuid, filename: e.filename, platform: e.platform || '' }));
-                    console.log(`[list] sending ${entries.length} entries to ${clientId}`);
-                    ws.send(codec.encodeServer({ distListResult: { entries } }), { binary: true });
-                    ws.close();
-                });
-                return;
-            }
-
-            if (pendingStateEditOps.has(clientId)) {
-                const editUuid = pendingStateEditOps.get(clientId);
-                pendingStateEditOps.delete(clientId);
-                if (variant.success && variant.level >= 2) {
-                    activeStateEdits.add(clientId);
-                    app.ports.onMessage.send({ clientId, payload: { payload: 'distStateEdit', distStateEdit: { uuid: editUuid } } });
-                } else {
-                    console.error(`[edit-state] auth failed for ${editUuid}`);
-                    ws.close();
-                }
-                return;
-            }
-
-            if (pendingDistAuths.has(clientId)) {
-                pendingDistAuths.delete(clientId);
-                if (variant.success) {
-                    const token = crypto.randomBytes(32).toString('hex');
-                    pendingUploadTokens.set(clientId, token);
-                    validUploadTokens.add(token);
-                }
-            }
+            // The Elm worker owns all post-auth routing (undeploy / list / state-edit /
+            // register): it decided to requestAuth, and it acts on the outcome here.
             app.ports.authResult.send({
                 clientId,
                 success: !!variant.success,
@@ -130,55 +76,16 @@ wss.on('connection', (ws) => {
             return;
         }
 
-        if (msg.payload === 'distUndeploy') {
-            const { uuid } = msg.distUndeploy;
-            console.log(`[undeploy] received request for ${uuid}`);
-            pendingUndeployOps.set(clientId, uuid);
-            const { challenge } = auth.generateAuthChallenge();
-            pendingAuths.set(clientId, { challenge, level: 2 });
-            ws.send(codec.encodeServer({ authChallenge: { challenge, level: 2 } }), { binary: true });
-            return;
-        }
-
-        if (msg.payload === 'distList') {
-            console.log(`[list] received list request from ${clientId}`);
-            pendingListOps.add(clientId);
-            const { challenge } = auth.generateAuthChallenge();
-            pendingAuths.set(clientId, { challenge, level: 2 });
-            ws.send(codec.encodeServer({ authChallenge: { challenge, level: 2 } }), { binary: true });
-            return;
-        }
-
-        if (msg.payload === 'distStateEdit') {
-            const { uuid } = msg.distStateEdit;
-            console.log(`[edit-state] received edit request for ${uuid}`);
-            pendingStateEditOps.set(clientId, uuid);
-            const { challenge } = auth.generateAuthChallenge();
-            pendingAuths.set(clientId, { challenge, level: 2 });
-            ws.send(codec.encodeServer({ authChallenge: { challenge, level: 2 } }), { binary: true });
-            return;
-        }
-
-        if (msg.payload === 'distStateEditSave') {
-            if (!activeStateEdits.has(clientId)) {
-                console.error(`[edit-state] unauthorized distStateEditSave from ${clientId}`);
-                ws.close();
-                return;
-            }
-            activeStateEdits.delete(clientId);
-            app.ports.onMessage.send({ clientId, payload: msg });
-            return;
-        }
-
-        if (msg.payload === 'distRegister') pendingDistAuths.add(clientId);
+        // Every other message (including distUndeploy / distList / distStateEdit /
+        // distStateEditSave / distRegister) forwards straight to the Elm worker, which
+        // gates admin ops behind the requestAuth/authResult ports.
         app.ports.onMessage.send({ clientId, payload: msg });
     });
 
     ws.on('close', () => {
         clients.delete(clientId);
         pendingAuths.delete(clientId);
-        pendingStateEditOps.delete(clientId);
-        activeStateEdits.delete(clientId);
+        // Elm's ClientDisconnected handler clears any distClients stage for this client.
         app.ports.onDisconnection.send(clientId);
     });
 });
@@ -187,9 +94,11 @@ app.ports.sendToClient.subscribe(({ clientId, payload }) => {
     const ws = clients.get(clientId);
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     let serverPayload = payload;
-    if (payload.ack !== undefined && pendingUploadTokens.has(clientId)) {
-        const token = pendingUploadTokens.get(clientId);
-        pendingUploadTokens.delete(clientId);
+    // Elm requests an upload token via a marker inside the ack (crypto stays in JS).
+    // The marker is rewritten to a real token here and never reaches the codec.
+    if (payload.ack && payload.ack.mintUploadToken) {
+        const token = crypto.randomBytes(32).toString('hex');
+        validUploadTokens.add(token);
         serverPayload = { ack: { uploadToken: token } };
     }
     ws.send(codec.encodeServer(serverPayload), { binary: true });
