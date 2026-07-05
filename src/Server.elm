@@ -41,6 +41,87 @@ writeRegistry entries =
         }
 
 
+{-| Remove a build after admin auth: drop it from the registry, kick any
+connected player on that uuid, delete the file, persist, and ack the admin.
+Runs only from AuthCompleted (post level-2 auth).
+-}
+performUndeploy : String -> String -> Model -> ( Model, Cmd Msg )
+performUndeploy uuid clientId model =
+    let
+        maybePlayerClientId =
+            Dict.get uuid model.connectedPlayers
+
+        maybeTarget =
+            model.registry
+                |> List.filter (\e -> e.uuid == uuid)
+                |> List.head
+
+        newRegistry =
+            List.filter (\e -> e.uuid /= uuid) model.registry
+    in
+    ( { model
+        | registry = newRegistry
+        , connectedPlayers = Dict.remove uuid model.connectedPlayers
+        , distClients = Dict.remove clientId model.distClients
+      }
+    , Cmd.batch
+        [ case maybePlayerClientId of
+            Nothing ->
+                Cmd.none
+
+            Just playerClientId ->
+                closeClient { clientId = playerClientId, reason = "admin undeployed build" }
+        , case maybeTarget of
+            Nothing ->
+                Cmd.none
+
+            Just target ->
+                deleteBuildFile target.filename
+        , writeRegistry newRegistry
+        , sendToClient { clientId = clientId, payload = ackEnvelope }
+        ]
+    )
+
+
+{-| Open a build's state for editing after admin auth: mark it pending, kick any
+connected player, hand the current state to the admin, and move the admin into
+the EditingState stage (which authorizes the following distStateEditSave).
+Runs only from AuthCompleted (post level-2 auth).
+-}
+performStateEdit : String -> String -> Model -> ( Model, Cmd Msg )
+performStateEdit uuid clientId model =
+    let
+        maybePlayerClientId =
+            Dict.get uuid model.connectedPlayers
+
+        currentState =
+            model.registry
+                |> List.filter (\e -> e.uuid == uuid)
+                |> List.head
+                |> Maybe.andThen .state
+                |> Maybe.withDefault (Encode.object [])
+
+        newRegistry =
+            setPendingStateEdit uuid model.registry
+    in
+    ( { model
+        | pendingStateEdits = Set.insert uuid model.pendingStateEdits
+        , registry = newRegistry
+        , distClients = Dict.insert clientId (EditingState uuid) model.distClients
+      }
+    , Cmd.batch
+        [ case maybePlayerClientId of
+            Nothing ->
+                Cmd.none
+
+            Just playerClientId ->
+                closeClient { clientId = playerClientId, reason = "admin editing state" }
+        , writeRegistry newRegistry
+        , stateEditReady { adminClientId = clientId, uuid = uuid, json = Encode.encode 0 currentState }
+        ]
+    )
+
+
 init : () -> ( Model, Cmd Msg )
 init () =
     ( { connectedPlayers = Dict.empty
@@ -263,55 +344,54 @@ update msg model =
                             ( model, Cmd.none )
 
                 Ok (ClientDistStateEdit uuid) ->
-                    let
-                        maybePlayerClientId =
-                            Dict.get uuid model.connectedPlayers
-
-                        currentState =
-                            model.registry
-                                |> List.filter (\e -> e.uuid == uuid)
-                                |> List.head
-                                |> Maybe.andThen .state
-                                |> Maybe.withDefault (Encode.object [])
-
-                        newRegistry =
-                            setPendingStateEdit uuid model.registry
-                    in
-                    ( { model
-                        | pendingStateEdits = Set.insert uuid model.pendingStateEdits
-                        , registry = newRegistry
-                      }
-                    , Cmd.batch
-                        [ case maybePlayerClientId of
-                            Nothing ->
-                                Cmd.none
-
-                            Just playerClientId ->
-                                closeClient { clientId = playerClientId, reason = "admin editing state" }
-                        , writeRegistry newRegistry
-                        , stateEditReady { adminClientId = clientId, uuid = uuid, json = Encode.encode 0 currentState }
-                        ]
+                    -- Gate behind admin auth: stash the target uuid and request a
+                    -- level-2 challenge. The actual edit prep runs in AuthCompleted
+                    -- (performStateEdit) only after auth succeeds.
+                    ( { model | distClients = Dict.insert clientId (AwaitingStateEditAuth uuid) model.distClients }
+                    , requestAuth { clientId = clientId, level = 2 }
                     )
 
-                Ok (ClientDistStateEditSave { uuid, json }) ->
-                    case Decode.decodeString Decode.value json of
-                        Ok parsedState ->
+                Ok (ClientDistStateEditSave { json }) ->
+                    -- Authorization is owned here (replaces the JS activeStateEdits set):
+                    -- only a client in the EditingState stage may save, and the stage is
+                    -- consumed on every save attempt (valid or invalid), mirroring the old
+                    -- JS behavior. Invalid JSON therefore leaves the uuid stuck in
+                    -- pendingStateEdits -- a pre-existing quirk (see tests/edit-state.test.js).
+                    case Dict.get clientId model.distClients of
+                        Just (EditingState editUuid) ->
                             let
-                                newRegistry =
-                                    updateEntryState uuid parsedState model.registry
+                                clearedDist =
+                                    Dict.remove clientId model.distClients
                             in
-                            ( { model
-                                | registry = newRegistry
-                                , pendingStateEdits = Set.remove uuid model.pendingStateEdits
-                              }
-                            , Cmd.batch
-                                [ writeRegistry newRegistry
-                                , sendToClient { clientId = clientId, payload = ackEnvelope }
-                                ]
-                            )
+                            case Decode.decodeString Decode.value json of
+                                Ok parsedState ->
+                                    let
+                                        newRegistry =
+                                            updateEntryState editUuid parsedState model.registry
+                                    in
+                                    ( { model
+                                        | registry = newRegistry
+                                        , pendingStateEdits = Set.remove editUuid model.pendingStateEdits
+                                        , distClients = clearedDist
+                                      }
+                                    , Cmd.batch
+                                        [ writeRegistry newRegistry
+                                        , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                        ]
+                                    )
 
-                        Err _ ->
-                            ( model, sendToClient { clientId = clientId, payload = rejectEnvelope "invalid json" } )
+                                Err _ ->
+                                    ( { model | distClients = clearedDist }
+                                    , sendToClient { clientId = clientId, payload = rejectEnvelope "invalid json" }
+                                    )
+
+                        _ ->
+                            ( model, closeClient { clientId = clientId, reason = "unauthorized" } )
+
+                Ok ClientDistList ->
+                    ( { model | distClients = Dict.insert clientId AwaitingListAuth model.distClients }
+                    , requestAuth { clientId = clientId, level = 2 }
+                    )
 
                 Ok (ClientDistReplaceComplete { newUuid, oldUuid, filename }) ->
                     case Dict.get clientId model.distClients of
@@ -373,55 +453,62 @@ update msg model =
                             ( model, Cmd.none )
 
                 Ok (ClientDistUndeploy uuid) ->
-                    let
-                        maybePlayerClientId =
-                            Dict.get uuid model.connectedPlayers
-
-                        maybeTarget =
-                            model.registry
-                                |> List.filter (\e -> e.uuid == uuid)
-                                |> List.head
-
-                        newRegistry =
-                            List.filter (\e -> e.uuid /= uuid) model.registry
-                    in
-                    ( { model
-                        | registry = newRegistry
-                        , connectedPlayers = Dict.remove uuid model.connectedPlayers
-                      }
-                    , Cmd.batch
-                        [ case maybePlayerClientId of
-                            Nothing ->
-                                Cmd.none
-
-                            Just playerClientId ->
-                                closeClient { clientId = playerClientId, reason = "admin undeployed build" }
-                        , case maybeTarget of
-                            Nothing ->
-                                Cmd.none
-
-                            Just target ->
-                                deleteBuildFile target.filename
-                        , writeRegistry newRegistry
-                        , sendToClient { clientId = clientId, payload = ackEnvelope }
-                        ]
+                    -- Gate behind admin auth; the removal runs in AuthCompleted
+                    -- (performUndeploy) only after a level-2 challenge succeeds.
+                    ( { model | distClients = Dict.insert clientId (AwaitingUndeployAuth uuid) model.distClients }
+                    , requestAuth { clientId = clientId, level = 2 }
                     )
 
                 _ ->
                     ( model, Cmd.none )
 
         AuthCompleted { clientId, success, level } ->
+            let
+                isAdmin =
+                    success && level >= 2
+
+                failAuth m =
+                    ( { m | distClients = Dict.remove clientId m.distClients }
+                    , closeClient { clientId = clientId, reason = "Auth failed" }
+                    )
+            in
             case Dict.get clientId model.distClients of
                 Just (AwaitingAuth info) ->
-                    if success && level == 2 then
+                    if isAdmin then
                         ( { model | distClients = Dict.insert clientId (AwaitingUpload info) model.distClients }
-                        , sendToClient { clientId = clientId, payload = ackEnvelope }
+                        , sendToClient { clientId = clientId, payload = ackWithUploadTokenEnvelope }
                         )
 
                     else
+                        failAuth model
+
+                Just (AwaitingUndeployAuth uuid) ->
+                    if isAdmin then
+                        performUndeploy uuid clientId model
+
+                    else
+                        failAuth model
+
+                Just AwaitingListAuth ->
+                    if isAdmin then
                         ( { model | distClients = Dict.remove clientId model.distClients }
-                        , closeClient { clientId = clientId, reason = "Auth failed" }
+                        , -- send-then-close in one JS tick; Cmd.batch would not guarantee ordering.
+                          rejectAndClose
+                            { clientId = clientId
+                            , reason = "list complete"
+                            , payload = distListResultEnvelope model.registry
+                            }
                         )
+
+                    else
+                        failAuth model
+
+                Just (AwaitingStateEditAuth uuid) ->
+                    if isAdmin then
+                        performStateEdit uuid clientId model
+
+                    else
+                        failAuth model
 
                 _ ->
                     ( model, Cmd.none )

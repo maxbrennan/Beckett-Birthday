@@ -3,6 +3,7 @@ module Server.Protocol exposing (..)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Server.Distribution exposing (DistInfo)
+import Server.Registry exposing (RegistryEntry)
 
 
 type ClientEnvelope
@@ -15,6 +16,7 @@ type ClientEnvelope
     | ClientDistStateEditSave { uuid : String, json : String }
     | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String }
     | ClientDistUndeploy String
+    | ClientDistList
     | ClientUnknown
 
 
@@ -89,6 +91,9 @@ decodeClientEnvelope =
                         Decode.map ClientDistUndeploy
                             (Decode.at [ "distUndeploy", "uuid" ] Decode.string)
 
+                    "distList" ->
+                        Decode.succeed ClientDistList
+
                     _ ->
                         Decode.succeed ClientUnknown
             )
@@ -110,6 +115,41 @@ ackEnvelope =
         ]
 
 
+{-| A plain ack carrying a marker that tells the JS host to mint and attach an
+upload token (the crypto stays in JS). The marker never reaches the protobuf
+codec: `sendToClient` in server/index.js rewrites the payload to
+`{ ack : { uploadToken } }` before encoding.
+-}
+ackWithUploadTokenEnvelope : Encode.Value
+ackWithUploadTokenEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "ack" )
+        , ( "ack", Encode.object [ ( "mintUploadToken", Encode.bool True ) ] )
+        ]
+
+
+distListResultEnvelope : List RegistryEntry -> Encode.Value
+distListResultEnvelope entries =
+    Encode.object
+        [ ( "payload", Encode.string "distListResult" )
+        , ( "distListResult"
+          , Encode.object
+                [ ( "entries"
+                  , Encode.list
+                        (\e ->
+                            Encode.object
+                                [ ( "uuid", Encode.string e.uuid )
+                                , ( "filename", Encode.string e.filename )
+                                , ( "platform", Encode.string e.platform )
+                                ]
+                        )
+                        entries
+                  )
+                ]
+          )
+        ]
+
+
 -- Dedicated message carrying the player's win text. Sent only when the incoming state
 -- sync shows the player is winning (see stateIsWin), so the text reaches the client at
 -- win time without ever living in the client bundle.
@@ -122,9 +162,9 @@ winTextEnvelope text =
 
 
 -- True when an opaque player-state value represents (or is transitioning into) the
--- win screen. The win transition is gated on a server ack (CheckingAnswerScreen /
--- ConfirmingAnswerScreen wrap the pending WinScreen), so we look at the top-level
--- screen tag and, when it is one of those wrappers, the nested nextScreen tag.
+-- win screen. The client reveals the win screen only on the winText message, so we look
+-- at the top-level screen tag and, when it is a CheckingAnswerScreen/ConfirmingAnswerScreen
+-- wrapper, the nested nextScreen tag, to spot the pending WinScreen.
 stateIsWin : Encode.Value -> Bool
 stateIsWin state =
     let
