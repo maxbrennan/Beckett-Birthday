@@ -51,13 +51,13 @@ quizSavedState =
 suite : Test
 suite =
     describe "snapshotForJeopardy"
-        [ test "first disconnect: snapshots the current screen into savedState" <|
+        [ test "rejoin mid-game: snapshots the current screen into savedState" <|
             \_ ->
                 makeState "QuizScreen" Nothing
                     |> snapshotForJeopardy
                     |> screenTag
                     |> Expect.equal (Just "QuizScreen")
-        , test "reconnect-then-disconnect: preserves the existing savedState" <|
+        , test "rejoin already-snapshotted: preserves the existing savedState" <|
             \_ ->
                 makeState "BeginScreen" (Just quizSavedState)
                     |> snapshotForJeopardy
