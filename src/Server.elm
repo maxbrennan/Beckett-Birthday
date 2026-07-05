@@ -68,35 +68,16 @@ update msg model =
                     ( { model | distClients = cleanedDist }, Cmd.none )
 
                 Just uuid ->
-                    if Set.member uuid model.pendingStateEdits then
-                        ( { model
-                            | connectedPlayers = Dict.remove uuid model.connectedPlayers
-                            , distClients = cleanedDist
-                          }
-                        , Cmd.none
-                        )
-
-                    else
-                    let
-                        currentState =
-                            model.registry
-                                |> List.filter (\e -> e.uuid == uuid)
-                                |> List.head
-                                |> Maybe.andThen .state
-                                |> Maybe.withDefault (Encode.object [])
-
-                        snapshotted =
-                            snapshotForJeopardy currentState
-
-                        newRegistry =
-                            updateEntryState uuid snapshotted model.registry
-                    in
+                    -- Leave the player's persisted state exactly as it was. The
+                    -- jeopardy snapshot (mid-game screen → savedState, reset to
+                    -- BeginScreen) now happens lazily on their next stateRequest
+                    -- (see ClientStateRequest below), so a server stop/restart that
+                    -- never fires a disconnect still resumes the player correctly.
                     ( { model
                         | connectedPlayers = Dict.remove uuid model.connectedPlayers
                         , distClients = cleanedDist
-                        , registry = newRegistry
                       }
-                    , writeRegistry newRegistry
+                    , Cmd.none
                     )
 
         MessageReceived { clientId, payload } ->
@@ -121,12 +102,43 @@ update msg model =
 
                             entry :: _ ->
                                 let
-                                    initialState =
+                                    storedState =
                                         Maybe.withDefault (Encode.object []) entry.state
+
+                                    -- If the player left mid-game (persisted screen is
+                                    -- anything other than BeginScreen), snapshot that
+                                    -- screen into savedState and reset to BeginScreen so
+                                    -- they resume via the jeopardy Start flow. A player
+                                    -- already on BeginScreen — or one who never started
+                                    -- (empty state, no screen tag) — is delivered as-is,
+                                    -- leaving their savedState and jeopardyPlaying flag
+                                    -- untouched.
+                                    screenTag =
+                                        Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) storedState
+                                            |> Result.withDefault ""
+
+                                    connectedModel =
+                                        { model | connectedPlayers = Dict.insert uuid clientId model.connectedPlayers }
                                 in
-                                ( { model | connectedPlayers = Dict.insert uuid clientId model.connectedPlayers }
-                                , sendToClient { clientId = clientId, payload = stateEnvelope initialState }
-                                )
+                                if screenTag == "" || screenTag == "BeginScreen" then
+                                    ( connectedModel
+                                    , sendToClient { clientId = clientId, payload = stateEnvelope storedState }
+                                    )
+
+                                else
+                                    let
+                                        snapshotted =
+                                            snapshotForJeopardy storedState
+
+                                        newRegistry =
+                                            updateEntryState uuid snapshotted model.registry
+                                    in
+                                    ( { connectedModel | registry = newRegistry }
+                                    , Cmd.batch
+                                        [ writeRegistry newRegistry
+                                        , sendToClient { clientId = clientId, payload = stateEnvelope snapshotted }
+                                        ]
+                                    )
 
                 Ok (ClientStateUpdate inner) ->
                     case findUuidByClient clientId model.connectedPlayers of
