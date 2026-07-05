@@ -47,13 +47,6 @@ port readFile : String -> Cmd msg
 port readFileResult : ({ path : String, contents : Maybe String, error : Maybe String } -> msg) -> Sub msg
 
 
--- Shown on the win screen. Overridable at runtime via config/win-screen.json;
--- this is the fallback used if that file is missing or malformed.
-defaultWinText : String
-defaultWinText =
-    "Text \"creeper... awwww man\" to Max to claim your reward!"
-
-
 init : String -> ( Model, Cmd Msg )
 init wsUrl =
     ( { screen = WsConnectingScreen
@@ -68,12 +61,10 @@ init wsUrl =
       , myUuid = Nothing
       , wsUrl = wsUrl
       , questions = []
-      , winText = defaultWinText
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
         , readFile "config/quiz-questions.json"
-        , readFile "config/win-screen.json"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -322,7 +313,9 @@ update msg model =
                                         )
 
                                     Nothing ->
-                                        ( clearPending { model | screen = CheckingAnswerScreen WinScreen }, Cmd.none )
+                                        -- Empty text for now; the server fills it in at win
+                                        -- time via the winText message (see ServerWinText).
+                                        ( clearPending { model | screen = CheckingAnswerScreen (WinScreen "") }, Cmd.none )
 
                             else
                                 ( { model | screen = CheckingAnswerScreen (WrongAnswerScreen idx) }, Cmd.none )
@@ -690,7 +683,6 @@ update msg model =
                                             , dingKey = model.dingKey
                                             , myUuid = model.myUuid
                                             , wsUrl = model.wsUrl
-                                            , winText = model.winText
                                           }
                                         , videoCmd
                                         )
@@ -706,8 +698,27 @@ update msg model =
 
                 Ok ServerAck ->
                     case model.screen of
+                        ConfirmingAnswerScreen (WinScreen _) ->
+                            -- The win screen is revealed by the separate winText message,
+                            -- not this ack, so the client waits here until it arrives.
+                            ( model, Cmd.none )
+
                         ConfirmingAnswerScreen nextScreen ->
                             ( { model | screen = nextScreen }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok (ServerWinText winText) ->
+                    case model.screen of
+                        CheckingAnswerScreen (WinScreen _) ->
+                            ( { model | screen = WinScreen winText }, Cmd.none )
+
+                        ConfirmingAnswerScreen (WinScreen _) ->
+                            ( { model | screen = WinScreen winText }, Cmd.none )
+
+                        WinScreen _ ->
+                            ( { model | screen = WinScreen winText }, Cmd.none )
 
                         _ ->
                             ( model, Cmd.none )
@@ -787,9 +798,6 @@ update msg model =
 
         QuestionsLoaded loadedQuestions ->
             ( { model | questions = loadedQuestions }, Cmd.none )
-
-        WinTextLoaded text ->
-            ( { model | winText = text }, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )
@@ -897,13 +905,6 @@ subscriptions model =
                 case path of
                     "config/quiz-questions.json" ->
                         QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
-
-                    "config/win-screen.json" ->
-                        WinTextLoaded
-                            (contents
-                                |> Maybe.andThen (Decode.decodeString (Decode.field "text" Decode.string) >> Result.toMaybe)
-                                |> Maybe.withDefault defaultWinText
-                            )
 
                     _ ->
                         case contents of

@@ -230,11 +230,26 @@ update msg model =
                             let
                                 newRegistry =
                                     updateEntryState uuid inner model.registry
+
+                                -- Deliver the win text only at win time, as its own message
+                                -- (never bundled into the client), when the incoming state
+                                -- shows the player is transitioning into the win screen.
+                                winTextCmd =
+                                    if stateIsWin inner then
+                                        model.registry
+                                            |> List.filter (\e -> e.uuid == uuid)
+                                            |> List.head
+                                            |> Maybe.map (\e -> sendToClient { clientId = clientId, payload = winTextEnvelope e.winText })
+                                            |> Maybe.withDefault Cmd.none
+
+                                    else
+                                        Cmd.none
                             in
                             ( { model | registry = newRegistry }
                             , Cmd.batch
                                 [ writeRegistry newRegistry
                                 , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                , winTextCmd
                                 ]
                             )
 
@@ -267,6 +282,7 @@ update msg model =
                                             , platform = info.platform
                                             , state = Nothing
                                             , pendingStateEdit = False
+                                            , winText = ""
                                             }
 
                                         newRegistry =
@@ -293,7 +309,7 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
-                Ok (ClientDistComplete { uuid, filename }) ->
+                Ok (ClientDistComplete { uuid, filename, winText }) ->
                     case Dict.get clientId model.distClients of
                         Just (AwaitingUpload info) ->
                             if info.uuid == uuid then
@@ -304,6 +320,7 @@ update msg model =
                                         , platform = info.platform
                                         , state = Nothing
                                         , pendingStateEdit = False
+                                        , winText = winText
                                         }
 
                                     newRegistry =
@@ -381,11 +398,13 @@ update msg model =
                         Just (AwaitingUpload info) ->
                             if info.uuid == newUuid then
                                 let
-                                    oldState =
+                                    oldEntry =
                                         model.registry
                                             |> List.filter (\e -> e.uuid == oldUuid)
                                             |> List.head
-                                            |> Maybe.andThen .state
+
+                                    oldState =
+                                        oldEntry |> Maybe.andThen .state
 
                                     newEntry =
                                         { uuid = newUuid
@@ -393,6 +412,7 @@ update msg model =
                                         , platform = info.platform
                                         , state = oldState
                                         , pendingStateEdit = True
+                                        , winText = oldEntry |> Maybe.map .winText |> Maybe.withDefault ""
                                         }
 
                                     newRegistry =

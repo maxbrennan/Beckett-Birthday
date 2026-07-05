@@ -33,6 +33,7 @@
     "add-admin": "node scripts/add-admin.js"
   },
   "build": {
+    "//": "WARNING: the win text must NEVER be given to the client. config/win-screen.json is deliberately excluded from `files` below (the '!config/win-screen.json' negation) — it exists only as the deploy-time source read by scripts/deploy.js and stored server-side in builds.jsonl. Do not remove that negation or otherwise bundle the win text.",
     "files": [
       ".env",
       "client/bridge.js",
@@ -43,7 +44,8 @@
       "proto/**/*",
       "assets/**/*",
       "app-uuid.json",
-      "config/**/*"
+      "config/**/*",
+      "!config/win-screen.json"
     ],
     "mac": {
       "icon": "assets/icon.icns",
