@@ -56,6 +56,7 @@ type alias Model =
     , wsUrl : String
     , questions : List Question
     , iqOfferMade : Bool
+    , winText : String
     }
 
 
@@ -94,4 +95,5 @@ type Msg
     | WsReconnect
     | UuidLoaded (Maybe String)
     | QuestionsLoaded (List Question)
+    | WinTextLoaded String
     | NoOp

@@ -669,7 +669,7 @@ viewScreen model =
                     , style "margin" "0"
                     , style "font-weight" "bold"
                     ]
-                    [ text "Text \"creeper... awwww man\" to Max to claim your reward!" ]
+                    [ text model.winText ]
                 ]
 
         TimedOutScreen ->

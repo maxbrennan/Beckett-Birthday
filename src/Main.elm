@@ -47,6 +47,11 @@ port readFile : String -> Cmd msg
 port readFileResult : ({ path : String, contents : Maybe String, error : Maybe String } -> msg) -> Sub msg
 
 
+-- Shown on the win screen. Overridable at runtime via config/win-screen.json;
+-- this is the fallback used if that file is missing or malformed.
+defaultWinText : String
+defaultWinText =
+    "Text \"creeper... awwww man\" to Max to claim your reward!"
 
 
 init : String -> ( Model, Cmd Msg )
@@ -64,10 +69,12 @@ init wsUrl =
       , wsUrl = wsUrl
       , questions = []
       , iqOfferMade = False
+      , winText = defaultWinText
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
-        , readFile "quiz-questions.json"
+        , readFile "config/quiz-questions.json"
+        , readFile "config/win-screen.json"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -785,6 +792,7 @@ update msg model =
                                             , dingKey = model.dingKey
                                             , myUuid = model.myUuid
                                             , wsUrl = model.wsUrl
+                                            , winText = model.winText
                                           }
                                         , videoCmd
                                         )
@@ -881,6 +889,9 @@ update msg model =
 
         QuestionsLoaded loadedQuestions ->
             ( { model | questions = loadedQuestions }, Cmd.none )
+
+        WinTextLoaded text ->
+            ( { model | winText = text }, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )
@@ -986,8 +997,15 @@ subscriptions model =
         , readFileResult
             (\{ path, contents } ->
                 case path of
-                    "quiz-questions.json" ->
+                    "config/quiz-questions.json" ->
                         QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
+
+                    "config/win-screen.json" ->
+                        WinTextLoaded
+                            (contents
+                                |> Maybe.andThen (Decode.decodeString (Decode.field "text" Decode.string) >> Result.toMaybe)
+                                |> Maybe.withDefault defaultWinText
+                            )
 
                     _ ->
                         case contents of

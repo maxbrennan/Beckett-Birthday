@@ -619,6 +619,7 @@ decodeModel =
                 , wsUrl = ""
                 , questions = []
                 , iqOfferMade = offerMade
+                , winText = ""
                 }
         )
         (Decode.field "screen" decodeScreen)

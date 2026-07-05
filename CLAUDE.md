@@ -55,7 +55,7 @@ Two-level challenge–response auth (Ed25519 keys or username/password), impleme
 
 ### Distribution system
 
-`scripts/deploy.js` authenticates with the server, runs `electron-builder`, then uploads the built DMG/EXE in 1 MB chunks over WebSocket (`distRegister` → auth → `distUpload` messages). The server stores uploads under `app-builds/` and records them in `builds.jsonl`. Players download their build via HTTPS GET `/<uuid>`.
+`scripts/deploy.js` authenticates with the server (`distRegister` → auth challenge), runs `electron-builder`, then uploads the built DMG/EXE in a single HTTPS `POST /upload` (bearer token from the auth ack) and finalizes with a `distComplete` message. The server stores uploads under `app-builds/` and records them in `builds.jsonl`. Players download their build via HTTPS GET `/<uuid>`.
 
 ### Dev vs. production
 
