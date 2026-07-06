@@ -456,15 +456,24 @@ update msg model =
                             iqFail model state
 
                     else if state.dingActive then
-                        -- Cleared a real ding: bump the displayed counter right away
-                        -- for responsive rendering, then report it -- the server
-                        -- decides whether this completes the test (and when to arm
-                        -- the loud gag). This optimistic count can be briefly wrong
-                        -- (e.g. during the hidden punishment phase, where a cleared
-                        -- ding shrinks totalDings instead of incrementing dingCount),
-                        -- but the next ServerIqDing/ServerIqTestComplete always
-                        -- overwrites it with the server's authoritative value.
-                        ( { model | screen = IQTestActiveScreen { state | dingActive = False, dingCount = state.dingCount + 1 } }
+                        -- Cleared a real ding: update the displayed counter right away
+                        -- for responsive rendering, then report it -- the server is
+                        -- still authoritative and its next ServerIqDing/
+                        -- ServerIqTestComplete overwrites whatever we guess here.
+                        -- Mirror the server's own advanceOnClear rule so the guess is
+                        -- actually right, not just eventually corrected: while still
+                        -- in the doubled-punishment range (totalDings > iqQuestionCount),
+                        -- a clear grinds the denominator down; only once it's back to
+                        -- iqQuestionCount does the numerator start counting up.
+                        let
+                            optimisticState =
+                                if state.totalDings > iqQuestionCount then
+                                    { state | dingActive = False, totalDings = state.totalDings - 1 }
+
+                                else
+                                    { state | dingActive = False, dingCount = state.dingCount + 1 }
+                        in
+                        ( { model | screen = IQTestActiveScreen optimisticState }
                         , sendWs model iqReadyForDingEnvelope
                         )
 

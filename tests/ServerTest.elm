@@ -559,6 +559,34 @@ iqLogicSuite =
                         |> advancedState
                         |> Maybe.map .in50PercentPhase
                         |> Expect.equal (Just True)
+            , test "full punishment cycle: denominator grinds down to iqQuestionCount, then the numerator counts up" <|
+                \_ ->
+                    let
+                        doubled =
+                            { iqState | lastDing = RealDing, dingCount = 0, totalDings = IQTest.iqQuestionCount + 3, in50PercentPhase = False }
+
+                        clear s =
+                            case advanceOnClear s of
+                                Advanced a ->
+                                    a.state
+
+                                Completed ->
+                                    s
+
+                        afterThreeClears =
+                            List.foldl (\_ s -> clear s) doubled (List.range 1 3)
+
+                        afterFourthClear =
+                            clear afterThreeClears
+                    in
+                    Expect.all
+                        [ \_ -> Expect.equal IQTest.iqQuestionCount afterThreeClears.totalDings
+                        , \_ -> Expect.equal 0 afterThreeClears.dingCount
+                        , \_ -> Expect.equal True afterThreeClears.in50PercentPhase
+                        , \_ -> Expect.equal IQTest.iqQuestionCount afterFourthClear.totalDings
+                        , \_ -> Expect.equal 1 afterFourthClear.dingCount
+                        ]
+                        ()
             ]
         , describe "applyCatch"
             [ test "doubles the count, re-arms punishment, resets progress" <|
