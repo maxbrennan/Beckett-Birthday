@@ -22,8 +22,6 @@ import View exposing (..)
 
 port pauseMusic : String -> Cmd msg
 
-port playAudio : String -> Cmd msg
-
 port setDomProperty : { elementId : String, property : String, value : Encode.Value } -> Cmd msg
 
 port domPropertyError : (String -> msg) -> Sub msg
@@ -98,78 +96,6 @@ clearPending model =
     { model | pending = [] }
 
 
--- If the given saved screen sits on a (non-video) song question, return its index.
--- Used on rejoin so the track restarts from the top instead of resuming a silent
--- question screen.
-songQuestionIdx : List Question -> Screen -> Maybe Int
-songQuestionIdx questions savedScreen =
-    let
-        idxIfSong idx =
-            case getQuestion questions idx of
-                Just q ->
-                    if isVideo q.song then
-                        Nothing
-
-                    else
-                        Just idx
-
-                Nothing ->
-                    Nothing
-    in
-    case savedScreen of
-        BlankScreen idx ->
-            idxIfSong idx
-
-        QuestionScreen idx _ ->
-            idxIfSong idx
-
-        _ ->
-            Nothing
-
-
--- Restore a snapshotted mid-game screen after the player presses Begin on rejoin.
--- Non-song screens (video, IQ test, etc.) resume in place, replaying the saved
--- video/song position; song questions are handled earlier by songQuestionIdx.
-beginFromSaved : Model -> PausedState -> ( Model, Cmd Msg )
-beginFromSaved model saved =
-    let
-        -- Update pending events to fire at the same intervals from now as they would have from the savedAt time.
-        rebasedPending =
-            List.map
-                (\e -> { e | fireAt = model.now + max 500 (e.fireAt - saved.savedAt) })
-                saved.pending
-
-        videoCmd =
-            case saved.videoResumeTime of
-                Just t ->
-                    case saved.screen of
-                        VideoScreen _ _ ->
-                            setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t }
-
-                        IQTestActiveScreen state ->
-                            if state.loudPlaying then
-                                setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t }
-
-                            else
-                                Cmd.none
-
-                        _ ->
-                            Cmd.none
-
-                Nothing ->
-                    Cmd.none
-    in
-    ( { model
-        | screen = saved.screen
-        , pending = rebasedPending
-        , savedState = Nothing
-        , jeopardyPlaying = False
-        , pendingStartTime = saved.songResumeTime
-      }
-    , Cmd.batch [ pauseMusic "jeopardy-audio", videoCmd ]
-    )
-
-
 
 iqFail : Model -> IQTestState -> ( Model, Cmd Msg )
 iqFail model state =
@@ -242,23 +168,42 @@ update msg model =
         BeginPressed ->
             case model.savedState of
                 Just saved ->
-                    case songQuestionIdx model.questions saved.screen of
-                        Just idx ->
-                            -- Rejoining onto a song question: restart the track from the
-                            -- top rather than resuming a silent question screen.
-                            ( { model
-                                | screen = BlankScreen idx
-                                , savedState = Nothing
-                                , jeopardyPlaying = False
-                                , pendingStartTime = Nothing
-                              }
-                                |> clearPending
-                                |> schedule 1000 (PlaySong idx)
-                            , pauseMusic "jeopardy-audio"
-                            )
+                    let
+                        -- Update pending events to fire at the same intervals from now as they would have from the savedAt time.
+                        rebasedPending =
+                            List.map
+                                (\e -> { e | fireAt = model.now + max 500 (e.fireAt - saved.savedAt) })
+                                saved.pending
 
-                        Nothing ->
-                            beginFromSaved model saved
+                        videoCmd =
+                            case saved.videoResumeTime of
+                                Just t ->
+                                    case saved.screen of
+                                        VideoScreen _ _ ->
+                                            setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t }
+
+                                        IQTestActiveScreen state ->
+                                            if state.loudPlaying then
+                                                setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t }
+
+                                            else
+                                                Cmd.none
+
+                                        _ ->
+                                            Cmd.none
+
+                                Nothing ->
+                                    Cmd.none
+                    in
+                    ( { model
+                        | screen = saved.screen
+                        , pending = rebasedPending
+                        , savedState = Nothing
+                        , jeopardyPlaying = False
+                        , pendingStartTime = saved.songResumeTime
+                      }
+                    , Cmd.batch [ pauseMusic "jeopardy-audio", videoCmd ]
+                    )
 
                 Nothing ->
                     ( { model | screen = BlankScreen 0, jeopardyPlaying = False, savedState = Nothing }
@@ -960,22 +905,14 @@ update msg model =
             ( model, Cmd.none )
 
         SongMetadataLoaded ->
-            -- The `autoplay` attribute alone is unreliable when the <audio> element
-            -- mounts from a timer-driven transition (e.g. after the skip-offer
-            -- animation) rather than immediately following a user gesture, so start
-            -- playback explicitly once the element's metadata is ready.
-            let
-                seekCmd =
-                    case model.pendingStartTime of
-                        Just t ->
-                            setDomProperty { elementId = "quiz-audio", property = "currentTime", value = Encode.float t }
+            case model.pendingStartTime of
+                Just t ->
+                    ( { model | pendingStartTime = Nothing }
+                    , setDomProperty { elementId = "quiz-audio", property = "currentTime", value = Encode.float t }
+                    )
 
-                        Nothing ->
-                            Cmd.none
-            in
-            ( { model | pendingStartTime = Nothing }
-            , Cmd.batch [ seekCmd, playAudio "quiz-audio" ]
-            )
+                Nothing ->
+                    ( model, Cmd.none )
 
         DomPropertyReceived _ ->
             ( model, Cmd.none )
