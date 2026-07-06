@@ -2,10 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { startTestServer } = require('./helpers/testServer');
-const { AdminClient } = require('./helpers/adminAuth');
-const distClient = require('./helpers/distClient');
-const { waitUntil } = require('./helpers/waitUntil');
+const { startTestServer } = require('../helpers/testServer');
+const { AdminClient } = require('../helpers/adminAuth');
+const distClient = require('../helpers/distClient');
+const { waitUntil } = require('../helpers/waitUntil');
 
 const TEST_PORT = 19448;
 const USERNAME = 'testadmin';

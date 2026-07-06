@@ -1,9 +1,9 @@
 'use strict';
 
 const crypto = require('crypto');
-const { startTestServer } = require('./helpers/testServer');
-const { connect } = require('./helpers/protocolClient');
-const { AdminClient } = require('./helpers/adminAuth');
+const { startTestServer } = require('../helpers/testServer');
+const { connect } = require('../helpers/protocolClient');
+const { AdminClient } = require('../helpers/adminAuth');
 
 const TEST_PORT = 19446;
 const USERNAME = 'testadmin';

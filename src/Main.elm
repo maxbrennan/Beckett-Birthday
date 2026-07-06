@@ -785,6 +785,7 @@ update msg model =
                                             , dingKey = model.dingKey
                                             , myUuid = model.myUuid
                                             , wsUrl = model.wsUrl
+                                            , questions = model.questions
                                           }
                                         , videoCmd
                                         )
