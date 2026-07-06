@@ -195,8 +195,8 @@ if (require.main === module) {
                 const isKeyFailure = !!(msg.authResult.key && !msg.authResult.key.success);
                 if (isKeyFailure) { pendingRetry = true; }
                 else if (!variant.success) { fail('authentication failed'); }
-            } else if (msg.payload === 'ack') {
-                uploadToken = msg.ack.uploadToken;
+            } else if (msg.payload === 'distRegisterAck') {
+                uploadToken = msg.distRegisterAck.uploadToken;
                 break;
             }
         }
@@ -222,7 +222,7 @@ if (require.main === module) {
         while (true) {
             const msg = await nextMessage();
             if (msg.payload === '_closed') fail('connection closed before upload acknowledged');
-            if (msg.payload === 'ack') break;
+            if (msg.payload === 'distCompleteAck') break;
         }
 
         console.log('[dist] upload acknowledged, done');

@@ -109,7 +109,7 @@ describe('win text delivery', () => {
         const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
         conn.send({ stateUpdate: { json: stateWithScreen({ tag: 'BeginScreen' }) } });
         // The ack still comes back; a winText message must not.
-        await conn.waitFor((m) => m.payload === 'ack');
+        await conn.waitFor((m) => m.payload === 'stateUpdateAck');
         await expect(conn.waitFor((m) => m.payload === 'winText', 500)).rejects.toThrow();
         await conn.close();
     }, 10000);

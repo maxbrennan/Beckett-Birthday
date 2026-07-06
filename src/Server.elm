@@ -78,7 +78,7 @@ performUndeploy uuid clientId model =
             Just target ->
                 deleteBuildFile target.filename
         , writeRegistry newRegistry
-        , sendToClient { clientId = clientId, payload = ackEnvelope }
+        , sendToClient { clientId = clientId, payload = distUndeployAckEnvelope }
         ]
     )
 
@@ -248,7 +248,7 @@ update msg model =
                             ( { model | registry = newRegistry }
                             , Cmd.batch
                                 [ writeRegistry newRegistry
-                                , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                , sendToClient { clientId = clientId, payload = stateUpdateAckEnvelope }
                                 , winTextCmd
                                 ]
                             )
@@ -296,7 +296,7 @@ update msg model =
                                     , Cmd.batch
                                         [ writeChunk
                                         , writeRegistry newRegistry
-                                        , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                        , sendToClient { clientId = clientId, payload = distUploadAckEnvelope }
                                         ]
                                     )
 
@@ -333,7 +333,7 @@ update msg model =
                                   }
                                 , Cmd.batch
                                     [ writeRegistry newRegistry
-                                    , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                    , sendToClient { clientId = clientId, payload = distCompleteAckEnvelope }
                                     ]
                                 )
 
@@ -376,7 +376,7 @@ update msg model =
                                       }
                                     , Cmd.batch
                                         [ writeRegistry newRegistry
-                                        , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                        , sendToClient { clientId = clientId, payload = distStateEditSaveAckEnvelope }
                                         ]
                                     )
 
@@ -442,7 +442,7 @@ update msg model =
                                 , Cmd.batch
                                     [ closeOldPlayerCmd
                                     , writeRegistry newRegistry
-                                    , sendToClient { clientId = clientId, payload = ackEnvelope }
+                                    , sendToClient { clientId = clientId, payload = distReplaceCompleteAckEnvelope }
                                     ]
                                 )
 
@@ -476,7 +476,7 @@ update msg model =
                 Just (AwaitingAuth info) ->
                     if isAdmin then
                         ( { model | distClients = Dict.insert clientId (AwaitingUpload info) model.distClients }
-                        , sendToClient { clientId = clientId, payload = ackWithUploadTokenEnvelope }
+                        , sendToClient { clientId = clientId, payload = distRegisterAckEnvelope }
                         )
 
                     else

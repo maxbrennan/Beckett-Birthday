@@ -94,12 +94,12 @@ app.ports.sendToClient.subscribe(({ clientId, payload }) => {
     const ws = clients.get(clientId);
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     let serverPayload = payload;
-    // Elm requests an upload token via a marker inside the ack (crypto stays in JS).
+    // Elm requests an upload token via a marker inside the distRegisterAck (crypto stays in JS).
     // The marker is rewritten to a real token here and never reaches the codec.
-    if (payload.ack && payload.ack.mintUploadToken) {
+    if (payload.distRegisterAck && payload.distRegisterAck.mintUploadToken) {
         const token = crypto.randomBytes(32).toString('hex');
         validUploadTokens.add(token);
-        serverPayload = { ack: { uploadToken: token } };
+        serverPayload = { distRegisterAck: { uploadToken: token } };
     }
     ws.send(codec.encodeServer(serverPayload), { binary: true });
 });
