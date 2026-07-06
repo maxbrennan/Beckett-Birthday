@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y xvfb ffmpeg
+      - run: npm run build
+      - run: xvfb-run --auto-servernum npm run test:integration:js
+      - run: xvfb-run --auto-servernum npm run test:gui
+
+  js-unit:
+    name: JS Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test:unit:js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: js-coverage-data
+          path: coverage/js
+          retention-days: 7
+
+  elm-unit:
+    name: Elm Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test:elm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elm-coverage-data
+          path: .coverage
+          retention-days: 7
+
+  js-coverage:
+    name: JS Coverage
+    needs: js-unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: js-coverage-data
+          path: coverage/js
+      # Interim floor, not the 95% target from issue #26 — see the follow-up issue
+      # tracking the refactor-for-testability work needed to close the gap.
+      - run: node ci/check-js-coverage.js 5
+
+  elm-coverage:
+    name: Elm Coverage
+    needs: elm-unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: elm-coverage-data
+          path: .coverage
+      # Interim floor, not the 95% target from issue #26 — see the follow-up issue
+      # tracking the refactor-for-testability work needed to close the gap.
+      - run: node ci/check-elm-coverage.js 9

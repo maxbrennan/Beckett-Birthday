@@ -2,10 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { startTestServer } = require('./helpers/testServer');
-const { AdminClient } = require('./helpers/adminAuth');
-const distClient = require('./helpers/distClient');
-const { connectAsPlayer } = require('./helpers/playerClient');
+const { startTestServer } = require('../helpers/testServer');
+const { AdminClient } = require('../helpers/adminAuth');
+const distClient = require('../helpers/distClient');
+const { connectAsPlayer } = require('../helpers/playerClient');
 
 const TEST_PORT = 19450;
 const USERNAME = 'testadmin';

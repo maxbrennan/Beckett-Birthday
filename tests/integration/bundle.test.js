@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { PROJECT_ROOT } = require('./helpers/certPaths');
+const { PROJECT_ROOT } = require('../helpers/certPaths');
 
 // Guards issue #27: the personalized win text must live only on the server (in
 // builds.jsonl / config/win-screen.json read at deploy time), never compiled into the
