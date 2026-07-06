@@ -456,9 +456,15 @@ update msg model =
                             iqFail model state
 
                     else if state.dingActive then
-                        -- Cleared a real ding: report it; the server decides whether
-                        -- this completes the test (and when to arm the loud gag).
-                        ( { model | screen = IQTestActiveScreen { state | dingActive = False } }
+                        -- Cleared a real ding: bump the displayed counter right away
+                        -- for responsive rendering, then report it -- the server
+                        -- decides whether this completes the test (and when to arm
+                        -- the loud gag). This optimistic count can be briefly wrong
+                        -- (e.g. during the hidden punishment phase, where a cleared
+                        -- ding shrinks totalDings instead of incrementing dingCount),
+                        -- but the next ServerIqDing/ServerIqTestComplete always
+                        -- overwrites it with the server's authoritative value.
+                        ( { model | screen = IQTestActiveScreen { state | dingActive = False, dingCount = state.dingCount + 1 } }
                         , sendWs model iqReadyForDingEnvelope
                         )
 
