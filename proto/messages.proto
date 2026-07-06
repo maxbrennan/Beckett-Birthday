@@ -79,6 +79,11 @@ message DistListResult { repeated DistListEntry entries = 1; }
 message IqStartCountdown   {}  // "player pressed Begin" — server uses its own stored count
 message IqReadyForDing     {}  // "previous ding resolved, send the next one"
 message IqCaught           {}  // "player pressed during a fake flash" — server doubles its count
+// Sent right after the client restores a saved IQTestCountdownScreen/
+// IQTestActiveScreen/FakeFlashCaughtScreen from a reconnect, so the server
+// re-arms whatever it paused on disconnect once the client is actually ready
+// to receive it (no-op if there's nothing paused for this player).
+message IqResume           {}
 
 message IqCountdownTick     { uint32 remaining = 1; }
 message IqCountdownComplete {}
@@ -124,5 +129,6 @@ message ClientMessage {
     IqStartCountdown     iq_start_countdown    = 12;
     IqReadyForDing       iq_ready_for_ding     = 13;
     IqCaught             iq_caught             = 14;
+    IqResume             iq_resume             = 15;
   }
 }

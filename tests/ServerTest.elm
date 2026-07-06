@@ -613,10 +613,13 @@ iqUpdateSuite =
         , test "iqStartCountdown initializes the server's own count at iqQuestionCount" <|
             \_ ->
                 let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
                     ( m, _ ) =
-                        update (iqTimerMsg "c1" "iqStartCountdown") baseModel
+                        update (iqTimerMsg "c1" "iqStartCountdown") connected
                 in
-                Dict.get "c1" m.iqTimers
+                Dict.get "uuid1" m.iqTimers
                     |> Maybe.map (\s -> ( s.totalDings, s.phase ))
                     |> Expect.equal (Just ( IQTest.iqQuestionCount, IqCounting ))
         , test "iqCaught doubles the server's own count and goes idle" <|
@@ -624,13 +627,14 @@ iqUpdateSuite =
                 let
                     staged =
                         { baseModel
-                            | iqTimers = Dict.singleton "c1" { iqState | totalDings = 100, phase = IqDingShown, lastDing = TrapFake }
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | totalDings = 100, phase = IqDingShown, lastDing = TrapFake }
                         }
 
                     ( m, _ ) =
                         update (iqTimerMsg "c1" "iqCaught") staged
                 in
-                Dict.get "c1" m.iqTimers
+                Dict.get "uuid1" m.iqTimers
                     |> Maybe.map (\s -> ( s.totalDings, s.phase ))
                     |> Expect.equal (Just ( 200, IqIdle ))
         , test "iqCaught is ignored unless a trap fake is outstanding" <|
@@ -638,13 +642,26 @@ iqUpdateSuite =
                 let
                     staged =
                         { baseModel
-                            | iqTimers = Dict.singleton "c1" { iqState | totalDings = 100, phase = IqDingShown, lastDing = PhaseFake }
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | totalDings = 100, phase = IqDingShown, lastDing = PhaseFake }
                         }
 
                     ( m, _ ) =
                         update (iqTimerMsg "c1" "iqCaught") staged
                 in
-                Dict.get "c1" m.iqTimers
+                Dict.get "uuid1" m.iqTimers
+                    |> Maybe.map .totalDings
+                    |> Expect.equal (Just 100)
+        , test "iqCaught with no clientId->uuid mapping is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | totalDings = 100, phase = IqDingShown, lastDing = TrapFake } }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqCaught") staged
+                in
+                Dict.get "uuid1" m.iqTimers
                     |> Maybe.map .totalDings
                     |> Expect.equal (Just 100)
         , test "a stale DingReady (wrong epoch) is ignored" <|
@@ -652,13 +669,74 @@ iqUpdateSuite =
                 let
                     staged =
                         { baseModel
-                            | iqTimers = Dict.singleton "c1" { iqState | epoch = 5, phase = IqDingScheduled }
+                            | iqTimers = Dict.singleton "uuid1" { iqState | epoch = 5, phase = IqDingScheduled }
                         }
 
                     ( m, _ ) =
-                        update (DingReady { clientId = "c1", epoch = 4 }) staged
+                        update (DingReady { uuid = "uuid1", epoch = 4 }) staged
                 in
-                Dict.get "c1" m.iqTimers
+                Dict.get "uuid1" m.iqTimers
                     |> Maybe.map .phase
                     |> Expect.equal (Just IqDingScheduled)
+        , test "a disconnect pauses (bumps epoch, keeps state) rather than dropping the IQ timer" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, dingCount = 10, phase = IqDingShown }
+                        }
+
+                    ( m, _ ) =
+                        update (ClientDisconnected "c1") staged
+                in
+                Dict.get "uuid1" m.iqTimers
+                    |> Expect.equal (Just { iqState | epoch = 2, dingCount = 10, phase = IqDingShown })
+        , test "a paused CountdownStep fire (stale epoch after disconnect) is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, phase = IqCounting, countdownRemaining = 42 }
+                        }
+
+                    ( disconnected, _ ) =
+                        update (ClientDisconnected "c1") staged
+
+                    ( m, _ ) =
+                        update (CountdownStep { uuid = "uuid1", epoch = 1 }) disconnected
+                in
+                Dict.get "uuid1" m.iqTimers
+                    |> Maybe.map .countdownRemaining
+                    |> Expect.equal (Just 42)
+        , test "iqResume re-arms a paused mid-countdown timer and resends the current tick" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 2, phase = IqCounting, countdownRemaining = 42 }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqResume") staged
+                in
+                Dict.get "uuid1" m.iqTimers
+                    |> Maybe.map (\s -> ( s.countdownRemaining, s.phase ))
+                    |> Expect.equal (Just ( 42, IqCounting ))
+        , test "iqResume on a phase with nothing to resume (IqIdle) is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdle, totalDings = 200 }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqResume") staged
+                in
+                Dict.get "uuid1" m.iqTimers
+                    |> Expect.equal (Just { iqState | phase = IqIdle, totalDings = 200 })
         ]

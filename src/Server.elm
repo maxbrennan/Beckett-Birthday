@@ -37,10 +37,17 @@ type IqPhase
     | IqIdle -- post-catch: waiting for the client to press Begin (iqStartCountdown) again
 
 
-{-| Per-player IQ-test state, keyed by clientId (what `sendToClient` addresses).
-Persists across fail-restart and catch-restart within a session so `totalDings`
-survives; only `ClientDisconnected` clears it. The client never supplies the
-count -- the server initializes it to `iqQuestionCount` and doubles it on a catch.
+{-| Per-player IQ-test state, keyed by **uuid** (the durable player identity, not
+the ephemeral `clientId` a WebSocket connection gets) so it survives a
+disconnect/reconnect. Persists across fail-restart, catch-restart, and a
+disconnect within a session -- only test completion removes it. The client
+never supplies the count -- the server initializes it to `iqQuestionCount` and
+doubles it on a catch.
+
+On disconnect the entry is *paused*, not dropped: `ClientDisconnected` bumps
+`epoch` (invalidating any in-flight `Process.sleep`) but keeps every field, and
+`ClientIqResume` re-arms the appropriate schedule once the player is back and
+has actually rendered the IQ screen again -- see `resumeIqTimer`.
 -}
 type alias IqTimerState =
     { epoch : Int -- bumped on every start; stale Process.sleep fires are ignored
@@ -73,8 +80,8 @@ type Msg
     | AuthCompleted { clientId : String, success : Bool, level : Int, uuid : String }
     | WriteFileCompleted { path : String, ok : Bool, error : Maybe String }
     | GotTime Time.Posix
-    | CountdownStep { clientId : String, epoch : Int }
-    | DingReady { clientId : String, epoch : Int }
+    | CountdownStep { uuid : String, epoch : Int }
+    | DingReady { uuid : String, epoch : Int }
 
 
 
@@ -163,16 +170,29 @@ applyCatch s =
     }
 
 
+-- Send a payload to a player's *current* connection, resolved live via
+-- connectedPlayers (their clientId can change across a disconnect/reconnect).
+-- Silently drops the send if the player isn't currently connected.
+sendToPlayer : String -> Model -> Encode.Value -> Cmd Msg
+sendToPlayer uuid model payload =
+    case Dict.get uuid model.connectedPlayers of
+        Just clientId ->
+            sendToClient { clientId = clientId, payload = payload }
+
+        Nothing ->
+            Cmd.none
+
+
 scheduleCountdownStep : String -> Int -> Cmd Msg
-scheduleCountdownStep clientId epoch =
+scheduleCountdownStep uuid epoch =
     Process.sleep 1000
-        |> Task.perform (\_ -> CountdownStep { clientId = clientId, epoch = epoch })
+        |> Task.perform (\_ -> CountdownStep { uuid = uuid, epoch = epoch })
 
 
 scheduleDing : String -> Int -> Float -> Cmd Msg
-scheduleDing clientId epoch delay =
+scheduleDing uuid epoch delay =
     Process.sleep delay
-        |> Task.perform (\_ -> DingReady { clientId = clientId, epoch = epoch })
+        |> Task.perform (\_ -> DingReady { uuid = uuid, epoch = epoch })
 
 
 {-| Start (or restart) a player's countdown. The base count comes from the
@@ -182,10 +202,10 @@ never from the client. Resets the run (fresh trap point, `dingCount` 0) while
 preserving `fakeFlashUsed`/`in50PercentPhase`.
 -}
 startCountdown : String -> Model -> ( Model, Cmd Msg )
-startCountdown clientId model =
+startCountdown uuid model =
     let
         prev =
-            Dict.get clientId model.iqTimers
+            Dict.get uuid model.iqTimers
 
         baseTotal =
             prev |> Maybe.map .totalDings |> Maybe.withDefault IQTest.iqQuestionCount
@@ -208,25 +228,80 @@ startCountdown clientId model =
             , lastDing = RealDing
             }
     in
-    ( { model | iqTimers = Dict.insert clientId newState model.iqTimers, seed = newSeed }
-    , scheduleCountdownStep clientId epoch
+    ( { model | iqTimers = Dict.insert uuid newState model.iqTimers, seed = newSeed }
+    , scheduleCountdownStep uuid epoch
     )
 
 
 -- Schedule the next ding after a server-enforced random delay, moving the player
 -- into the DingScheduled phase.
 scheduleNextDing : String -> IqTimerState -> Model -> ( Model, Cmd Msg )
-scheduleNextDing clientId state model =
+scheduleNextDing uuid state model =
     let
         ( delay, newSeed ) =
             Random.step IQTest.dingDelayGen model.seed
     in
     ( { model
-        | iqTimers = Dict.insert clientId { state | phase = IqDingScheduled } model.iqTimers
+        | iqTimers = Dict.insert uuid { state | phase = IqDingScheduled } model.iqTimers
         , seed = newSeed
       }
-    , scheduleDing clientId state.epoch delay
+    , scheduleDing uuid state.epoch delay
     )
+
+
+{-| Re-arm a paused IQ timer once the player has reconnected *and* actually
+rendered the corresponding IQ screen again (signalled by the client's
+`iqResume`, sent right after `BeginPressed` restores an IQ screen from
+`savedState`). Bumping to a fresh epoch here isn't needed -- `ClientDisconnected`
+already bumped it, and nothing was scheduled against the new epoch until now.
+
+- `IqCounting`: resend the current tick immediately (so the UI doesn't wait up
+  to 1s for the next natural tick) and re-arm the 1s loop.
+- `IqDingScheduled` / `IqAwaitingReady`: nothing was shown yet -- just arm the
+  next ding (a fresh random delay; the exact remaining wait isn't tracked).
+- `IqDingShown`: resend the same ding fresh, so the player gets a full
+  250ms/2000ms window rather than whatever's left of the generic client-side
+  pending-resume's rebased (and floor-clamped) window.
+- `IqIdle`: nothing to resume; the player will press Begin to send a fresh
+  `iqStartCountdown`.
+-}
+resumeIqTimer : String -> Model -> ( Model, Cmd Msg )
+resumeIqTimer uuid model =
+    case Dict.get uuid model.iqTimers of
+        Nothing ->
+            ( model, Cmd.none )
+
+        Just state ->
+            case state.phase of
+                IqCounting ->
+                    ( model
+                    , Cmd.batch
+                        [ sendToPlayer uuid model (iqCountdownTickEnvelope state.countdownRemaining)
+                        , scheduleCountdownStep uuid state.epoch
+                        ]
+                    )
+
+                IqDingScheduled ->
+                    scheduleNextDing uuid state model
+
+                IqAwaitingReady ->
+                    scheduleNextDing uuid state model
+
+                IqDingShown ->
+                    ( model
+                    , sendToPlayer uuid
+                        model
+                        (iqDingEnvelope
+                            { fake = dingIsFake state.lastDing
+                            , trap = state.lastDing == TrapFake
+                            , dingCount = state.dingCount
+                            , totalDings = state.totalDings
+                            }
+                        )
+                    )
+
+                IqIdle ->
+                    ( model, Cmd.none )
 
 
 writeRegistry : List RegistryEntry -> Cmd Msg
@@ -344,18 +419,27 @@ update msg model =
 
         ClientDisconnected clientId ->
             let
-                -- Drop any IQ timer for this client. Every in-flight Process.sleep
-                -- is epoch-guarded against this dict, so removing the entry turns
-                -- its pending countdown/ding fires into no-ops.
-                cleaned =
-                    { model
-                        | distClients = Dict.remove clientId model.distClients
-                        , iqTimers = Dict.remove clientId model.iqTimers
-                    }
+                cleanedDist =
+                    Dict.remove clientId model.distClients
+
+                maybeUuid =
+                    findUuidByClient clientId model.connectedPlayers
+
+                -- Pause (don't drop) any live IQ timer for this player: bump its
+                -- epoch so any in-flight Process.sleep becomes a stale no-op when it
+                -- fires, but keep every field (dingCount/totalDings/phase/...) so a
+                -- reconnect (ClientIqResume) picks up exactly where they left off.
+                pausedTimers =
+                    case maybeUuid of
+                        Just uuid ->
+                            Dict.update uuid (Maybe.map (\s -> { s | epoch = s.epoch + 1 })) model.iqTimers
+
+                        Nothing ->
+                            model.iqTimers
             in
-            case findUuidByClient clientId model.connectedPlayers of
+            case maybeUuid of
                 Nothing ->
-                    ( cleaned, Cmd.none )
+                    ( { model | distClients = cleanedDist, iqTimers = pausedTimers }, Cmd.none )
 
                 Just uuid ->
                     -- Leave the player's persisted state exactly as it was. The
@@ -363,7 +447,11 @@ update msg model =
                     -- BeginScreen) now happens lazily on their next stateRequest
                     -- (see ClientStateRequest below), so a server stop/restart that
                     -- never fires a disconnect still resumes the player correctly.
-                    ( { cleaned | connectedPlayers = Dict.remove uuid model.connectedPlayers }
+                    ( { model
+                        | connectedPlayers = Dict.remove uuid model.connectedPlayers
+                        , distClients = cleanedDist
+                        , iqTimers = pausedTimers
+                      }
                     , Cmd.none
                     )
 
@@ -668,66 +756,89 @@ update msg model =
                 Ok ClientIqStartCountdown ->
                     -- "Player pressed Begin." The count is the server's own, never
                     -- the client's -- see startCountdown.
-                    startCountdown clientId model
-
-                Ok ClientIqReadyForDing ->
-                    case Dict.get clientId model.iqTimers of
-                        Just state ->
-                            case state.phase of
-                                IqAwaitingReady ->
-                                    -- First ding after the countdown: nothing to
-                                    -- advance yet, just arm the first ding.
-                                    scheduleNextDing clientId state model
-
-                                IqDingShown ->
-                                    -- The outstanding ding was resolved; advance.
-                                    case advanceOnClear state of
-                                        Completed ->
-                                            ( { model | iqTimers = Dict.remove clientId model.iqTimers }
-                                            , sendToClient { clientId = clientId, payload = iqTestCompleteEnvelope }
-                                            )
-
-                                        Advanced adv ->
-                                            let
-                                                ( m, dingCmd ) =
-                                                    scheduleNextDing clientId adv.state model
-                                            in
-                                            ( m
-                                            , if adv.startLoud then
-                                                Cmd.batch
-                                                    [ sendToClient { clientId = clientId, payload = iqStartLoudEnvelope }
-                                                    , dingCmd
-                                                    ]
-
-                                              else
-                                                dingCmd
-                                            )
-
-                                _ ->
-                                    -- Stale/duplicate request in another phase: ignore.
-                                    ( model, Cmd.none )
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Just uuid ->
+                            startCountdown uuid model
 
                         Nothing ->
                             ( model, Cmd.none )
+
+                Ok ClientIqReadyForDing ->
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just uuid ->
+                            case Dict.get uuid model.iqTimers of
+                                Just state ->
+                                    case state.phase of
+                                        IqAwaitingReady ->
+                                            -- First ding after the countdown: nothing to
+                                            -- advance yet, just arm the first ding.
+                                            scheduleNextDing uuid state model
+
+                                        IqDingShown ->
+                                            -- The outstanding ding was resolved; advance.
+                                            case advanceOnClear state of
+                                                Completed ->
+                                                    ( { model | iqTimers = Dict.remove uuid model.iqTimers }
+                                                    , sendToPlayer uuid model iqTestCompleteEnvelope
+                                                    )
+
+                                                Advanced adv ->
+                                                    let
+                                                        ( m, dingCmd ) =
+                                                            scheduleNextDing uuid adv.state model
+                                                    in
+                                                    ( m
+                                                    , if adv.startLoud then
+                                                        Cmd.batch [ sendToPlayer uuid model iqStartLoudEnvelope, dingCmd ]
+
+                                                      else
+                                                        dingCmd
+                                                    )
+
+                                        _ ->
+                                            -- Stale/duplicate request in another phase: ignore.
+                                            ( model, Cmd.none )
+
+                                Nothing ->
+                                    ( model, Cmd.none )
 
                 Ok ClientIqCaught ->
                     -- Honor a catch only when a fake ding is actually outstanding.
                     -- The server doubles its own count and goes idle; the client is
                     -- meanwhile playing the cutscene and will send iqStartCountdown
                     -- (which resets the run) when the player presses Begin again.
-                    case Dict.get clientId model.iqTimers of
-                        Just state ->
-                            if state.phase == IqDingShown && state.lastDing == TrapFake then
-                                let
-                                    caught =
-                                        applyCatch state
-                                in
-                                ( { model | iqTimers = Dict.insert clientId { caught | phase = IqIdle } model.iqTimers }
-                                , Cmd.none
-                                )
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Nothing ->
+                            ( model, Cmd.none )
 
-                            else
-                                ( model, Cmd.none )
+                        Just uuid ->
+                            case Dict.get uuid model.iqTimers of
+                                Just state ->
+                                    if state.phase == IqDingShown && state.lastDing == TrapFake then
+                                        let
+                                            caught =
+                                                applyCatch state
+                                        in
+                                        ( { model | iqTimers = Dict.insert uuid { caught | phase = IqIdle } model.iqTimers }
+                                        , Cmd.none
+                                        )
+
+                                    else
+                                        ( model, Cmd.none )
+
+                                Nothing ->
+                                    ( model, Cmd.none )
+
+                Ok ClientIqResume ->
+                    -- The client just restored a saved IQ screen (countdown/active)
+                    -- after reconnecting. Re-arm whatever was paused for it -- a
+                    -- no-op if there's nothing to resume (e.g. IqIdle, or no entry).
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Just uuid ->
+                            resumeIqTimer uuid model
 
                         Nothing ->
                             ( model, Cmd.none )
@@ -825,8 +936,8 @@ update msg model =
             -- across server runs. Arrives once at startup, before any WS message.
             ( { model | seed = Random.initialSeed (Time.posixToMillis posix) }, Cmd.none )
 
-        CountdownStep { clientId, epoch } ->
-            case Dict.get clientId model.iqTimers of
+        CountdownStep { uuid, epoch } ->
+            case Dict.get uuid model.iqTimers of
                 Just state ->
                     if state.epoch == epoch && state.phase == IqCounting then
                         let
@@ -834,27 +945,27 @@ update msg model =
                                 state.countdownRemaining - 1
                         in
                         if newRemaining > 0 then
-                            ( { model | iqTimers = Dict.insert clientId { state | countdownRemaining = newRemaining } model.iqTimers }
+                            ( { model | iqTimers = Dict.insert uuid { state | countdownRemaining = newRemaining } model.iqTimers }
                             , Cmd.batch
-                                [ sendToClient { clientId = clientId, payload = iqCountdownTickEnvelope newRemaining }
-                                , scheduleCountdownStep clientId epoch
+                                [ sendToPlayer uuid model (iqCountdownTickEnvelope newRemaining)
+                                , scheduleCountdownStep uuid epoch
                                 ]
                             )
 
                         else
-                            ( { model | iqTimers = Dict.insert clientId { state | countdownRemaining = 0, phase = IqAwaitingReady } model.iqTimers }
-                            , sendToClient { clientId = clientId, payload = iqCountdownCompleteEnvelope }
+                            ( { model | iqTimers = Dict.insert uuid { state | countdownRemaining = 0, phase = IqAwaitingReady } model.iqTimers }
+                            , sendToPlayer uuid model iqCountdownCompleteEnvelope
                             )
 
                     else
-                        -- Stale fire (disconnected, or a newer countdown started).
+                        -- Stale fire (paused by a disconnect, or a newer countdown started).
                         ( model, Cmd.none )
 
                 Nothing ->
                     ( model, Cmd.none )
 
-        DingReady { clientId, epoch } ->
-            case Dict.get clientId model.iqTimers of
+        DingReady { uuid, epoch } ->
+            case Dict.get uuid model.iqTimers of
                 Just state ->
                     if state.epoch == epoch && state.phase == IqDingScheduled then
                         let
@@ -865,19 +976,18 @@ update msg model =
                                 classifyDing coin state
                         in
                         ( { model
-                            | iqTimers = Dict.insert clientId { state | phase = IqDingShown, lastDing = kind } model.iqTimers
+                            | iqTimers = Dict.insert uuid { state | phase = IqDingShown, lastDing = kind } model.iqTimers
                             , seed = newSeed
                           }
-                        , sendToClient
-                            { clientId = clientId
-                            , payload =
-                                iqDingEnvelope
-                                    { fake = dingIsFake kind
-                                    , trap = kind == TrapFake
-                                    , dingCount = state.dingCount
-                                    , totalDings = state.totalDings
-                                    }
-                            }
+                        , sendToPlayer uuid
+                            model
+                            (iqDingEnvelope
+                                { fake = dingIsFake kind
+                                , trap = kind == TrapFake
+                                , dingCount = state.dingCount
+                                , totalDings = state.totalDings
+                                }
+                            )
                         )
 
                     else

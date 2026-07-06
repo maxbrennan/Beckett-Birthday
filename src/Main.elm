@@ -105,24 +105,24 @@ sendWs model payload =
             Cmd.none
 
 
--- Collapse an in-progress IQ-test screen back to the IQ Begin screen when resuming
--- a saved session. The server owns all IQ timing and drops a player's timer on
--- disconnect, so a restored countdown/active/caught screen would have no dings
--- coming — the player cleanly restarts the test instead of hanging.
-normalizeResumeScreen : Screen -> Screen
-normalizeResumeScreen screen =
+-- After restoring a saved screen on reconnect, tell the server we're back so it
+-- can re-arm whatever IQ timer it paused on disconnect (see Server.elm's
+-- resumeIqTimer). Harmless to send for FakeFlashCaughtScreen too -- the server
+-- has nothing scheduled for that phase, so it's just a no-op there.
+resumeCmd : Model -> Screen -> Cmd Msg
+resumeCmd model screen =
     case screen of
-        IQTestCountdownScreen s ->
-            IQTestScreen { questionIdx = s.questionIdx, totalDings = s.totalDings }
+        IQTestCountdownScreen _ ->
+            sendWs model iqResumeEnvelope
 
-        IQTestActiveScreen s ->
-            IQTestScreen { questionIdx = s.questionIdx, totalDings = s.totalDings }
+        IQTestActiveScreen _ ->
+            sendWs model iqResumeEnvelope
 
-        FakeFlashCaughtScreen s ->
-            IQTestScreen { questionIdx = s.questionIdx, totalDings = s.originalTotal }
+        FakeFlashCaughtScreen _ ->
+            sendWs model iqResumeEnvelope
 
         _ ->
-            screen
+            Cmd.none
 
 
 
@@ -219,13 +219,13 @@ update msg model =
                                     Cmd.none
                     in
                     ( { model
-                        | screen = normalizeResumeScreen saved.screen
+                        | screen = saved.screen
                         , pending = rebasedPending
                         , savedState = Nothing
                         , jeopardyPlaying = False
                         , pendingStartTime = saved.songResumeTime
                       }
-                    , Cmd.batch [ pauseMusic "jeopardy-audio", videoCmd ]
+                    , Cmd.batch [ pauseMusic "jeopardy-audio", videoCmd, resumeCmd model saved.screen ]
                     )
 
                 Nothing ->

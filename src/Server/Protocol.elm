@@ -20,6 +20,7 @@ type ClientEnvelope
     | ClientIqStartCountdown
     | ClientIqReadyForDing
     | ClientIqCaught
+    | ClientIqResume
     | ClientUnknown
 
 
@@ -105,6 +106,9 @@ decodeClientEnvelope =
 
                     "iqCaught" ->
                         Decode.succeed ClientIqCaught
+
+                    "iqResume" ->
+                        Decode.succeed ClientIqResume
 
                     _ ->
                         Decode.succeed ClientUnknown
