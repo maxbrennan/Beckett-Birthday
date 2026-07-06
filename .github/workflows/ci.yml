@@ -55,6 +55,7 @@ jobs:
           name: elm-coverage-data
           path: .coverage
           retention-days: 7
+          include-hidden-files: true
 
   js-coverage:
     name: JS Coverage
