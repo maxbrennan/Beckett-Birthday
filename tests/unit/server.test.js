@@ -1,4 +1,4 @@
-const { isAdminAuth } = require('../server/auth.js');
+const { isAdminAuth } = require('../../server/auth.js');
 
 test('admin with level 2 is allowed', () => {
     expect(isAdminAuth({ success: true, level: 2 })).toBe(true);

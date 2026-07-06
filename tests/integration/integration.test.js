@@ -1,7 +1,7 @@
 'use strict';
 
 const WebSocket = require('ws');
-const { startTestServer } = require('./helpers/testServer');
+const { startTestServer } = require('../helpers/testServer');
 
 const TEST_PORT = 19443;
 
