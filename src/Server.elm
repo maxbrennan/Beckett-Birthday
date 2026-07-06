@@ -170,6 +170,142 @@ applyCatch s =
     }
 
 
+{-| The IQ-relevant fields of whatever screen an admin state edit just saved.
+`EditedIqOther` covers both "not an IQ screen" and "decode failed" -- either
+way there's nothing to reconcile.
+-}
+type EditedIqScreen
+    = EditedIqBegin { totalDings : Int }
+    | EditedIqCountdown { countdown : Int, totalDings : Int }
+    | EditedIqActive { dingCount : Int, totalDings : Int }
+    | EditedIqOther
+
+
+decodeEditedIqScreen : Decode.Decoder EditedIqScreen
+decodeEditedIqScreen =
+    Decode.oneOf
+        [ Decode.at [ "screen", "tag" ] Decode.string
+            |> Decode.andThen
+                (\tag ->
+                    case tag of
+                        "IQTestScreen" ->
+                            Decode.map (\td -> EditedIqBegin { totalDings = td })
+                                (Decode.at [ "screen", "state", "totalDings" ] Decode.int)
+
+                        "IQTestCountdownScreen" ->
+                            Decode.map2 (\cd td -> EditedIqCountdown { countdown = cd, totalDings = td })
+                                (Decode.at [ "screen", "state", "countdown" ] Decode.int)
+                                (Decode.at [ "screen", "state", "totalDings" ] Decode.int)
+
+                        "IQTestActiveScreen" ->
+                            Decode.map2 (\dc td -> EditedIqActive { dingCount = dc, totalDings = td })
+                                (Decode.at [ "screen", "state", "dingCount" ] Decode.int)
+                                (Decode.at [ "screen", "state", "totalDings" ] Decode.int)
+
+                        _ ->
+                            Decode.succeed EditedIqOther
+                )
+        , Decode.succeed EditedIqOther
+        ]
+
+
+{-| The server's in-memory `iqTimers` is now the sole authority on the IQ
+countdown/count, entirely separate from the persisted registry JSON an admin
+edits with `edit:state`. Without this, an edited countdown/count is silently
+clobbered the moment the server resends its own (unrelated) authoritative
+value -- see the `iqResume`-driven resends in `resumeIqTimer`. So: whenever an
+edit is saved, treat its IQ-relevant fields as the new authoritative state and
+overwrite (or create) the player's `iqTimers` entry to match, keeping it
+paused (no live schedule armed) exactly like a normal disconnect, so the next
+`iqResume` (once the player reconnects and presses Begin again) arms it.
+`fakeFlashUsed`/`in50PercentPhase` carry over from any existing entry (an edit
+doesn't expose them); `fakeFlashPoint` is freshly drawn since the client no
+longer has one to round-trip.
+-}
+reconcileIqTimerAfterEdit : String -> Encode.Value -> Model -> Model
+reconcileIqTimerAfterEdit uuid parsedState model =
+    let
+        prev =
+            Dict.get uuid model.iqTimers
+
+        nextEpoch =
+            (prev |> Maybe.map .epoch |> Maybe.withDefault 0) + 1
+
+        carriedFakeFlashUsed =
+            prev |> Maybe.map .fakeFlashUsed |> Maybe.withDefault False
+
+        carriedIn50Percent =
+            prev |> Maybe.map .in50PercentPhase |> Maybe.withDefault False
+    in
+    case Decode.decodeValue decodeEditedIqScreen parsedState of
+        Ok (EditedIqBegin { totalDings }) ->
+            { model
+                | iqTimers =
+                    Dict.insert uuid
+                        { epoch = nextEpoch
+                        , phase = IqIdle
+                        , countdownRemaining = totalDings
+                        , dingCount = 0
+                        , totalDings = totalDings
+                        , fakeFlashPoint = prev |> Maybe.map .fakeFlashPoint |> Maybe.withDefault 0
+                        , fakeFlashUsed = carriedFakeFlashUsed
+                        , in50PercentPhase = carriedIn50Percent
+                        , lastDing = RealDing
+                        }
+                        model.iqTimers
+            }
+
+        Ok (EditedIqCountdown { countdown, totalDings }) ->
+            let
+                ( fakeFlashPoint, newSeed ) =
+                    Random.step (IQTest.fakeFlashPointGen totalDings) model.seed
+            in
+            { model
+                | iqTimers =
+                    Dict.insert uuid
+                        { epoch = nextEpoch
+                        , phase = IqCounting
+                        , countdownRemaining = countdown
+                        , dingCount = 0
+                        , totalDings = totalDings
+                        , fakeFlashPoint = fakeFlashPoint
+                        , fakeFlashUsed = carriedFakeFlashUsed
+                        , in50PercentPhase = carriedIn50Percent
+                        , lastDing = RealDing
+                        }
+                        model.iqTimers
+                , seed = newSeed
+            }
+
+        Ok (EditedIqActive { dingCount, totalDings }) ->
+            let
+                ( fakeFlashPoint, newSeed ) =
+                    Random.step (IQTest.fakeFlashPointGen totalDings) model.seed
+            in
+            { model
+                | iqTimers =
+                    Dict.insert uuid
+                        { epoch = nextEpoch
+                        , phase = IqAwaitingReady
+                        , countdownRemaining = 0
+                        , dingCount = dingCount
+                        , totalDings = totalDings
+                        , fakeFlashPoint = fakeFlashPoint
+                        , fakeFlashUsed = carriedFakeFlashUsed
+                        , in50PercentPhase = carriedIn50Percent
+                        , lastDing = RealDing
+                        }
+                        model.iqTimers
+                , seed = newSeed
+            }
+
+        Ok EditedIqOther ->
+            model
+
+        Err _ ->
+            model
+
+
 -- Send a payload to a player's *current* connection, resolved live via
 -- connectedPlayers (their clientId can change across a disconnect/reconnect).
 -- Silently drops the send if the player isn't currently connected.
@@ -662,8 +798,11 @@ update msg model =
                                     let
                                         newRegistry =
                                             updateEntryState editUuid parsedState model.registry
+
+                                        reconciledModel =
+                                            reconcileIqTimerAfterEdit editUuid parsedState model
                                     in
-                                    ( { model
+                                    ( { reconciledModel
                                         | registry = newRegistry
                                         , pendingStateEdits = Set.remove editUuid model.pendingStateEdits
                                         , distClients = clearedDist

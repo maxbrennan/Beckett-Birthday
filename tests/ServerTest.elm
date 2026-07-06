@@ -10,6 +10,7 @@ import Server
     exposing
         ( ClearOutcome(..)
         , DingKind(..)
+        , EditedIqScreen(..)
         , IqPhase(..)
         , IqTimerState
         , Model
@@ -17,6 +18,8 @@ import Server
         , advanceOnClear
         , applyCatch
         , classifyDing
+        , decodeEditedIqScreen
+        , reconcileIqTimerAfterEdit
         , update
         )
 import Server.Distribution exposing (DistStage(..))
@@ -739,4 +742,106 @@ iqUpdateSuite =
                 in
                 Dict.get "uuid1" m.iqTimers
                     |> Expect.equal (Just { iqState | phase = IqIdle, totalDings = 200 })
+        ]
+
+
+-- ── Admin state-edit reconciliation with the server's IQ timer ──────────────
+-- The server's iqTimers is now the sole authority on the IQ countdown/count,
+-- separate from the persisted registry JSON edit:state edits. Without
+-- reconcileIqTimerAfterEdit, an edited countdown/count is silently clobbered
+-- the moment the server resends its own (unrelated) value on the next
+-- iqResume -- this is exactly the bug report: "start countdown at 100s, edit
+-- state to 5s, click begin, still 100s".
+
+
+editedScreenState : String -> List ( String, Encode.Value ) -> Encode.Value
+editedScreenState tag fields =
+    Encode.object
+        [ ( "screen"
+          , Encode.object [ ( "tag", Encode.string tag ), ( "state", Encode.object fields ) ]
+          )
+        ]
+
+
+iqEditSuite : Test
+iqEditSuite =
+    describe "reconcileIqTimerAfterEdit"
+        [ describe "decodeEditedIqScreen"
+            [ test "decodes an edited IQTestCountdownScreen's countdown/totalDings" <|
+                \_ ->
+                    editedScreenState "IQTestCountdownScreen" [ ( "questionIdx", Encode.int 0 ), ( "countdown", Encode.int 5 ), ( "totalDings", Encode.int 100 ) ]
+                        |> Decode.decodeValue decodeEditedIqScreen
+                        |> Expect.equal (Ok (EditedIqCountdown { countdown = 5, totalDings = 100 }))
+            , test "decodes an edited IQTestActiveScreen's dingCount/totalDings" <|
+                \_ ->
+                    editedScreenState "IQTestActiveScreen"
+                        [ ( "questionIdx", Encode.int 0 ), ( "dingCount", Encode.int 3 ), ( "totalDings", Encode.int 100 )
+                        , ( "isFlashing", Encode.bool False ), ( "dingActive", Encode.bool False )
+                        , ( "fakeFlashActive", Encode.bool False ), ( "fakeIsTrap", Encode.bool False ), ( "loudPlaying", Encode.bool False )
+                        ]
+                        |> Decode.decodeValue decodeEditedIqScreen
+                        |> Expect.equal (Ok (EditedIqActive { dingCount = 3, totalDings = 100 }))
+            , test "decodes an edited IQTestScreen's totalDings" <|
+                \_ ->
+                    editedScreenState "IQTestScreen" [ ( "questionIdx", Encode.int 0 ), ( "totalDings", Encode.int 200 ) ]
+                        |> Decode.decodeValue decodeEditedIqScreen
+                        |> Expect.equal (Ok (EditedIqBegin { totalDings = 200 }))
+            , test "a non-IQ screen decodes to EditedIqOther" <|
+                \_ ->
+                    Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ] ) ]
+                        |> Decode.decodeValue decodeEditedIqScreen
+                        |> Expect.equal (Ok EditedIqOther)
+            , test "malformed JSON (no screen field) decodes to EditedIqOther rather than failing" <|
+                \_ ->
+                    Encode.object []
+                        |> Decode.decodeValue decodeEditedIqScreen
+                        |> Expect.equal (Ok EditedIqOther)
+            ]
+        , test "reconciles a paused countdown to the edited value (the reported bug)" <|
+            \_ ->
+                let
+                    -- Countdown was started at iqQuestionCount and paused (disconnected) partway.
+                    paused =
+                        { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | phase = IqCounting, countdownRemaining = 63, totalDings = IQTest.iqQuestionCount } }
+
+                    edited =
+                        editedScreenState "IQTestCountdownScreen" [ ( "questionIdx", Encode.int 0 ), ( "countdown", Encode.int 5 ), ( "totalDings", Encode.int IQTest.iqQuestionCount ) ]
+
+                    reconciled =
+                        reconcileIqTimerAfterEdit "uuid1" edited paused
+                in
+                Dict.get "uuid1" reconciled.iqTimers
+                    |> Maybe.map (\s -> ( s.countdownRemaining, s.phase ))
+                    |> Expect.equal (Just ( 5, IqCounting ))
+        , test "reconciling an IQTestActiveScreen edit sets dingCount/totalDings and awaits the next ding" <|
+            \_ ->
+                let
+                    edited =
+                        editedScreenState "IQTestActiveScreen"
+                            [ ( "questionIdx", Encode.int 0 ), ( "dingCount", Encode.int 40 ), ( "totalDings", Encode.int 100 )
+                            , ( "isFlashing", Encode.bool False ), ( "dingActive", Encode.bool False )
+                            , ( "fakeFlashActive", Encode.bool False ), ( "fakeIsTrap", Encode.bool False ), ( "loudPlaying", Encode.bool False )
+                            ]
+
+                    reconciled =
+                        reconcileIqTimerAfterEdit "uuid1" edited baseModel
+                in
+                Dict.get "uuid1" reconciled.iqTimers
+                    |> Maybe.map (\s -> ( s.dingCount, s.totalDings, s.phase ))
+                    |> Expect.equal (Just ( 40, 100, IqAwaitingReady ))
+        , test "reconciling an edit to a non-IQ screen leaves any existing timer untouched" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | dingCount = 7 } }
+
+                    edited =
+                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ] ) ]
+
+                    reconciled =
+                        reconcileIqTimerAfterEdit "uuid1" edited staged
+                in
+                Dict.get "uuid1" reconciled.iqTimers
+                    |> Maybe.map .dingCount
+                    |> Expect.equal (Just 7)
         ]
