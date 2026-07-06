@@ -609,7 +609,7 @@ viewScreen model =
                     , style "max-width" "560px"
                     , style "line-height" "1.6"
                     ]
-                    [ text "You can skip the IQ test. In exchange, you'll take on a mystery challenge later — it's easier and less frustrating than this, but longer." ]
+                    [ text "You failed, but you can skip the IQ test. In exchange, you'll take on a mystery challenge later — it's easier and less frustrating than this, but longer." ]
                 , p
                     [ style "font-size" "20px"
                     , style "color" "#2c4a5a"

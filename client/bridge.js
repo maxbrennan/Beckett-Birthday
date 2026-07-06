@@ -39,6 +39,17 @@ app.ports.pauseMusic.subscribe((elementId) => {
   if (el) el.pause()
 })
 
+// Explicitly start playback. The `autoplay` attribute alone doesn't reliably
+// fire when an <audio> element mounts from a timer-driven transition (e.g. after
+// the IQ-test skip animation) rather than right after a user gesture.
+app.ports.playAudio.subscribe((elementId) => {
+  const el = document.getElementById(elementId)
+  if (el) {
+    const p = el.play()
+    if (p && typeof p.catch === 'function') p.catch(() => {})
+  }
+})
+
 // WebSocket management
 const wsMap = new Map()
 let nextWsId = 0
