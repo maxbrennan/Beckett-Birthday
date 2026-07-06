@@ -12,7 +12,6 @@ import Html.Events exposing (on, onClick, onInput)
 import Html.Keyed
 import Json.Decode as Decode exposing (Decoder)
 import Json.Encode as Encode
-import Random
 import Sync exposing (..)
 import Task
 import Time
@@ -95,17 +94,49 @@ clearPending model =
     { model | pending = [] }
 
 
+-- Send a payload to the server over the WebSocket, if connected.
+sendWs : Model -> Encode.Value -> Cmd Msg
+sendWs model payload =
+    case model.wsClientId of
+        Just wsId ->
+            sendToWs { wsId = wsId, data = Encode.encode 0 payload }
+
+        Nothing ->
+            Cmd.none
+
+
+-- Collapse an in-progress IQ-test screen back to the IQ Begin screen when resuming
+-- a saved session. The server owns all IQ timing and drops a player's timer on
+-- disconnect, so a restored countdown/active/caught screen would have no dings
+-- coming — the player cleanly restarts the test instead of hanging.
+normalizeResumeScreen : Screen -> Screen
+normalizeResumeScreen screen =
+    case screen of
+        IQTestCountdownScreen s ->
+            IQTestScreen { questionIdx = s.questionIdx, totalDings = s.totalDings }
+
+        IQTestActiveScreen s ->
+            IQTestScreen { questionIdx = s.questionIdx, totalDings = s.totalDings }
+
+        FakeFlashCaughtScreen s ->
+            IQTestScreen { questionIdx = s.questionIdx, totalDings = s.originalTotal }
+
+        _ ->
+            screen
+
+
 
 iqFail : Model -> IQTestState -> ( Model, Cmd Msg )
 iqFail model state =
+    -- Back to the IQ Begin screen. No server message: the server preserves its
+    -- own count/phase across a fail, and the next iqStartCountdown resets only the
+    -- run. totalDings here is the display copy the server last sent.
     ( clearPending
         { model
             | screen =
                 IQTestScreen
                     { questionIdx = state.questionIdx
                     , totalDings = state.totalDings
-                    , fakeFlashUsed = state.fakeFlashUsed
-                    , in50PercentPhase = state.in50PercentPhase
                     }
         }
     , Cmd.none
@@ -188,7 +219,7 @@ update msg model =
                                     Cmd.none
                     in
                     ( { model
-                        | screen = saved.screen
+                        | screen = normalizeResumeScreen saved.screen
                         , pending = rebasedPending
                         , savedState = Nothing
                         , jeopardyPlaying = False
@@ -335,8 +366,6 @@ update msg model =
                                 IQTestScreen
                                     { questionIdx = idx
                                     , totalDings = iqQuestionCount
-                                    , fakeFlashUsed = False
-                                    , in50PercentPhase = False
                                     }
                         }
                     , Cmd.none
@@ -348,111 +377,18 @@ update msg model =
         IQTestBeginPressed ->
             case model.screen of
                 IQTestScreen iqScreen ->
-                    ( model
-                    , Random.generate IQTestStarted (iqTestInitGen iqScreen.totalDings)
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        IQTestStarted initData ->
-            case model.screen of
-                IQTestScreen iqScreen ->
+                    -- Enter the countdown screen and ask the server to run it. The
+                    -- server owns the count and all timing; the client just renders.
                     ( { model
                         | screen =
                             IQTestCountdownScreen
                                 { questionIdx = iqScreen.questionIdx
                                 , totalDings = iqScreen.totalDings
-                                , fakeFlashUsed = iqScreen.fakeFlashUsed
-                                , in50PercentPhase = iqScreen.in50PercentPhase
                                 , countdown = iqScreen.totalDings
-                                , initData = initData
                                 }
                       }
-                        |> schedule 1000 CountdownTick
-                    , Cmd.none
+                    , sendWs model iqStartCountdownEnvelope
                     )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        CountdownTick ->
-            case model.screen of
-                IQTestCountdownScreen state ->
-                    if state.countdown > 1 then
-                        ( { model | screen = IQTestCountdownScreen { state | countdown = state.countdown - 1 } }
-                            |> schedule 1000 CountdownTick
-                        , Cmd.none
-                        )
-
-                    else
-                        let
-                            { delay, nextRandom, fakeFlashPoint } =
-                                state.initData
-                        in
-                        ( clearPending
-                            { model
-                                | screen =
-                                    IQTestActiveScreen
-                                        { questionIdx = state.questionIdx
-                                        , dingCount = 0
-                                        , totalDings = state.totalDings
-                                        , isFlashing = False
-                                        , dingActive = False
-                                        , fakeFlashActive = False
-                                        , loudPlaying = False
-                                        , fakeFlashUsed = state.fakeFlashUsed
-                                        , fakeFlashPoint = fakeFlashPoint
-                                        , nextRandom = nextRandom
-                                        , in50PercentPhase = state.in50PercentPhase
-                                        }
-                            }
-                            |> schedule delay DingOccurred
-                        , Cmd.none
-                        )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        ScheduleNextDing { delay, nextRandom } ->
-            case model.screen of
-                IQTestActiveScreen state ->
-                    ( { model | screen = IQTestActiveScreen { state | nextRandom = nextRandom } }
-                        |> schedule delay DingOccurred
-                    , Cmd.none
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
-
-        DingOccurred ->
-            case model.screen of
-                IQTestActiveScreen state ->
-                    let
-                        isFakeFlashPoint =
-                            not state.fakeFlashUsed
-                                && not state.in50PercentPhase
-                                && state.dingCount == state.fakeFlashPoint
-
-                        isFake =
-                            isFakeFlashPoint || (state.in50PercentPhase && state.nextRandom)
-                    in
-                    if isFake then
-                        ( { model | screen = IQTestActiveScreen { state | isFlashing = True, fakeFlashActive = True } }
-                            |> schedule iqFlashDuration DingFlashEnd
-                            |> schedule iqWindowDuration FakeFlashWindowExpired
-                        , Cmd.none
-                        )
-
-                    else
-                        ( { model
-                            | screen = IQTestActiveScreen { state | isFlashing = True, dingActive = True }
-                            , dingKey = model.dingKey + 1
-                          }
-                            |> schedule iqFlashDuration DingFlashEnd
-                            |> schedule iqWindowDuration DingWindowExpired
-                        , Cmd.none
-                        )
 
                 _ ->
                     ( model, Cmd.none )
@@ -481,8 +417,10 @@ update msg model =
             case model.screen of
                 IQTestActiveScreen state ->
                     if state.fakeFlashActive then
-                        ( { model | screen = IQTestActiveScreen { state | fakeFlashActive = False, fakeFlashUsed = True } }
-                        , Random.generate ScheduleNextDing dingScheduleGen
+                        -- Correctly ignored the fake: clear it and ask the server
+                        -- for the next ding. The server advances its own progression.
+                        ( { model | screen = IQTestActiveScreen { state | fakeFlashActive = False } }
+                        , sendWs model iqReadyForDingEnvelope
                         )
 
                     else
@@ -495,7 +433,9 @@ update msg model =
             case model.screen of
                 IQTestActiveScreen state ->
                     if state.fakeFlashActive then
-                        if not state.fakeFlashUsed then
+                        if state.fakeIsTrap then
+                            -- Caught by the one-time trap: play the penalty cutscene
+                            -- locally and report the catch; the server doubles its count.
                             ( clearPending
                                 { model
                                     | screen =
@@ -508,63 +448,19 @@ update msg model =
                                             }
                                 }
                                 |> schedule 1000 FakeFlashNextPhase
-                            , Cmd.none
+                            , sendWs model iqCaughtEnvelope
                             )
 
                         else
+                            -- Pressed a 50%-phase fake: that's a miss.
                             iqFail model state
 
                     else if state.dingActive then
-                        let
-                            stillPunished =
-                                state.totalDings > iqQuestionCount
-
-                            newDingCount =
-                                if stillPunished then state.dingCount else state.dingCount + 1
-
-                            newTotalDings =
-                                if stillPunished then state.totalDings - 1 else state.totalDings
-
-                            newIn50Percent =
-                                state.in50PercentPhase || (stillPunished && newTotalDings == iqQuestionCount)
-
-                            completed =
-                                not stillPunished && newDingCount >= state.totalDings
-
-                            -- Trigger the loud loop on the 4th legitimate ding (only once per session).
-                            triggerLoud =
-                                not stillPunished && not state.loudPlaying && newDingCount == 4
-
-                            nextIdx =
-                                state.questionIdx + 1
-                        in
-                        if completed then
-                            ( clearPending { model | screen = BlankScreen nextIdx }
-                                |> schedule 1000 (PlaySong nextIdx)
-                            , Cmd.none
-                            )
-
-                        else
-                            let
-                                newState =
-                                    { state
-                                        | dingCount = newDingCount
-                                        , totalDings = newTotalDings
-                                        , dingActive = False
-                                        , in50PercentPhase = newIn50Percent
-                                    }
-
-                                newModel =
-                                    if triggerLoud then
-                                        { model | screen = IQTestActiveScreen newState }
-                                            |> schedule 3000 StartLoudMusic
-
-                                    else
-                                        { model | screen = IQTestActiveScreen newState }
-                            in
-                            ( newModel
-                            , Random.generate ScheduleNextDing dingScheduleGen
-                            )
+                        -- Cleared a real ding: report it; the server decides whether
+                        -- this completes the test (and when to arm the loud gag).
+                        ( { model | screen = IQTestActiveScreen { state | dingActive = False } }
+                        , sendWs model iqReadyForDingEnvelope
+                        )
 
                     else
                         iqFail model state
@@ -627,14 +523,14 @@ update msg model =
                             )
 
                         FfCounterOut ->
+                            -- Back to the IQ Begin screen with the doubled display
+                            -- count (capped to agree with the server's own doubling).
                             ( clearPending
                                 { model
                                     | screen =
                                         IQTestScreen
                                             { questionIdx = state.questionIdx
-                                            , totalDings = state.originalTotal * 2
-                                            , fakeFlashUsed = True
-                                            , in50PercentPhase = False
+                                            , totalDings = Basics.min (state.originalTotal * 2) maxTotalDings
                                             }
                                 }
                             , Cmd.none
@@ -719,6 +615,95 @@ update msg model =
 
                         WinScreen _ ->
                             ( { model | screen = WinScreen winText }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok (ServerIqCountdownTick remaining) ->
+                    -- Display-only: the server is authoritative on the countdown.
+                    case model.screen of
+                        IQTestCountdownScreen state ->
+                            ( { model | screen = IQTestCountdownScreen { state | countdown = remaining } }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok ServerIqCountdownComplete ->
+                    -- Countdown done: enter the active test and request the first ding.
+                    case model.screen of
+                        IQTestCountdownScreen state ->
+                            ( clearPending
+                                { model
+                                    | screen =
+                                        IQTestActiveScreen
+                                            { questionIdx = state.questionIdx
+                                            , dingCount = 0
+                                            , totalDings = state.totalDings
+                                            , isFlashing = False
+                                            , dingActive = False
+                                            , fakeFlashActive = False
+                                            , fakeIsTrap = False
+                                            , loudPlaying = False
+                                            }
+                                }
+                            , sendWs model iqReadyForDingEnvelope
+                            )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok (ServerIqDing d) ->
+                    -- The server decided real vs fake (and, for fakes, trap vs
+                    -- 50%-phase). The client just renders the flash and arms the
+                    -- local response window.
+                    case model.screen of
+                        IQTestActiveScreen state ->
+                            let
+                                base =
+                                    { state | dingCount = d.dingCount, totalDings = d.totalDings, isFlashing = True }
+                            in
+                            if d.fake then
+                                ( { model | screen = IQTestActiveScreen { base | dingActive = False, fakeFlashActive = True, fakeIsTrap = d.trap } }
+                                    |> schedule iqFlashDuration DingFlashEnd
+                                    |> schedule iqWindowDuration FakeFlashWindowExpired
+                                , Cmd.none
+                                )
+
+                            else
+                                ( { model
+                                    | screen = IQTestActiveScreen { base | dingActive = True, fakeFlashActive = False }
+                                    , dingKey = model.dingKey + 1
+                                  }
+                                    |> schedule iqFlashDuration DingFlashEnd
+                                    |> schedule iqWindowDuration DingWindowExpired
+                                , Cmd.none
+                                )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok ServerIqStartLoud ->
+                    -- The 4th real ding was cleared: arm the loud gag after 3 s
+                    -- (kept client-side to match the original timing).
+                    case model.screen of
+                        IQTestActiveScreen _ ->
+                            ( model |> schedule 3000 StartLoudMusic, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok ServerIqTestComplete ->
+                    -- The server's count reached the target: release to the next song.
+                    case model.screen of
+                        IQTestActiveScreen state ->
+                            let
+                                nextIdx =
+                                    state.questionIdx + 1
+                            in
+                            ( clearPending { model | screen = BlankScreen nextIdx }
+                                |> schedule 1000 (PlaySong nextIdx)
+                            , Cmd.none
+                            )
 
                         _ ->
                             ( model, Cmd.none )

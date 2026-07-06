@@ -2,9 +2,23 @@ module ServerTest exposing (..)
 
 import Dict
 import Expect
+import Game.IQTest as IQTest
 import Json.Decode as Decode
 import Json.Encode as Encode
-import Server exposing (Model, Msg(..), update)
+import Random
+import Server
+    exposing
+        ( ClearOutcome(..)
+        , DingKind(..)
+        , IqPhase(..)
+        , IqTimerState
+        , Model
+        , Msg(..)
+        , advanceOnClear
+        , applyCatch
+        , classifyDing
+        , update
+        )
 import Server.Distribution exposing (DistStage(..))
 import Server.Protocol
     exposing
@@ -13,6 +27,7 @@ import Server.Protocol
         , ackWithUploadTokenEnvelope
         , decodeClientEnvelope
         , distListResultEnvelope
+        , iqDingEnvelope
         , stateIsWin
         , winTextEnvelope
         )
@@ -191,6 +206,8 @@ baseModel =
     , distClients = Dict.empty
     , registry = [ entry "uuid1", entry "uuid2" ]
     , pendingStateEdits = Set.empty
+    , iqTimers = Dict.empty
+    , seed = Random.initialSeed 0
     }
 
 
@@ -433,4 +450,215 @@ adminOpSuite =
                     in
                     Expect.equal Nothing (Dict.get "c1" m.distClients)
             ]
+        ]
+
+
+
+-- ── IQ-test server-side timing/scoring ──────────────────────────────────────
+
+
+-- A baseline mid-test timer state; individual tests override the fields they care about.
+iqState : IqTimerState
+iqState =
+    { epoch = 1
+    , phase = IqDingShown
+    , countdownRemaining = 0
+    , dingCount = 10
+    , totalDings = IQTest.iqQuestionCount
+    , fakeFlashPoint = 90
+    , fakeFlashUsed = False
+    , in50PercentPhase = False
+    , lastDing = RealDing
+    }
+
+
+advancedState : ClearOutcome -> Maybe IqTimerState
+advancedState outcome =
+    case outcome of
+        Advanced a ->
+            Just a.state
+
+        Completed ->
+            Nothing
+
+
+advancedLoud : ClearOutcome -> Maybe Bool
+advancedLoud outcome =
+    case outcome of
+        Advanced a ->
+            Just a.startLoud
+
+        Completed ->
+            Nothing
+
+
+iqTimerMsg : String -> String -> Msg
+iqTimerMsg clientId variant =
+    MessageReceived { clientId = clientId, payload = clientEnvelope variant [] }
+
+
+iqLogicSuite : Test
+iqLogicSuite =
+    describe "IQ server-side classify/advance/catch"
+        [ describe "classifyDing"
+            [ test "the one-time trap fires at fakeFlashPoint" <|
+                \_ -> classifyDing False { iqState | dingCount = 90, fakeFlashPoint = 90 } |> Expect.equal TrapFake
+            , test "no trap once fakeFlashUsed" <|
+                \_ -> classifyDing False { iqState | dingCount = 90, fakeFlashPoint = 90, fakeFlashUsed = True } |> Expect.equal RealDing
+            , test "an ordinary index is a real ding" <|
+                \_ -> classifyDing False { iqState | dingCount = 10, fakeFlashPoint = 90 } |> Expect.equal RealDing
+            , test "50% phase with coin=True yields a phase fake" <|
+                \_ -> classifyDing True { iqState | in50PercentPhase = True, fakeFlashUsed = True } |> Expect.equal PhaseFake
+            , test "50% phase with coin=False yields a real ding" <|
+                \_ -> classifyDing False { iqState | in50PercentPhase = True, fakeFlashUsed = True } |> Expect.equal RealDing
+            ]
+        , describe "advanceOnClear"
+            [ test "a cleared real ding increments dingCount" <|
+                \_ ->
+                    advanceOnClear { iqState | lastDing = RealDing, dingCount = 10, totalDings = 100 }
+                        |> advancedState
+                        |> Maybe.map .dingCount
+                        |> Expect.equal (Just 11)
+            , test "completes when the count reaches the total" <|
+                \_ ->
+                    advanceOnClear { iqState | lastDing = RealDing, dingCount = 99, totalDings = 100 }
+                        |> Expect.equal Completed
+            , test "arms the loud gag on the 4th real ding" <|
+                \_ ->
+                    advanceOnClear { iqState | lastDing = RealDing, dingCount = 3, totalDings = 100 }
+                        |> advancedLoud
+                        |> Expect.equal (Just True)
+            , test "a cleared fake marks the trap used and does not count" <|
+                \_ ->
+                    let
+                        outcome =
+                            advanceOnClear { iqState | lastDing = TrapFake, dingCount = 10, fakeFlashUsed = False }
+                    in
+                    Expect.all
+                        [ \o -> advancedState o |> Maybe.map .fakeFlashUsed |> Expect.equal (Just True)
+                        , \o -> advancedState o |> Maybe.map .dingCount |> Expect.equal (Just 10)
+                        ]
+                        outcome
+            , test "the punishment phase decrements totalDings without counting" <|
+                \_ ->
+                    let
+                        outcome =
+                            advanceOnClear { iqState | lastDing = RealDing, dingCount = 0, totalDings = 200 }
+                    in
+                    Expect.all
+                        [ \o -> advancedState o |> Maybe.map .totalDings |> Expect.equal (Just 199)
+                        , \o -> advancedState o |> Maybe.map .dingCount |> Expect.equal (Just 0)
+                        ]
+                        outcome
+            , test "grinding the total down to iqQuestionCount enters the 50% phase" <|
+                \_ ->
+                    advanceOnClear { iqState | lastDing = RealDing, dingCount = 0, totalDings = IQTest.iqQuestionCount + 1, in50PercentPhase = False }
+                        |> advancedState
+                        |> Maybe.map .in50PercentPhase
+                        |> Expect.equal (Just True)
+            ]
+        , describe "applyCatch"
+            [ test "doubles the count, re-arms punishment, resets progress" <|
+                \_ ->
+                    let
+                        caught =
+                            applyCatch { iqState | totalDings = 100, dingCount = 5, fakeFlashUsed = False, in50PercentPhase = True }
+                    in
+                    Expect.all
+                        [ \c -> Expect.equal 200 c.totalDings
+                        , \c -> Expect.equal True c.fakeFlashUsed
+                        , \c -> Expect.equal False c.in50PercentPhase
+                        , \c -> Expect.equal 0 c.dingCount
+                        ]
+                        caught
+            , test "caps the doubling at maxTotalDings" <|
+                \_ ->
+                    applyCatch { iqState | totalDings = IQTest.maxTotalDings }
+                        |> .totalDings
+                        |> Expect.equal IQTest.maxTotalDings
+            ]
+        ]
+
+
+iqUpdateSuite : Test
+iqUpdateSuite =
+    describe "IQ-test message routing in Server.update"
+        [ test "decodeClientEnvelope decodes the payload-less IQ client messages" <|
+            \_ ->
+                Expect.all
+                    [ \_ -> Expect.equal (Ok ClientIqStartCountdown) (Decode.decodeValue decodeClientEnvelope (clientEnvelope "iqStartCountdown" []))
+                    , \_ -> Expect.equal (Ok ClientIqReadyForDing) (Decode.decodeValue decodeClientEnvelope (clientEnvelope "iqReadyForDing" []))
+                    , \_ -> Expect.equal (Ok ClientIqCaught) (Decode.decodeValue decodeClientEnvelope (clientEnvelope "iqCaught" []))
+                    ]
+                    ()
+        , test "iqDingEnvelope round-trips fake/trap/dingCount/totalDings" <|
+            \_ ->
+                let
+                    env =
+                        iqDingEnvelope { fake = True, trap = True, dingCount = 7, totalDings = 200 }
+
+                    intAt name =
+                        Decode.decodeValue (Decode.at [ "iqDing", name ] Decode.int) env
+
+                    boolAt name =
+                        Decode.decodeValue (Decode.at [ "iqDing", name ] Decode.bool) env
+                in
+                Expect.all
+                    [ \_ -> Expect.equal (Ok True) (boolAt "fake")
+                    , \_ -> Expect.equal (Ok True) (boolAt "trap")
+                    , \_ -> Expect.equal (Ok 7) (intAt "dingCount")
+                    , \_ -> Expect.equal (Ok 200) (intAt "totalDings")
+                    ]
+                    ()
+        , test "iqStartCountdown initializes the server's own count at iqQuestionCount" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqStartCountdown") baseModel
+                in
+                Dict.get "c1" m.iqTimers
+                    |> Maybe.map (\s -> ( s.totalDings, s.phase ))
+                    |> Expect.equal (Just ( IQTest.iqQuestionCount, IqCounting ))
+        , test "iqCaught doubles the server's own count and goes idle" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | iqTimers = Dict.singleton "c1" { iqState | totalDings = 100, phase = IqDingShown, lastDing = TrapFake }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqCaught") staged
+                in
+                Dict.get "c1" m.iqTimers
+                    |> Maybe.map (\s -> ( s.totalDings, s.phase ))
+                    |> Expect.equal (Just ( 200, IqIdle ))
+        , test "iqCaught is ignored unless a trap fake is outstanding" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | iqTimers = Dict.singleton "c1" { iqState | totalDings = 100, phase = IqDingShown, lastDing = PhaseFake }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqCaught") staged
+                in
+                Dict.get "c1" m.iqTimers
+                    |> Maybe.map .totalDings
+                    |> Expect.equal (Just 100)
+        , test "a stale DingReady (wrong epoch) is ignored" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | iqTimers = Dict.singleton "c1" { iqState | epoch = 5, phase = IqDingScheduled }
+                        }
+
+                    ( m, _ ) =
+                        update (DingReady { clientId = "c1", epoch = 4 }) staged
+                in
+                Dict.get "c1" m.iqTimers
+                    |> Maybe.map .phase
+                    |> Expect.equal (Just IqDingScheduled)
         ]

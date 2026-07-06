@@ -1,13 +1,18 @@
 port module Server exposing (..)
 
 import Dict exposing (Dict)
+import Game.IQTest as IQTest
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Platform
+import Process
+import Random
 import Server.Distribution exposing (..)
 import Server.Protocol exposing (..)
 import Server.Registry exposing (..)
 import Set exposing (Set)
+import Task
+import Time
 
 
 
@@ -16,7 +21,48 @@ type alias Model =
     , distClients : Dict String DistStage
     , registry : List RegistryEntry
     , pendingStateEdits : Set String
+    , iqTimers : Dict String IqTimerState
+    , seed : Random.Seed
     }
+
+
+{-| Where a player is in the server-driven IQ test. The server owns all timing
+and the whole ding/question count; the client only renders and reports raw input.
+-}
+type IqPhase
+    = IqCounting -- pre-test countdown ticking down
+    | IqAwaitingReady -- countdown done or a ding resolved; waiting for the client's iqReadyForDing
+    | IqDingScheduled -- a random inter-ding delay is sleeping; ding not yet shown
+    | IqDingShown -- a ding was emitted; waiting for the client to resolve it
+    | IqIdle -- post-catch: waiting for the client to press Begin (iqStartCountdown) again
+
+
+{-| Per-player IQ-test state, keyed by clientId (what `sendToClient` addresses).
+Persists across fail-restart and catch-restart within a session so `totalDings`
+survives; only `ClientDisconnected` clears it. The client never supplies the
+count -- the server initializes it to `iqQuestionCount` and doubles it on a catch.
+-}
+type alias IqTimerState =
+    { epoch : Int -- bumped on every start; stale Process.sleep fires are ignored
+    , phase : IqPhase
+    , countdownRemaining : Int
+    , dingCount : Int -- real dings cleared so far
+    , totalDings : Int -- target count; the punishment phase decrements this toward iqQuestionCount
+    , fakeFlashPoint : Int -- server-chosen trap position
+    , fakeFlashUsed : Bool
+    , in50PercentPhase : Bool
+    , lastDing : DingKind -- kind of the ding most recently emitted
+    }
+
+
+{-| What the server most recently flashed. A `TrapFake` is the one-time
+catchable trap (pressing it triggers the penalty); a `PhaseFake` is a 50%-phase
+fake (pressing it fails). Both are "fakes" for progression purposes.
+-}
+type DingKind
+    = RealDing
+    | TrapFake
+    | PhaseFake
 
 
 type Msg
@@ -26,9 +72,161 @@ type Msg
     | FileRead String (Result String String)
     | AuthCompleted { clientId : String, success : Bool, level : Int, uuid : String }
     | WriteFileCompleted { path : String, ok : Bool, error : Maybe String }
+    | GotTime Time.Posix
+    | CountdownStep { clientId : String, epoch : Int }
+    | DingReady { clientId : String, epoch : Int }
 
 
 
+
+
+-- ── IQ-test server-side logic ────────────────────────────────────────────────
+-- Pure ports of the old client scoring, kept separate so they can be unit-tested.
+
+
+{-| Classify the next ding. Mirrors the old client `DingOccurred` rule: the
+one-time trap fires at `fakeFlashPoint` (until used), and once used only the 50%
+phase produces fakes (on a coin flip).
+-}
+classifyDing : Bool -> IqTimerState -> DingKind
+classifyDing coin s =
+    if not s.fakeFlashUsed && not s.in50PercentPhase && s.dingCount == s.fakeFlashPoint then
+        TrapFake
+
+    else if s.in50PercentPhase && coin then
+        PhaseFake
+
+    else
+        RealDing
+
+
+dingIsFake : DingKind -> Bool
+dingIsFake kind =
+    kind /= RealDing
+
+
+type ClearOutcome
+    = Completed
+    | Advanced { startLoud : Bool, state : IqTimerState }
+
+
+{-| Advance the progression when the client reports the outstanding ding was
+resolved (a real ding cleared, or a fake correctly ignored). Mirrors the old
+client `SpaceBarPressed` scoring: a cleared fake marks the trap used; a cleared
+real ding either grinds down the punishment total, or counts up toward the target
+(triggering the loud gag on the 4th and completing at the target).
+-}
+advanceOnClear : IqTimerState -> ClearOutcome
+advanceOnClear s =
+    if dingIsFake s.lastDing then
+        Advanced { startLoud = False, state = { s | fakeFlashUsed = True } }
+
+    else if s.totalDings > IQTest.iqQuestionCount then
+        let
+            newTotal =
+                s.totalDings - 1
+        in
+        Advanced
+            { startLoud = False
+            , state =
+                { s
+                    | totalDings = newTotal
+                    , in50PercentPhase = s.in50PercentPhase || (newTotal == IQTest.iqQuestionCount)
+                }
+            }
+
+    else
+        let
+            newDingCount =
+                s.dingCount + 1
+        in
+        if newDingCount >= s.totalDings then
+            Completed
+
+        else
+            Advanced
+                { startLoud = newDingCount == 4
+                , state = { s | dingCount = newDingCount }
+                }
+
+
+{-| Apply the fake-flash penalty: double the count (capped), re-arm the punishment
+phase, and reset progress. Mirrors the old client `FfCounterOut` restart.
+-}
+applyCatch : IqTimerState -> IqTimerState
+applyCatch s =
+    { s
+        | totalDings = Basics.min (s.totalDings * 2) IQTest.maxTotalDings
+        , fakeFlashUsed = True
+        , in50PercentPhase = False
+        , dingCount = 0
+    }
+
+
+scheduleCountdownStep : String -> Int -> Cmd Msg
+scheduleCountdownStep clientId epoch =
+    Process.sleep 1000
+        |> Task.perform (\_ -> CountdownStep { clientId = clientId, epoch = epoch })
+
+
+scheduleDing : String -> Int -> Float -> Cmd Msg
+scheduleDing clientId epoch delay =
+    Process.sleep delay
+        |> Task.perform (\_ -> DingReady { clientId = clientId, epoch = epoch })
+
+
+{-| Start (or restart) a player's countdown. The base count comes from the
+server's own stored state -- the existing entry's `totalDings` (preserved across
+fail/catch), or `iqQuestionCount` for the player's first start this session --
+never from the client. Resets the run (fresh trap point, `dingCount` 0) while
+preserving `fakeFlashUsed`/`in50PercentPhase`.
+-}
+startCountdown : String -> Model -> ( Model, Cmd Msg )
+startCountdown clientId model =
+    let
+        prev =
+            Dict.get clientId model.iqTimers
+
+        baseTotal =
+            prev |> Maybe.map .totalDings |> Maybe.withDefault IQTest.iqQuestionCount
+
+        epoch =
+            (prev |> Maybe.map .epoch |> Maybe.withDefault 0) + 1
+
+        ( fakeFlashPoint, newSeed ) =
+            Random.step (IQTest.fakeFlashPointGen baseTotal) model.seed
+
+        newState =
+            { epoch = epoch
+            , phase = IqCounting
+            , countdownRemaining = baseTotal
+            , dingCount = 0
+            , totalDings = baseTotal
+            , fakeFlashPoint = fakeFlashPoint
+            , fakeFlashUsed = prev |> Maybe.map .fakeFlashUsed |> Maybe.withDefault False
+            , in50PercentPhase = prev |> Maybe.map .in50PercentPhase |> Maybe.withDefault False
+            , lastDing = RealDing
+            }
+    in
+    ( { model | iqTimers = Dict.insert clientId newState model.iqTimers, seed = newSeed }
+    , scheduleCountdownStep clientId epoch
+    )
+
+
+-- Schedule the next ding after a server-enforced random delay, moving the player
+-- into the DingScheduled phase.
+scheduleNextDing : String -> IqTimerState -> Model -> ( Model, Cmd Msg )
+scheduleNextDing clientId state model =
+    let
+        ( delay, newSeed ) =
+            Random.step IQTest.dingDelayGen model.seed
+    in
+    ( { model
+        | iqTimers = Dict.insert clientId { state | phase = IqDingScheduled } model.iqTimers
+        , seed = newSeed
+      }
+    , scheduleDing clientId state.epoch delay
+    )
 
 
 writeRegistry : List RegistryEntry -> Cmd Msg
@@ -128,8 +326,13 @@ init () =
       , distClients = Dict.empty
       , registry = []
       , pendingStateEdits = Set.empty
+      , iqTimers = Dict.empty
+      , seed = Random.initialSeed 0
       }
-    , readFile registryFilePath
+    , Cmd.batch
+        [ readFile registryFilePath
+        , Task.perform GotTime Time.now
+        ]
     )
 
 
@@ -141,12 +344,18 @@ update msg model =
 
         ClientDisconnected clientId ->
             let
-                cleanedDist =
-                    Dict.remove clientId model.distClients
+                -- Drop any IQ timer for this client. Every in-flight Process.sleep
+                -- is epoch-guarded against this dict, so removing the entry turns
+                -- its pending countdown/ding fires into no-ops.
+                cleaned =
+                    { model
+                        | distClients = Dict.remove clientId model.distClients
+                        , iqTimers = Dict.remove clientId model.iqTimers
+                    }
             in
             case findUuidByClient clientId model.connectedPlayers of
                 Nothing ->
-                    ( { model | distClients = cleanedDist }, Cmd.none )
+                    ( cleaned, Cmd.none )
 
                 Just uuid ->
                     -- Leave the player's persisted state exactly as it was. The
@@ -154,10 +363,7 @@ update msg model =
                     -- BeginScreen) now happens lazily on their next stateRequest
                     -- (see ClientStateRequest below), so a server stop/restart that
                     -- never fires a disconnect still resumes the player correctly.
-                    ( { model
-                        | connectedPlayers = Dict.remove uuid model.connectedPlayers
-                        , distClients = cleanedDist
-                      }
+                    ( { cleaned | connectedPlayers = Dict.remove uuid model.connectedPlayers }
                     , Cmd.none
                     )
 
@@ -459,6 +665,73 @@ update msg model =
                     , requestAuth { clientId = clientId, level = 2 }
                     )
 
+                Ok ClientIqStartCountdown ->
+                    -- "Player pressed Begin." The count is the server's own, never
+                    -- the client's -- see startCountdown.
+                    startCountdown clientId model
+
+                Ok ClientIqReadyForDing ->
+                    case Dict.get clientId model.iqTimers of
+                        Just state ->
+                            case state.phase of
+                                IqAwaitingReady ->
+                                    -- First ding after the countdown: nothing to
+                                    -- advance yet, just arm the first ding.
+                                    scheduleNextDing clientId state model
+
+                                IqDingShown ->
+                                    -- The outstanding ding was resolved; advance.
+                                    case advanceOnClear state of
+                                        Completed ->
+                                            ( { model | iqTimers = Dict.remove clientId model.iqTimers }
+                                            , sendToClient { clientId = clientId, payload = iqTestCompleteEnvelope }
+                                            )
+
+                                        Advanced adv ->
+                                            let
+                                                ( m, dingCmd ) =
+                                                    scheduleNextDing clientId adv.state model
+                                            in
+                                            ( m
+                                            , if adv.startLoud then
+                                                Cmd.batch
+                                                    [ sendToClient { clientId = clientId, payload = iqStartLoudEnvelope }
+                                                    , dingCmd
+                                                    ]
+
+                                              else
+                                                dingCmd
+                                            )
+
+                                _ ->
+                                    -- Stale/duplicate request in another phase: ignore.
+                                    ( model, Cmd.none )
+
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                Ok ClientIqCaught ->
+                    -- Honor a catch only when a fake ding is actually outstanding.
+                    -- The server doubles its own count and goes idle; the client is
+                    -- meanwhile playing the cutscene and will send iqStartCountdown
+                    -- (which resets the run) when the player presses Begin again.
+                    case Dict.get clientId model.iqTimers of
+                        Just state ->
+                            if state.phase == IqDingShown && state.lastDing == TrapFake then
+                                let
+                                    caught =
+                                        applyCatch state
+                                in
+                                ( { model | iqTimers = Dict.insert clientId { caught | phase = IqIdle } model.iqTimers }
+                                , Cmd.none
+                                )
+
+                            else
+                                ( model, Cmd.none )
+
+                        Nothing ->
+                            ( model, Cmd.none )
+
                 _ ->
                     ( model, Cmd.none )
 
@@ -546,6 +819,72 @@ update msg model =
 
         WriteFileCompleted _ ->
             ( model, Cmd.none )
+
+        GotTime posix ->
+            -- Seed the RNG from wall-clock time so ding delays / trap points vary
+            -- across server runs. Arrives once at startup, before any WS message.
+            ( { model | seed = Random.initialSeed (Time.posixToMillis posix) }, Cmd.none )
+
+        CountdownStep { clientId, epoch } ->
+            case Dict.get clientId model.iqTimers of
+                Just state ->
+                    if state.epoch == epoch && state.phase == IqCounting then
+                        let
+                            newRemaining =
+                                state.countdownRemaining - 1
+                        in
+                        if newRemaining > 0 then
+                            ( { model | iqTimers = Dict.insert clientId { state | countdownRemaining = newRemaining } model.iqTimers }
+                            , Cmd.batch
+                                [ sendToClient { clientId = clientId, payload = iqCountdownTickEnvelope newRemaining }
+                                , scheduleCountdownStep clientId epoch
+                                ]
+                            )
+
+                        else
+                            ( { model | iqTimers = Dict.insert clientId { state | countdownRemaining = 0, phase = IqAwaitingReady } model.iqTimers }
+                            , sendToClient { clientId = clientId, payload = iqCountdownCompleteEnvelope }
+                            )
+
+                    else
+                        -- Stale fire (disconnected, or a newer countdown started).
+                        ( model, Cmd.none )
+
+                Nothing ->
+                    ( model, Cmd.none )
+
+        DingReady { clientId, epoch } ->
+            case Dict.get clientId model.iqTimers of
+                Just state ->
+                    if state.epoch == epoch && state.phase == IqDingScheduled then
+                        let
+                            ( coin, newSeed ) =
+                                Random.step IQTest.coinFlipGen model.seed
+
+                            kind =
+                                classifyDing coin state
+                        in
+                        ( { model
+                            | iqTimers = Dict.insert clientId { state | phase = IqDingShown, lastDing = kind } model.iqTimers
+                            , seed = newSeed
+                          }
+                        , sendToClient
+                            { clientId = clientId
+                            , payload =
+                                iqDingEnvelope
+                                    { fake = dingIsFake kind
+                                    , trap = kind == TrapFake
+                                    , dingCount = state.dingCount
+                                    , totalDings = state.totalDings
+                                    }
+                            }
+                        )
+
+                    else
+                        ( model, Cmd.none )
+
+                Nothing ->
+                    ( model, Cmd.none )
 
 
 subscriptions : Model -> Sub Msg

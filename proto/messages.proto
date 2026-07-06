@@ -73,6 +73,23 @@ message DistListEntry {
 }
 message DistListResult { repeated DistListEntry entries = 1; }
 
+// IQ-test timing/scoring. All timing and the ding/question count live on the
+// server; these client→server messages carry no count (the server is the sole
+// owner of it — it initializes and doubles the count itself).
+message IqStartCountdown   {}  // "player pressed Begin" — server uses its own stored count
+message IqReadyForDing     {}  // "previous ding resolved, send the next one"
+message IqCaught           {}  // "player pressed during a fake flash" — server doubles its count
+
+message IqCountdownTick     { uint32 remaining = 1; }
+message IqCountdownComplete {}
+// fake: the flash has no real ding behind it. trap: the one-time catchable trap
+// (pressing → penalty cutscene); a fake that is not a trap is a 50%-phase fake
+// (pressing → fail). ding_count/total_dings are the server's authoritative counts,
+// sent purely so the client can render them (counter, caught cutscene).
+message IqDing              { bool fake = 1; bool trap = 2; uint32 ding_count = 3; uint32 total_dings = 4; }
+message IqStartLoud         {}
+message IqTestComplete      {}
+
 message ServerMessage {
   oneof payload {
     StateUpdate          state_update            = 1;
@@ -83,6 +100,11 @@ message ServerMessage {
     DistListResult       dist_list_result        = 6;
     DistStateEditPayload dist_state_edit_payload = 7;
     WinText              win_text                = 8;
+    IqCountdownTick      iq_countdown_tick       = 9;
+    IqCountdownComplete  iq_countdown_complete   = 10;
+    IqDing               iq_ding                 = 11;
+    IqStartLoud          iq_start_loud           = 12;
+    IqTestComplete       iq_test_complete        = 13;
   }
 }
 
@@ -99,5 +121,8 @@ message ClientMessage {
     DistStateEditSave    dist_state_edit_save  = 9;
     DistComplete         dist_complete         = 10;
     DistReplaceComplete  dist_replace_complete = 11;
+    IqStartCountdown     iq_start_countdown    = 12;
+    IqReadyForDing       iq_ready_for_ding     = 13;
+    IqCaught             iq_caught             = 14;
   }
 }

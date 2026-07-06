@@ -69,13 +69,9 @@ type Msg
     | AnswerSubmitted
     | ContinuePressed
     | IQTestBeginPressed
-    | IQTestStarted IQTestInit
-    | CountdownTick
-    | DingOccurred
     | DingFlashEnd
     | DingWindowExpired
     | SpaceBarPressed
-    | ScheduleNextDing DingSchedule
     | StartLoudMusic
     | FakeFlashNextPhase
     | FakeFlashCounterTick
