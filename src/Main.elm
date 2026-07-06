@@ -64,7 +64,7 @@ init wsUrl =
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
-        , readFile "config/quiz-questions.json"
+        , readFile "config/app-config.json"
         , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
         ]
     )
@@ -904,7 +904,7 @@ subscriptions model =
         , readFileResult
             (\{ path, contents } ->
                 case path of
-                    "config/quiz-questions.json" ->
+                    "config/app-config.json" ->
                         QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
 
                     _ ->

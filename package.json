@@ -10,6 +10,7 @@
     "test:integration:js": "npx jest --selectProjects integration",
     "test:gui": "node tests/integration/gui.electron.js",
     "build:server": "npx elm make src/Server.elm --output=elm-server.js",
+    "prebuild:client": "node scripts/sync-config.js",
     "build:client": "npx elm make src/Main.elm --output=elm-client.js",
     "build": "npm run build:server && npm run build:client",
     "stop:server": "npx pm2 stop birthday-server || true",

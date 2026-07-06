@@ -9,8 +9,8 @@ import Json.Decode as Decode
 -- Each entry: song file in assets/songs/ and the list of accepted answer strings.
 -- Answers are compared case-insensitively after normalization (see `normalize`).
 --
--- The question list itself lives in `config/quiz-questions.json` so it can
--- be edited per-version without touching Elm source. It is loaded at startup via
+-- The question list itself lives in the `quizQuestions` field of `config/app-config.json`
+-- so it can be edited per-version without touching Elm source. It is loaded at startup via
 -- the `readFile` port and decoded with `decodeQuestions` below.
 
 
@@ -29,7 +29,7 @@ questionDecoder =
 
 decodeQuestions : String -> List Question
 decodeQuestions raw =
-    Decode.decodeString (Decode.list questionDecoder) raw
+    Decode.decodeString (Decode.field "quizQuestions" (Decode.list questionDecoder)) raw
         |> Result.withDefault []
 
 
