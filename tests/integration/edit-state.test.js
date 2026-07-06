@@ -59,7 +59,7 @@ describe('edit state', () => {
 
         const newState = { jeopardyPlaying: false, screen: 'BeginScreen' };
         const resultMsg = await distClient.saveStateEdit(conn, build.uuid, JSON.stringify(newState));
-        expect(resultMsg.payload).toBe('ack');
+        expect(resultMsg.payload).toBe('distStateEditSaveAck');
         await conn.close();
 
         // the ack and the registry write are dispatched in the same Elm Cmd.batch, so
@@ -81,7 +81,7 @@ describe('edit state', () => {
         {
             const { conn } = await distClient.requestStateEdit(TEST_PORT, admin, invalidJsonBuild.uuid);
             const saveResult = await distClient.saveStateEdit(conn, invalidJsonBuild.uuid, JSON.stringify(goodState));
-            expect(saveResult.payload).toBe('ack');
+            expect(saveResult.payload).toBe('distStateEditSaveAck');
             await conn.close();
         }
 

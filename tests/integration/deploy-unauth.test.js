@@ -32,7 +32,7 @@ describe('unauthenticated admin operations', () => {
         expect(result.success).toBe(false);
 
         // no ack/upload token should ever arrive for a failed auth
-        await expect(conn.waitFor((m) => m.payload === 'ack', 500)).rejects.toThrow();
+        await expect(conn.waitFor((m) => m.payload === 'distRegisterAck', 500)).rejects.toThrow();
         await conn.closed();
     });
 
@@ -44,7 +44,7 @@ describe('unauthenticated admin operations', () => {
         const result = await admin.respondToChallenge(conn, { preferKey: false });
         expect(result.success).toBe(false);
 
-        await expect(conn.waitFor((m) => m.payload === 'ack', 500)).rejects.toThrow();
+        await expect(conn.waitFor((m) => m.payload === 'distUndeployAck', 500)).rejects.toThrow();
         await conn.closed();
     });
 

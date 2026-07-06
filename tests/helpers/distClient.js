@@ -40,13 +40,13 @@ async function deployBuild(port, admin, { platform = 'mac', filename, contents, 
         throw new Error(`admin auth failed while deploying (level=${authResult.level})`);
     }
 
-    const ackMsg = await conn.waitFor((m) => m.payload === 'ack');
-    const uploadToken = ackMsg.ack.uploadToken;
+    const ackMsg = await conn.waitFor((m) => m.payload === 'distRegisterAck');
+    const uploadToken = ackMsg.distRegisterAck.uploadToken;
 
     await httpUpload({ host: 'localhost', port, token: uploadToken, filename: finalFilename, contents: finalContents });
 
     conn.send({ distComplete: { uuid, filename: finalFilename, winText } });
-    await conn.waitFor((m) => m.payload === 'ack');
+    await conn.waitFor((m) => m.payload === 'distCompleteAck');
     await conn.close();
 
     return { uuid, filename: finalFilename, platform, contents: finalContents, winText };
@@ -68,13 +68,13 @@ async function replaceBuild(port, admin, oldUuid, { platform = 'mac', filename, 
         throw new Error(`admin auth failed while replacing (level=${authResult.level})`);
     }
 
-    const ackMsg = await conn.waitFor((m) => m.payload === 'ack');
-    const uploadToken = ackMsg.ack.uploadToken;
+    const ackMsg = await conn.waitFor((m) => m.payload === 'distRegisterAck');
+    const uploadToken = ackMsg.distRegisterAck.uploadToken;
 
     await httpUpload({ host: 'localhost', port, token: uploadToken, filename: finalFilename, contents: finalContents });
 
     conn.send({ distReplaceComplete: { newUuid: uuid, oldUuid, filename: finalFilename } });
-    await conn.waitFor((m) => m.payload === 'ack');
+    await conn.waitFor((m) => m.payload === 'distReplaceCompleteAck');
     await conn.close();
 
     return { uuid, filename: finalFilename, platform, contents: finalContents };
@@ -88,8 +88,8 @@ async function undeploy(port, admin, uuid) {
         await conn.closed();
         return { authResult, ack: null };
     }
-    const ackMsg = await conn.waitFor((m) => m.payload === 'ack');
-    return { authResult, ack: ackMsg.ack };
+    const ackMsg = await conn.waitFor((m) => m.payload === 'distUndeployAck');
+    return { authResult, ack: ackMsg.distUndeployAck };
 }
 
 async function listBuilds(port, admin) {
@@ -119,11 +119,11 @@ async function requestStateEdit(port, admin, uuid) {
 }
 
 // Step 2 of edit-state: submits edited JSON on the same `conn` returned by
-// requestStateEdit. Resolves to either an `ack` (saved) or `stateRequestRejected`
-// (invalid JSON — server leaves the previous state untouched).
+// requestStateEdit. Resolves to either a `distStateEditSaveAck` (saved) or
+// `stateRequestRejected` (invalid JSON — server leaves the previous state untouched).
 async function saveStateEdit(conn, uuid, json) {
     conn.send({ distStateEditSave: { uuid, json } });
-    return conn.waitFor((m) => m.payload === 'ack' || m.payload === 'stateRequestRejected');
+    return conn.waitFor((m) => m.payload === 'distStateEditSaveAck' || m.payload === 'stateRequestRejected');
 }
 
 module.exports = { deployBuild, replaceBuild, undeploy, listBuilds, requestStateEdit, saveStateEdit, download };

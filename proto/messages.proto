@@ -8,7 +8,13 @@ enum AuthLevel {
 }
 
 message StateUpdate          { string json = 1; }
-message Ack                  { string upload_token = 1; }
+message StateUpdateAck       {}
+message DistRegisterAck      { string upload_token = 1; }
+message DistUploadAck        {}
+message DistCompleteAck      {}
+message DistStateEditSaveAck {}
+message DistReplaceCompleteAck {}
+message DistUndeployAck      {}
 message WinText              { string text = 1; }
 message AuthChallenge        { bytes challenge = 1; AuthLevel level = 2; }
 message StateRequest         { string uuid = 1; }
@@ -76,13 +82,19 @@ message DistListResult { repeated DistListEntry entries = 1; }
 message ServerMessage {
   oneof payload {
     StateUpdate          state_update            = 1;
-    Ack                  ack                     = 2;
     AuthChallenge        auth_challenge          = 3;
     AuthResult           auth_result             = 4;
     StateRequestRejected state_request_rejected  = 5;
     DistListResult       dist_list_result        = 6;
     DistStateEditPayload dist_state_edit_payload = 7;
     WinText              win_text                = 8;
+    StateUpdateAck          state_update_ack           = 9;
+    DistRegisterAck         dist_register_ack          = 10;
+    DistUploadAck           dist_upload_ack            = 11;
+    DistCompleteAck         dist_complete_ack          = 12;
+    DistStateEditSaveAck    dist_state_edit_save_ack   = 13;
+    DistReplaceCompleteAck  dist_replace_complete_ack  = 14;
+    DistUndeployAck         dist_undeploy_ack          = 15;
   }
 }
 

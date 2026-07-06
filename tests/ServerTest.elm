@@ -9,11 +9,11 @@ import Server.Distribution exposing (DistStage(..))
 import Server.Protocol
     exposing
         ( ClientEnvelope(..)
-        , ackEnvelope
-        , ackWithUploadTokenEnvelope
         , decodeClientEnvelope
         , distListResultEnvelope
+        , distRegisterAckEnvelope
         , stateIsWin
+        , stateUpdateAckEnvelope
         , winTextEnvelope
         )
 import Server.Registry exposing (RegistryEntry, decodeRegistryEntry, encodeRegistryEntry, snapshotForJeopardy)
@@ -269,15 +269,15 @@ adminOpSuite =
                         , \_ -> Expect.equal False (hasField "pendingStateEdit")
                         ]
                         ()
-            , test "ackWithUploadTokenEnvelope carries the mint marker; ackEnvelope does not" <|
+            , test "distRegisterAckEnvelope carries the mint marker; stateUpdateAckEnvelope does not" <|
                 \_ ->
                     let
                         marker env =
-                            Decode.decodeValue (Decode.at [ "ack", "mintUploadToken" ] Decode.bool) env
+                            Decode.decodeValue (Decode.at [ "distRegisterAck", "mintUploadToken" ] Decode.bool) env
                     in
                     Expect.all
-                        [ \_ -> Expect.equal (Ok True) (marker ackWithUploadTokenEnvelope)
-                        , \_ -> Expect.equal False (resultIsOk (marker ackEnvelope))
+                        [ \_ -> Expect.equal (Ok True) (marker distRegisterAckEnvelope)
+                        , \_ -> Expect.equal False (resultIsOk (marker stateUpdateAckEnvelope))
                         ]
                         ()
             ]
