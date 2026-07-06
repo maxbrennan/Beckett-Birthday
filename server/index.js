@@ -1,12 +1,4 @@
-const crypto = require('crypto');
-const WebSocket = require('ws');
-const https = require('https');
-const fs = require('fs');
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
-const { Elm } = require('../elm-server.js');
-const codec = require('./codec.js');
-const auth = require('./auth.js');
 
 function resolveCertPaths(env, rootDir) {
     const certFile = path.join(rootDir, env.SSL_CERT_FILE || path.join('certs', 'cert.pem'));
@@ -59,7 +51,19 @@ module.exports = {
     buildSendToClientPayload,
 };
 
+// Only run the live server (and pull in ../elm-server.js, a build artifact) when this
+// file is invoked as `node server/index.js` — that keeps requiring it for the exported
+// pure functions above free of the build step, in CI's js-unit job as much as in Jest.
 if (require.main === module) {
+    const crypto = require('crypto');
+    const WebSocket = require('ws');
+    const https = require('https');
+    const fs = require('fs');
+    require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+    const { Elm } = require('../elm-server.js');
+    const codec = require('./codec.js');
+    const auth = require('./auth.js');
+
     const isDev = process.env.DEV === 'true';
     const PORT = parseInt(isDev ? process.env.DEV_SERVER_PORT : process.env.PROD_SERVER_PORT, 10) || (isDev ? 8443 : 443);
 
