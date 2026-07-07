@@ -115,13 +115,13 @@ message ServerMessage {
     IqDing               iq_ding                 = 11;
     IqStartLoud          iq_start_loud           = 12;
     IqTestComplete       iq_test_complete        = 13;
-    StateUpdateAck          state_update_ack           = 9;
-    DistRegisterAck         dist_register_ack          = 10;
-    DistUploadAck           dist_upload_ack            = 11;
-    DistCompleteAck         dist_complete_ack          = 12;
-    DistStateEditSaveAck    dist_state_edit_save_ack   = 13;
-    DistReplaceCompleteAck  dist_replace_complete_ack  = 14;
-    DistUndeployAck         dist_undeploy_ack          = 15;
+    StateUpdateAck          state_update_ack           = 14;
+    DistRegisterAck         dist_register_ack          = 15;
+    DistUploadAck           dist_upload_ack            = 16;
+    DistCompleteAck         dist_complete_ack          = 17;
+    DistStateEditSaveAck    dist_state_edit_save_ack   = 18;
+    DistReplaceCompleteAck  dist_replace_complete_ack  = 19;
+    DistUndeployAck         dist_undeploy_ack          = 20;
   }
 }
 
