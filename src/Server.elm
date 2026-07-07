@@ -48,10 +48,27 @@ On disconnect the entry is *paused*, not dropped: `ClientDisconnected` bumps
 `epoch` (invalidating any in-flight `Process.sleep`) but keeps every field, and
 `ClientIqResume` re-arms the appropriate schedule once the player is back and
 has actually rendered the IQ screen again -- see `resumeIqTimer`.
+
+**Persistence (IQ-only stepping stone):** every live change to this state is
+also mirrored into the player's `RegistryEntry.iqTimer` field in
+`builds.jsonl` (see `persistIqTimerInRegistry`/`setIqTimer`/`clearIqTimer`),
+and wherever it's derivable, the persisted `state.screen` is overwritten to
+match rather than left as whatever the client last self-reported (see
+`deriveIqScreen`, and the override in the `ClientStateUpdate` handler). This
+is what makes the client's IQ screen 100% derivable from the server's own
+state instead of a second, independently-drifting copy, and it's also what
+lets `init`/`FileRead` rehydrate `iqTimers` after a full process restart
+(otherwise a restart would silently reset a mid-punishment-phase player back
+to the baseline count). The IQ test is the *first* game phase moved to this
+pattern -- every other screen still round-trips through the client's raw
+`stateUpdate` verbatim (`updateEntryState`). Generalizing this beyond the IQ
+test would mean extending `deriveIqScreen`/`persistIqTimerInRegistry` (or an
+analogous per-phase deriver) beyond these IQ-specific types.
 -}
 type alias IqTimerState =
     { epoch : Int -- bumped on every start; stale Process.sleep fires are ignored
     , phase : IqPhase
+    , questionIdx : Int -- which overall trivia slide this IQ test belongs to; not a cheat vector (see extractQuestionIdx), purely for display continuity
     , countdownRemaining : Int
     , dingCount : Int -- real dings cleared so far
     , totalDings : Int -- target count; the punishment phase decrements this toward iqQuestionCount
@@ -170,6 +187,288 @@ applyCatch s =
     }
 
 
+{-| The client's overall trivia slide index, read off whatever's already
+persisted for this player. Not a cheat vector (unlike dingCount/totalDings) --
+it only needs to be *some* reasonable value for display continuity, so it's
+safe to source from the client/registry rather than tracking it as a real
+anti-cheat field. Tries both shapes the registry can hold it in: the
+IQTestScreen family nests it under `screen.state.questionIdx`, while
+`WrongAnswerScreen`/`BlankScreen`/`QuestionScreen`/`VideoScreen` (see
+`Sync.elm`'s `encodeScreen`) carry it as a top-level `screen.idx`.
+-}
+extractQuestionIdx : Encode.Value -> Int
+extractQuestionIdx stateValue =
+    Decode.decodeValue
+        (Decode.oneOf
+            [ Decode.at [ "screen", "state", "questionIdx" ] Decode.int
+            , Decode.at [ "screen", "idx" ] Decode.int
+            ]
+        )
+        stateValue
+        |> Result.withDefault 0
+
+
+{-| Project an IqTimerState onto the exact JSON shape `Sync.elm`'s `encodeScreen`
+produces for `IQTestCountdownScreen`/`IQTestActiveScreen`, so the persisted
+registry row can be derived from server state instead of the client's own
+report. `IqIdle` covers both "mid fake-flash-caught cutscene" and "not yet
+started" -- in both cases the correct persisted screen tag
+(`FakeFlashCaughtScreen`/`IQTestScreen`) is one this function has no business
+producing, so `Nothing` leaves the client's own report authoritative there,
+exactly as before this change.
+
+Known, deliberate imprecision: `isFlashing`/`loudPlaying` don't track the
+client's local 250ms flash animation or the 3s `StartLoudMusic` delay -- they
+only matter for the brief window before `resumeIqTimer` re-syncs a
+reconnecting client, which was already imprecise before this change.
+-}
+deriveIqScreen : IqTimerState -> Maybe Encode.Value
+deriveIqScreen state =
+    case state.phase of
+        IqCounting ->
+            Just <|
+                Encode.object
+                    [ ( "tag", Encode.string "IQTestCountdownScreen" )
+                    , ( "state"
+                      , Encode.object
+                            [ ( "questionIdx", Encode.int state.questionIdx )
+                            , ( "totalDings", Encode.int state.totalDings )
+                            , ( "countdown", Encode.int state.countdownRemaining )
+                            ]
+                      )
+                    ]
+
+        IqAwaitingReady ->
+            Just (deriveIqActiveScreen state { isFlashing = False, dingActive = False, fakeFlashActive = False, fakeIsTrap = False })
+
+        IqDingScheduled ->
+            Just (deriveIqActiveScreen state { isFlashing = False, dingActive = False, fakeFlashActive = False, fakeIsTrap = False })
+
+        IqDingShown ->
+            Just <|
+                deriveIqActiveScreen state
+                    { isFlashing = True
+                    , dingActive = state.lastDing == RealDing
+                    , fakeFlashActive = state.lastDing /= RealDing
+                    , fakeIsTrap = state.lastDing == TrapFake
+                    }
+
+        IqIdle ->
+            Nothing
+
+
+deriveIqActiveScreen : IqTimerState -> { isFlashing : Bool, dingActive : Bool, fakeFlashActive : Bool, fakeIsTrap : Bool } -> Encode.Value
+deriveIqActiveScreen state flags =
+    Encode.object
+        [ ( "tag", Encode.string "IQTestActiveScreen" )
+        , ( "state"
+          , Encode.object
+                [ ( "questionIdx", Encode.int state.questionIdx )
+                , ( "dingCount", Encode.int state.dingCount )
+                , ( "totalDings", Encode.int state.totalDings )
+                , ( "isFlashing", Encode.bool flags.isFlashing )
+                , ( "dingActive", Encode.bool flags.dingActive )
+                , ( "fakeFlashActive", Encode.bool flags.fakeFlashActive )
+                , ( "fakeIsTrap", Encode.bool flags.fakeIsTrap )
+                , ( "loudPlaying", Encode.bool (state.dingCount >= 4) )
+                ]
+          )
+        ]
+
+
+encodeIqPhase : IqPhase -> Encode.Value
+encodeIqPhase phase =
+    Encode.string <|
+        case phase of
+            IqCounting ->
+                "IqCounting"
+
+            IqAwaitingReady ->
+                "IqAwaitingReady"
+
+            IqDingScheduled ->
+                "IqDingScheduled"
+
+            IqDingShown ->
+                "IqDingShown"
+
+            IqIdle ->
+                "IqIdle"
+
+
+decodeIqPhase : Decode.Decoder IqPhase
+decodeIqPhase =
+    Decode.string
+        |> Decode.andThen
+            (\s ->
+                case s of
+                    "IqCounting" ->
+                        Decode.succeed IqCounting
+
+                    "IqAwaitingReady" ->
+                        Decode.succeed IqAwaitingReady
+
+                    "IqDingScheduled" ->
+                        Decode.succeed IqDingScheduled
+
+                    "IqDingShown" ->
+                        Decode.succeed IqDingShown
+
+                    "IqIdle" ->
+                        Decode.succeed IqIdle
+
+                    _ ->
+                        Decode.fail ("unknown IqPhase: " ++ s)
+            )
+
+
+encodeDingKind : DingKind -> Encode.Value
+encodeDingKind kind =
+    Encode.string <|
+        case kind of
+            RealDing ->
+                "RealDing"
+
+            TrapFake ->
+                "TrapFake"
+
+            PhaseFake ->
+                "PhaseFake"
+
+
+decodeDingKind : Decode.Decoder DingKind
+decodeDingKind =
+    Decode.string
+        |> Decode.andThen
+            (\s ->
+                case s of
+                    "RealDing" ->
+                        Decode.succeed RealDing
+
+                    "TrapFake" ->
+                        Decode.succeed TrapFake
+
+                    "PhaseFake" ->
+                        Decode.succeed PhaseFake
+
+                    _ ->
+                        Decode.fail ("unknown DingKind: " ++ s)
+            )
+
+
+{-| Full round-trip codec for the registry's `iqTimer` snapshot -- every field,
+including the two never visible to the client at all (`fakeFlashUsed`,
+`in50PercentPhase`). This is what a restart rehydrates from (see
+`init`/`FileRead`), so it must capture everything `deriveIqScreen` can't.
+-}
+encodeIqTimerStateFull : IqTimerState -> Encode.Value
+encodeIqTimerStateFull state =
+    Encode.object
+        [ ( "epoch", Encode.int state.epoch )
+        , ( "phase", encodeIqPhase state.phase )
+        , ( "questionIdx", Encode.int state.questionIdx )
+        , ( "countdownRemaining", Encode.int state.countdownRemaining )
+        , ( "dingCount", Encode.int state.dingCount )
+        , ( "totalDings", Encode.int state.totalDings )
+        , ( "fakeFlashPoint", Encode.int state.fakeFlashPoint )
+        , ( "fakeFlashUsed", Encode.bool state.fakeFlashUsed )
+        , ( "in50PercentPhase", Encode.bool state.in50PercentPhase )
+        , ( "lastDing", encodeDingKind state.lastDing )
+        ]
+
+
+decodeIqTimerStateFull : Decode.Decoder IqTimerState
+decodeIqTimerStateFull =
+    Decode.map8
+        (\epoch phase questionIdx countdownRemaining dingCount totalDings fakeFlashPoint fakeFlashUsed ->
+            \in50PercentPhase lastDing ->
+                { epoch = epoch
+                , phase = phase
+                , questionIdx = questionIdx
+                , countdownRemaining = countdownRemaining
+                , dingCount = dingCount
+                , totalDings = totalDings
+                , fakeFlashPoint = fakeFlashPoint
+                , fakeFlashUsed = fakeFlashUsed
+                , in50PercentPhase = in50PercentPhase
+                , lastDing = lastDing
+                }
+        )
+        (Decode.field "epoch" Decode.int)
+        (Decode.field "phase" decodeIqPhase)
+        (Decode.field "questionIdx" Decode.int)
+        (Decode.field "countdownRemaining" Decode.int)
+        (Decode.field "dingCount" Decode.int)
+        (Decode.field "totalDings" Decode.int)
+        (Decode.field "fakeFlashPoint" Decode.int)
+        (Decode.field "fakeFlashUsed" Decode.bool)
+        |> Decode.andThen
+            (\partial ->
+                Decode.map2 partial
+                    (Decode.field "in50PercentPhase" Decode.bool)
+                    (Decode.field "lastDing" decodeDingKind)
+            )
+
+
+{-| Projects one player's authoritative IqTimerState onto their registry row:
+stores the full state (so `init`/`FileRead` can rehydrate `iqTimers` after a
+restart) and, where derivable, overwrites just the `screen` key -- `pending`/
+`now`/etc. stay exactly as the client last reported them. `Nothing` clears
+`iqTimer` and leaves `.state` untouched entirely -- the client's own report
+becomes authoritative again from that point on (e.g. once the test completes).
+IQ-only for now; every other screen/player passes through unaffected.
+-}
+persistIqTimerInRegistry : String -> Maybe IqTimerState -> List RegistryEntry -> List RegistryEntry
+persistIqTimerInRegistry uuid maybeState registry =
+    let
+        withIqTimer =
+            updateEntryIqTimer uuid (Maybe.map encodeIqTimerStateFull maybeState) registry
+    in
+    case maybeState |> Maybe.andThen deriveIqScreen of
+        Nothing ->
+            withIqTimer
+
+        Just screen ->
+            List.map
+                (\e ->
+                    if e.uuid == uuid then
+                        { e | state = Just (overwriteField "screen" screen (Maybe.withDefault (Encode.object []) e.state)) }
+
+                    else
+                        e
+                )
+                withIqTimer
+
+
+{-| Record a live IqTimerState change both in-memory and in the registry (so it
+survives a restart). Returns the `writeRegistry` Cmd to batch alongside
+whatever else the caller already returns.
+-}
+setIqTimer : String -> IqTimerState -> Model -> ( Model, Cmd Msg )
+setIqTimer uuid state model =
+    let
+        newRegistry =
+            persistIqTimerInRegistry uuid (Just state) model.registry
+    in
+    ( { model | iqTimers = Dict.insert uuid state model.iqTimers, registry = newRegistry }
+    , writeRegistry newRegistry
+    )
+
+
+{-| The test finished (or was otherwise abandoned): drop the in-memory entry and
+clear the persisted snapshot too, so a restart doesn't try to rehydrate it.
+-}
+clearIqTimer : String -> Model -> ( Model, Cmd Msg )
+clearIqTimer uuid model =
+    let
+        newRegistry =
+            persistIqTimerInRegistry uuid Nothing model.registry
+    in
+    ( { model | iqTimers = Dict.remove uuid model.iqTimers, registry = newRegistry }
+    , writeRegistry newRegistry
+    )
+
+
 {-| The IQ-relevant fields of whatever screen an admin state edit just saved.
 `EditedIqOther` covers both "not an IQ screen" and "decode failed" -- either
 way there's nothing to reconcile.
@@ -236,68 +535,73 @@ reconcileIqTimerAfterEdit uuid parsedState model =
 
         carriedIn50Percent =
             prev |> Maybe.map .in50PercentPhase |> Maybe.withDefault False
+
+        questionIdx =
+            prev |> Maybe.map .questionIdx |> Maybe.withDefault (extractQuestionIdx parsedState)
+
+        -- Mirror the reconciled iqTimers entry into the registry too (model.registry
+        -- here already has the admin's raw edit applied by the caller), so it
+        -- survives a restart and so the persisted screen agrees with the
+        -- reconciled state rather than the admin's raw JSON (see deriveIqScreen).
+        persist state m =
+            { m
+                | iqTimers = Dict.insert uuid state m.iqTimers
+                , registry = persistIqTimerInRegistry uuid (Just state) m.registry
+            }
     in
     case Decode.decodeValue decodeEditedIqScreen parsedState of
         Ok (EditedIqBegin { totalDings }) ->
-            { model
-                | iqTimers =
-                    Dict.insert uuid
-                        { epoch = nextEpoch
-                        , phase = IqIdle
-                        , countdownRemaining = totalDings
-                        , dingCount = 0
-                        , totalDings = totalDings
-                        , fakeFlashPoint = prev |> Maybe.map .fakeFlashPoint |> Maybe.withDefault 0
-                        , fakeFlashUsed = carriedFakeFlashUsed
-                        , in50PercentPhase = carriedIn50Percent
-                        , lastDing = RealDing
-                        }
-                        model.iqTimers
-            }
+            persist
+                { epoch = nextEpoch
+                , phase = IqIdle
+                , questionIdx = questionIdx
+                , countdownRemaining = totalDings
+                , dingCount = 0
+                , totalDings = totalDings
+                , fakeFlashPoint = prev |> Maybe.map .fakeFlashPoint |> Maybe.withDefault 0
+                , fakeFlashUsed = carriedFakeFlashUsed
+                , in50PercentPhase = carriedIn50Percent
+                , lastDing = RealDing
+                }
+                model
 
         Ok (EditedIqCountdown { countdown, totalDings }) ->
             let
                 ( fakeFlashPoint, newSeed ) =
                     Random.step (IQTest.fakeFlashPointGen totalDings) model.seed
             in
-            { model
-                | iqTimers =
-                    Dict.insert uuid
-                        { epoch = nextEpoch
-                        , phase = IqCounting
-                        , countdownRemaining = countdown
-                        , dingCount = 0
-                        , totalDings = totalDings
-                        , fakeFlashPoint = fakeFlashPoint
-                        , fakeFlashUsed = carriedFakeFlashUsed
-                        , in50PercentPhase = carriedIn50Percent
-                        , lastDing = RealDing
-                        }
-                        model.iqTimers
-                , seed = newSeed
-            }
+            persist
+                { epoch = nextEpoch
+                , phase = IqCounting
+                , questionIdx = questionIdx
+                , countdownRemaining = countdown
+                , dingCount = 0
+                , totalDings = totalDings
+                , fakeFlashPoint = fakeFlashPoint
+                , fakeFlashUsed = carriedFakeFlashUsed
+                , in50PercentPhase = carriedIn50Percent
+                , lastDing = RealDing
+                }
+                { model | seed = newSeed }
 
         Ok (EditedIqActive { dingCount, totalDings }) ->
             let
                 ( fakeFlashPoint, newSeed ) =
                     Random.step (IQTest.fakeFlashPointGen totalDings) model.seed
             in
-            { model
-                | iqTimers =
-                    Dict.insert uuid
-                        { epoch = nextEpoch
-                        , phase = IqAwaitingReady
-                        , countdownRemaining = 0
-                        , dingCount = dingCount
-                        , totalDings = totalDings
-                        , fakeFlashPoint = fakeFlashPoint
-                        , fakeFlashUsed = carriedFakeFlashUsed
-                        , in50PercentPhase = carriedIn50Percent
-                        , lastDing = RealDing
-                        }
-                        model.iqTimers
-                , seed = newSeed
-            }
+            persist
+                { epoch = nextEpoch
+                , phase = IqAwaitingReady
+                , questionIdx = questionIdx
+                , countdownRemaining = 0
+                , dingCount = dingCount
+                , totalDings = totalDings
+                , fakeFlashPoint = fakeFlashPoint
+                , fakeFlashUsed = carriedFakeFlashUsed
+                , in50PercentPhase = carriedIn50Percent
+                , lastDing = RealDing
+                }
+                { model | seed = newSeed }
 
         Ok EditedIqOther ->
             model
@@ -349,12 +653,26 @@ startCountdown uuid model =
         epoch =
             (prev |> Maybe.map .epoch |> Maybe.withDefault 0) + 1
 
+        questionIdx =
+            case prev of
+                Just p ->
+                    p.questionIdx
+
+                Nothing ->
+                    model.registry
+                        |> List.filter (\e -> e.uuid == uuid)
+                        |> List.head
+                        |> Maybe.andThen .state
+                        |> Maybe.withDefault (Encode.object [])
+                        |> extractQuestionIdx
+
         ( fakeFlashPoint, newSeed ) =
             Random.step (IQTest.fakeFlashPointGen baseTotal) model.seed
 
         newState =
             { epoch = epoch
             , phase = IqCounting
+            , questionIdx = questionIdx
             , countdownRemaining = baseTotal
             , dingCount = 0
             , totalDings = baseTotal
@@ -363,10 +681,11 @@ startCountdown uuid model =
             , in50PercentPhase = prev |> Maybe.map .in50PercentPhase |> Maybe.withDefault False
             , lastDing = RealDing
             }
+
+        ( withTimer, persistCmd ) =
+            setIqTimer uuid newState { model | seed = newSeed }
     in
-    ( { model | iqTimers = Dict.insert uuid newState model.iqTimers, seed = newSeed }
-    , scheduleCountdownStep uuid epoch
-    )
+    ( withTimer, Cmd.batch [ persistCmd, scheduleCountdownStep uuid epoch ] )
 
 
 -- Schedule the next ding after a server-enforced random delay, moving the player
@@ -376,11 +695,11 @@ scheduleNextDing uuid state model =
     let
         ( delay, newSeed ) =
             Random.step IQTest.dingDelayGen model.seed
+
+        ( withTimer, persistCmd ) =
+            setIqTimer uuid { state | phase = IqDingScheduled } { model | seed = newSeed }
     in
-    ( { model
-        | iqTimers = Dict.insert uuid { state | phase = IqDingScheduled } model.iqTimers
-        , seed = newSeed
-      }
+    ( withTimer
     , scheduleDing uuid state.epoch delay
     )
 
@@ -658,8 +977,24 @@ update msg model =
 
                         Just uuid ->
                             let
-                                newRegistry =
+                                rawRegistry =
                                     updateEntryState uuid inner model.registry
+
+                                -- IQ-only override, for now: if there's a live server-authoritative
+                                -- IQ timer for this player, its derived screen wins over whatever
+                                -- the client itself just self-reported, closing the drift/clobber
+                                -- vector this whole persistence change exists to fix. Every other
+                                -- screen/player still flows through untouched -- this is the
+                                -- intentionally-scoped-down version of "the client's state should
+                                -- be 100% derivable from the server's" (IQ-only, for now; see the
+                                -- doc comment on IqTimerState).
+                                newRegistry =
+                                    case Dict.get uuid model.iqTimers of
+                                        Just state ->
+                                            persistIqTimerInRegistry uuid (Just state) rawRegistry
+
+                                        Nothing ->
+                                            rawRegistry
 
                                 -- Deliver the win text only at win time, as its own message
                                 -- (never bundled into the client), when the incoming state
@@ -713,6 +1048,7 @@ update msg model =
                                             , state = Nothing
                                             , pendingStateEdit = False
                                             , winText = ""
+                                            , iqTimer = Nothing
                                             }
 
                                         newRegistry =
@@ -751,6 +1087,7 @@ update msg model =
                                         , state = Nothing
                                         , pendingStateEdit = False
                                         , winText = winText
+                                        , iqTimer = Nothing
                                         }
 
                                     newRegistry =
@@ -796,19 +1133,25 @@ update msg model =
                             case Decode.decodeString Decode.value json of
                                 Ok parsedState ->
                                     let
-                                        newRegistry =
+                                        -- Apply the admin's raw edit first, then reconcile against
+                                        -- *that* registry -- not the pre-edit one -- so the IQ
+                                        -- reconciliation's registry write (iqTimer + re-derived
+                                        -- screen) isn't discarded by this record update. Previously
+                                        -- these were computed independently from the same pre-edit
+                                        -- model and stitched together, which silently dropped
+                                        -- whatever reconcileIqTimerAfterEdit put in .registry.
+                                        rawEditedRegistry =
                                             updateEntryState editUuid parsedState model.registry
 
                                         reconciledModel =
-                                            reconcileIqTimerAfterEdit editUuid parsedState model
+                                            reconcileIqTimerAfterEdit editUuid parsedState { model | registry = rawEditedRegistry }
                                     in
                                     ( { reconciledModel
-                                        | registry = newRegistry
-                                        , pendingStateEdits = Set.remove editUuid model.pendingStateEdits
+                                        | pendingStateEdits = Set.remove editUuid model.pendingStateEdits
                                         , distClients = clearedDist
                                       }
                                     , Cmd.batch
-                                        [ writeRegistry newRegistry
+                                        [ writeRegistry reconciledModel.registry
                                         , sendToClient { clientId = clientId, payload = ackEnvelope }
                                         ]
                                     )
@@ -846,6 +1189,12 @@ update msg model =
                                         , state = oldState
                                         , pendingStateEdit = True
                                         , winText = oldEntry |> Maybe.map .winText |> Maybe.withDefault ""
+
+                                        -- Carry the IQ snapshot to the new uuid too, same as state/winText.
+                                        -- (model.iqTimers itself stays keyed by oldUuid until a restart
+                                        -- rehydrates it under newUuid from this registry row -- a pre-existing
+                                        -- gap in replacement handling, not something this change introduces.)
+                                        , iqTimer = oldEntry |> Maybe.andThen .iqTimer
                                         }
 
                                     newRegistry =
@@ -920,8 +1269,12 @@ update msg model =
                                             -- The outstanding ding was resolved; advance.
                                             case advanceOnClear state of
                                                 Completed ->
-                                                    ( { model | iqTimers = Dict.remove uuid model.iqTimers }
-                                                    , sendToPlayer uuid model iqTestCompleteEnvelope
+                                                    let
+                                                        ( withTimer, persistCmd ) =
+                                                            clearIqTimer uuid model
+                                                    in
+                                                    ( withTimer
+                                                    , Cmd.batch [ persistCmd, sendToPlayer uuid model iqTestCompleteEnvelope ]
                                                     )
 
                                                 Advanced adv ->
@@ -961,9 +1314,7 @@ update msg model =
                                             caught =
                                                 applyCatch state
                                         in
-                                        ( { model | iqTimers = Dict.insert uuid { caught | phase = IqIdle } model.iqTimers }
-                                        , Cmd.none
-                                        )
+                                        setIqTimer uuid { caught | phase = IqIdle } model
 
                                     else
                                         ( model, Cmd.none )
@@ -1053,10 +1404,30 @@ update msg model =
                                     |> List.filter .pendingStateEdit
                                     |> List.map .uuid
                                     |> Set.fromList
+
+                            -- Rehydrate the server-authoritative IQ state too (IQ-only
+                            -- stepping stone -- see RegistryEntry.iqTimer / IqTimerState's
+                            -- doc comment). With this, a full process restart looks, to the
+                            -- existing pause/resume-on-reconnect machinery
+                            -- (ClientDisconnected's epoch bump + ClientIqResume ->
+                            -- resumeIqTimer), just like every connected player having
+                            -- simultaneously disconnected -- no new resume logic needed.
+                            -- No epoch bump: nothing was scheduled against any epoch yet in
+                            -- this fresh process, so whatever epoch was persisted is still valid.
+                            rehydratedIqTimers =
+                                parsedRegistry
+                                    |> List.filterMap
+                                        (\e ->
+                                            e.iqTimer
+                                                |> Maybe.andThen (Decode.decodeValue decodeIqTimerStateFull >> Result.toMaybe)
+                                                |> Maybe.map (\s -> ( e.uuid, s ))
+                                        )
+                                    |> Dict.fromList
                         in
                         ( { model
                             | registry = parsedRegistry
                             , pendingStateEdits = rehydratedPendingStateEdits
+                            , iqTimers = rehydratedIqTimers
                           }
                         , Cmd.none
                         )
@@ -1084,16 +1455,25 @@ update msg model =
                                 state.countdownRemaining - 1
                         in
                         if newRemaining > 0 then
-                            ( { model | iqTimers = Dict.insert uuid { state | countdownRemaining = newRemaining } model.iqTimers }
+                            let
+                                ( withTimer, persistCmd ) =
+                                    setIqTimer uuid { state | countdownRemaining = newRemaining } model
+                            in
+                            ( withTimer
                             , Cmd.batch
-                                [ sendToPlayer uuid model (iqCountdownTickEnvelope newRemaining)
+                                [ persistCmd
+                                , sendToPlayer uuid model (iqCountdownTickEnvelope newRemaining)
                                 , scheduleCountdownStep uuid epoch
                                 ]
                             )
 
                         else
-                            ( { model | iqTimers = Dict.insert uuid { state | countdownRemaining = 0, phase = IqAwaitingReady } model.iqTimers }
-                            , sendToPlayer uuid model iqCountdownCompleteEnvelope
+                            let
+                                ( withTimer, persistCmd ) =
+                                    setIqTimer uuid { state | countdownRemaining = 0, phase = IqAwaitingReady } model
+                            in
+                            ( withTimer
+                            , Cmd.batch [ persistCmd, sendToPlayer uuid model iqCountdownCompleteEnvelope ]
                             )
 
                     else
@@ -1113,20 +1493,23 @@ update msg model =
 
                             kind =
                                 classifyDing coin state
+
+                            ( withTimer, persistCmd ) =
+                                setIqTimer uuid { state | phase = IqDingShown, lastDing = kind } { model | seed = newSeed }
                         in
-                        ( { model
-                            | iqTimers = Dict.insert uuid { state | phase = IqDingShown, lastDing = kind } model.iqTimers
-                            , seed = newSeed
-                          }
-                        , sendToPlayer uuid
-                            model
-                            (iqDingEnvelope
-                                { fake = dingIsFake kind
-                                , trap = kind == TrapFake
-                                , dingCount = state.dingCount
-                                , totalDings = state.totalDings
-                                }
-                            )
+                        ( withTimer
+                        , Cmd.batch
+                            [ persistCmd
+                            , sendToPlayer uuid
+                                model
+                                (iqDingEnvelope
+                                    { fake = dingIsFake kind
+                                    , trap = kind == TrapFake
+                                    , dingCount = state.dingCount
+                                    , totalDings = state.totalDings
+                                    }
+                                )
+                            ]
                         )
 
                     else

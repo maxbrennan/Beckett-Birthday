@@ -87,4 +87,48 @@ describe('IQ timer reconciliation after an admin state edit', () => {
             await reconnected.close();
         }
     }, 15000);
+
+    test('an edit also survives a server restart, not just a same-process resume', async () => {
+        // Regression test for an ordering bug in the fix above: the
+        // ClientDistStateEditSave handler used to compute the raw-edited registry
+        // and the reconciled iqTimers from the same pre-edit model, then did
+        // `{ reconciledModel | registry = newRegistry }` -- which silently
+        // discarded whatever reconcileIqTimerAfterEdit had put in .registry (its
+        // iqTimer snapshot and re-derived screen). That meant the edit took
+        // effect for an in-memory resume (same process) but would have been lost
+        // on the very next restart's rehydration from builds.jsonl.
+        const build = await distClient.deployBuild(TEST_PORT, admin, {});
+        const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+
+        conn.send({ iqStartCountdown: {} });
+        const isTick = (m) => m.payload === 'iqCountdownTick';
+        const firstTick = await conn.waitFor(isTick, 3000);
+        conn.send({ stateUpdate: { json: iqCountdownState(build.uuid, { countdown: firstTick.iqCountdownTick.remaining }) } });
+        await conn.waitFor((m) => m.payload === 'ack');
+
+        const { authResult, conn: adminConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
+        expect(authResult.success).toBe(true);
+        const parsed = JSON.parse(json);
+        expect(parsed.screen.tag).toBe('IQTestCountdownScreen');
+
+        parsed.screen.state.countdown = 7;
+        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(parsed));
+        expect(saveResult.payload).toBe('ack');
+        await adminConn.close();
+
+        // Restart (rather than just reconnecting) so the rehydration in
+        // Server.elm's init/FileRead is what has to carry the edit forward.
+        await server.stop({ keepData: true });
+        server = await startTestServer({ port: TEST_PORT, existingTempDir: server.tempDir });
+
+        const { conn: reconnected } = await connectAsPlayer(TEST_PORT, build.uuid);
+        try {
+            reconnected.send({ iqResume: {} });
+            const resumedTick = await reconnected.waitFor(isTick, 3000);
+
+            expect(resumedTick.iqCountdownTick.remaining).toBe(7);
+        } finally {
+            await reconnected.close();
+        }
+    }, 20000);
 });

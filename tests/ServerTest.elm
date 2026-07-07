@@ -18,8 +18,15 @@ import Server
         , advanceOnClear
         , applyCatch
         , classifyDing
+        , clearIqTimer
         , decodeEditedIqScreen
+        , decodeIqTimerStateFull
+        , deriveIqScreen
+        , encodeIqTimerStateFull
+        , extractQuestionIdx
+        , persistIqTimerInRegistry
         , reconcileIqTimerAfterEdit
+        , setIqTimer
         , update
         )
 import Server.Distribution exposing (DistStage(..))
@@ -35,6 +42,7 @@ import Server.Protocol
         , winTextEnvelope
         )
 import Server.Registry exposing (RegistryEntry, decodeRegistryEntry, encodeRegistryEntry, snapshotForJeopardy)
+import Sync exposing (decodeIQTestCountdownState, decodeIQTestState)
 import Set
 import Test exposing (Test, describe, test)
 
@@ -108,7 +116,7 @@ registrySuite =
     describe "RegistryEntry winText codec"
         [ test "round-trips winText through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward" }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -200,6 +208,7 @@ entry uuid =
     , state = Just (Encode.object [ ( "k", Encode.string "v" ) ])
     , pendingStateEdit = False
     , winText = ""
+    , iqTimer = Nothing
     }
 
 
@@ -465,6 +474,7 @@ iqState : IqTimerState
 iqState =
     { epoch = 1
     , phase = IqDingShown
+    , questionIdx = 0
     , countdownRemaining = 0
     , dingCount = 10
     , totalDings = IQTest.iqQuestionCount
@@ -872,4 +882,348 @@ iqEditSuite =
                 Dict.get "uuid1" reconciled.iqTimers
                     |> Maybe.map .dingCount
                     |> Expect.equal (Just 7)
+        , test "reconciling a countdown edit also persists the re-derived screen/iqTimer into the registry (not just iqTimers)" <|
+            \_ ->
+                let
+                    -- Mirrors the real call site: the admin's raw edit is applied to the
+                    -- registry *before* reconcileIqTimerAfterEdit runs (see the ordering fix
+                    -- in ClientDistStateEditSave).
+                    rawEdited =
+                        editedScreenState "IQTestCountdownScreen" [ ( "questionIdx", Encode.int 0 ), ( "countdown", Encode.int 5 ), ( "totalDings", Encode.int IQTest.iqQuestionCount ) ]
+
+                    editedRegistry =
+                        List.map
+                            (\e ->
+                                if e.uuid == "uuid1" then
+                                    { e | state = Just rawEdited }
+
+                                else
+                                    e
+                            )
+                            baseModel.registry
+
+                    reconciled =
+                        reconcileIqTimerAfterEdit "uuid1" rawEdited { baseModel | registry = editedRegistry }
+
+                    entryOf uuid =
+                        reconciled.registry |> List.filter (\e -> e.uuid == uuid) |> List.head
+                in
+                Expect.all
+                    [ \_ -> entryOf "uuid1" |> Maybe.andThen .iqTimer |> Expect.notEqual Nothing
+                    , \_ ->
+                        entryOf "uuid1"
+                            |> Maybe.andThen .state
+                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "state", "countdown" ] Decode.int) >> Result.toMaybe)
+                            |> Expect.equal (Just 5)
+                    ]
+                    ()
+        ]
+
+
+-- ── Persistence: server state mirrored into builds.jsonl (IQ-only stepping stone) ──
+
+
+iqTimerCodecSuite : Test
+iqTimerCodecSuite =
+    describe "encodeIqTimerStateFull / decodeIqTimerStateFull"
+        [ test "round-trips every field, including the two never shown to the client" <|
+            \_ ->
+                let
+                    state =
+                        { iqState
+                            | epoch = 9
+                            , phase = IqDingScheduled
+                            , questionIdx = 2
+                            , countdownRemaining = 3
+                            , dingCount = 7
+                            , totalDings = 150
+                            , fakeFlashPoint = 42
+                            , fakeFlashUsed = True
+                            , in50PercentPhase = True
+                            , lastDing = PhaseFake
+                        }
+                in
+                state
+                    |> encodeIqTimerStateFull
+                    |> Decode.decodeValue decodeIqTimerStateFull
+                    |> Expect.equal (Ok state)
+        ]
+
+
+deriveIqScreenSuite : Test
+deriveIqScreenSuite =
+    describe "deriveIqScreen"
+        [ test "IqCounting derives an IQTestCountdownScreen decodable by Sync's real decoder" <|
+            \_ ->
+                { iqState | phase = IqCounting, countdownRemaining = 42, totalDings = 100, questionIdx = 3 }
+                    |> deriveIqScreen
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestCountdownState) >> Result.toMaybe)
+                    |> Expect.equal (Just { questionIdx = 3, totalDings = 100, countdown = 42 })
+        , test "IqAwaitingReady derives an inactive IQTestActiveScreen" <|
+            \_ ->
+                { iqState | phase = IqAwaitingReady, dingCount = 3, totalDings = 100, questionIdx = 2 }
+                    |> deriveIqScreen
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
+                    |> Expect.equal
+                        (Just
+                            { questionIdx = 2
+                            , dingCount = 3
+                            , totalDings = 100
+                            , isFlashing = False
+                            , dingActive = False
+                            , fakeFlashActive = False
+                            , fakeIsTrap = False
+                            , loudPlaying = False
+                            }
+                        )
+        , test "IqDingScheduled also derives an inactive IQTestActiveScreen" <|
+            \_ ->
+                { iqState | phase = IqDingScheduled, dingCount = 3, totalDings = 100 }
+                    |> deriveIqScreen
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
+                    |> Maybe.map .isFlashing
+                    |> Expect.equal (Just False)
+        , test "IqDingShown with a real ding derives an active flash; loudPlaying kicks in at dingCount 4" <|
+            \_ ->
+                { iqState | phase = IqDingShown, lastDing = RealDing, dingCount = 4, totalDings = 100 }
+                    |> deriveIqScreen
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
+                    |> Expect.equal
+                        (Just
+                            { questionIdx = 0
+                            , dingCount = 4
+                            , totalDings = 100
+                            , isFlashing = True
+                            , dingActive = True
+                            , fakeFlashActive = False
+                            , fakeIsTrap = False
+                            , loudPlaying = True
+                            }
+                        )
+        , test "IqDingShown with a trap fake derives a fake flash with fakeIsTrap" <|
+            \_ ->
+                { iqState | phase = IqDingShown, lastDing = TrapFake, dingCount = 1 }
+                    |> deriveIqScreen
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
+                    |> Maybe.map (\s -> ( s.dingActive, s.fakeFlashActive, s.fakeIsTrap ))
+                    |> Expect.equal (Just ( False, True, True ))
+        , test "IqDingShown with a phase fake derives a fake flash without fakeIsTrap" <|
+            \_ ->
+                { iqState | phase = IqDingShown, lastDing = PhaseFake, dingCount = 1 }
+                    |> deriveIqScreen
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
+                    |> Maybe.map (\s -> ( s.fakeFlashActive, s.fakeIsTrap ))
+                    |> Expect.equal (Just ( True, False ))
+        , test "IqIdle is not derivable -- the client's own report (cutscene or not-yet-started) stays authoritative" <|
+            \_ -> deriveIqScreen { iqState | phase = IqIdle } |> Expect.equal Nothing
+        ]
+
+
+extractQuestionIdxSuite : Test
+extractQuestionIdxSuite =
+    describe "extractQuestionIdx"
+        [ test "reads questionIdx from the IQTestScreen-family shape (screen.state.questionIdx)" <|
+            \_ ->
+                Encode.object
+                    [ ( "screen"
+                      , Encode.object
+                            [ ( "tag", Encode.string "IQTestCountdownScreen" )
+                            , ( "state", Encode.object [ ( "questionIdx", Encode.int 4 ) ] )
+                            ]
+                      )
+                    ]
+                    |> extractQuestionIdx
+                    |> Expect.equal 4
+        , test "reads idx from the top-level screen.idx shape (WrongAnswerScreen/BlankScreen/etc.)" <|
+            \_ ->
+                Encode.object
+                    [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 7 ) ] ) ]
+                    |> extractQuestionIdx
+                    |> Expect.equal 7
+        , test "defaults to 0 when neither shape is present" <|
+            \_ -> extractQuestionIdx (Encode.object []) |> Expect.equal 0
+        ]
+
+
+persistIqTimerInRegistrySuite : Test
+persistIqTimerInRegistrySuite =
+    describe "persistIqTimerInRegistry"
+        [ test "sets a decodable iqTimer and overwrites only the screen key, preserving the rest of state" <|
+            \_ ->
+                let
+                    existing =
+                        [ { uuid = "uuid1"
+                          , filename = "f.dmg"
+                          , platform = "mac"
+                          , state =
+                                Just
+                                    (Encode.object
+                                        [ ( "screen", Encode.object [ ( "tag", Encode.string "IQTestScreen" ) ] )
+                                        , ( "pending", Encode.list identity [] )
+                                        , ( "now", Encode.float 42 )
+                                        ]
+                                    )
+                          , pendingStateEdit = False
+                          , winText = ""
+                          , iqTimer = Nothing
+                          }
+                        ]
+
+                    state =
+                        { iqState | phase = IqCounting, countdownRemaining = 7, totalDings = 100, questionIdx = 0 }
+
+                    updated =
+                        persistIqTimerInRegistry "uuid1" (Just state) existing |> List.head
+
+                    decodedIqTimer =
+                        updated |> Maybe.andThen .iqTimer |> Maybe.andThen (Decode.decodeValue decodeIqTimerStateFull >> Result.toMaybe)
+
+                    screenTagOf =
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+
+                    nowOf =
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.field "now" Decode.float) >> Result.toMaybe)
+                in
+                Expect.all
+                    [ \_ -> Expect.equal (Just state) decodedIqTimer
+                    , \_ -> Expect.equal (Just "IQTestCountdownScreen") screenTagOf
+                    , \_ -> Expect.equal (Just 42) nowOf
+                    ]
+                    ()
+        , test "Nothing clears iqTimer and leaves state untouched entirely" <|
+            \_ ->
+                let
+                    existing =
+                        [ { uuid = "uuid1"
+                          , filename = "f.dmg"
+                          , platform = "mac"
+                          , state = Just (Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "BlankScreen" ) ] ) ])
+                          , pendingStateEdit = False
+                          , winText = ""
+                          , iqTimer = Just (Encode.object [ ( "epoch", Encode.int 1 ) ])
+                          }
+                        ]
+
+                    updated =
+                        persistIqTimerInRegistry "uuid1" Nothing existing |> List.head
+
+                    screenTagOf =
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                in
+                Expect.all
+                    [ \_ -> Expect.equal Nothing (updated |> Maybe.andThen .iqTimer)
+                    , \_ -> Expect.equal (Just "BlankScreen") screenTagOf
+                    ]
+                    ()
+        , test "IqIdle (nothing derivable) still sets iqTimer but leaves state's screen untouched" <|
+            \_ ->
+                let
+                    existing =
+                        [ { uuid = "uuid1"
+                          , filename = "f.dmg"
+                          , platform = "mac"
+                          , state = Just (Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "FakeFlashCaughtScreen" ) ] ) ])
+                          , pendingStateEdit = False
+                          , winText = ""
+                          , iqTimer = Nothing
+                          }
+                        ]
+
+                    updated =
+                        persistIqTimerInRegistry "uuid1" (Just { iqState | phase = IqIdle }) existing |> List.head
+
+                    screenTagOf =
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                in
+                Expect.all
+                    [ \_ -> updated |> Maybe.andThen .iqTimer |> Expect.notEqual Nothing
+                    , \_ -> Expect.equal (Just "FakeFlashCaughtScreen") screenTagOf
+                    ]
+                    ()
+        ]
+
+
+iqPersistenceRoutingSuite : Test
+iqPersistenceRoutingSuite =
+    describe "IQ persistence wired into Server.update"
+        [ test "iqStartCountdown persists the derived countdown screen and an iqTimer snapshot into the registry" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqStartCountdown") connected
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+                in
+                Expect.all
+                    [ \_ -> entryOf |> Maybe.andThen .iqTimer |> Expect.notEqual Nothing
+                    , \_ ->
+                        entryOf
+                            |> Maybe.andThen .state
+                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                            |> Expect.equal (Just "IQTestCountdownScreen")
+                    ]
+                    ()
+        , test "a client stateUpdate for an IQ player can't clobber the server-derived screen" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqCounting, countdownRemaining = 5, totalDings = 100 }
+                        }
+
+                    -- The client self-reports a bogus/stale countdown (as if it never
+                    -- received the server's ticks) -- this must not win.
+                    bogusReport =
+                        Encode.encode 0 (editedScreenState "IQTestCountdownScreen" [ ( "questionIdx", Encode.int 0 ), ( "countdown", Encode.int 9999 ), ( "totalDings", Encode.int 100 ) ])
+
+                    ( m, _ ) =
+                        update (MessageReceived { clientId = "c1", payload = clientEnvelope "stateUpdate" [ ( "json", Encode.string bogusReport ) ] }) staged
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+                in
+                entryOf
+                    |> Maybe.andThen .state
+                    |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "state", "countdown" ] Decode.int) >> Result.toMaybe)
+                    |> Expect.equal (Just 5)
+        , test "test completion clears a previously-set registry iqTimer (via clearIqTimer)" <|
+            \_ ->
+                let
+                    ( withTimer, _ ) =
+                        setIqTimer "uuid1" { iqState | phase = IqDingShown } baseModel
+
+                    ( cleared, _ ) =
+                        clearIqTimer "uuid1" withTimer
+
+                    entryOf =
+                        cleared.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" cleared.iqTimers |> Expect.equal Nothing
+                    , \_ -> entryOf |> Maybe.andThen .iqTimer |> Expect.equal Nothing
+                    ]
+                    ()
+        , test "setIqTimer keeps iqTimers and the registry in agreement" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        setIqTimer "uuid1" { iqState | phase = IqCounting, countdownRemaining = 11 } baseModel
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.iqTimers |> Maybe.map .countdownRemaining |> Expect.equal (Just 11)
+                    , \_ ->
+                        entryOf
+                            |> Maybe.andThen .state
+                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "state", "countdown" ] Decode.int) >> Result.toMaybe)
+                            |> Expect.equal (Just 11)
+                    ]
+                    ()
         ]
