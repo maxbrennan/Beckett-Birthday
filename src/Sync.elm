@@ -15,6 +15,11 @@ type ServerEnvelope
     | ServerWinText String
     | ServerAuth
     | ServerRejected String
+    | ServerIqCountdownTick Int
+    | ServerIqCountdownComplete
+    | ServerIqDing { fake : Bool, trap : Bool, dingCount : Int, totalDings : Int }
+    | ServerIqStartLoud
+    | ServerIqTestComplete
     | ServerUnknown
 
 
@@ -45,6 +50,29 @@ decodeServerEnvelope =
                         Decode.at [ "stateRequestRejected", "reason" ] Decode.string
                             |> Decode.map ServerRejected
 
+                    "iqCountdownTick" ->
+                        Decode.at [ "iqCountdownTick", "remaining" ] Decode.int
+                            |> Decode.map ServerIqCountdownTick
+
+                    "iqCountdownComplete" ->
+                        Decode.succeed ServerIqCountdownComplete
+
+                    "iqDing" ->
+                        Decode.map4
+                            (\f t dc td -> ServerIqDing { fake = f, trap = t, dingCount = dc, totalDings = td })
+                            (Decode.at [ "iqDing", "fake" ] Decode.bool)
+                            -- protobufjs omits default (false) scalar fields, so trap/fake
+                            -- may be absent; treat a missing flag as false.
+                            (Decode.oneOf [ Decode.at [ "iqDing", "trap" ] Decode.bool, Decode.succeed False ])
+                            (Decode.oneOf [ Decode.at [ "iqDing", "dingCount" ] Decode.int, Decode.succeed 0 ])
+                            (Decode.oneOf [ Decode.at [ "iqDing", "totalDings" ] Decode.int, Decode.succeed 0 ])
+
+                    "iqStartLoud" ->
+                        Decode.succeed ServerIqStartLoud
+
+                    "iqTestComplete" ->
+                        Decode.succeed ServerIqTestComplete
+
                     _ ->
                         Decode.succeed ServerUnknown
             )
@@ -55,6 +83,44 @@ stateRequestEnvelope uuid =
     Encode.object
         [ ( "payload", Encode.string "stateRequest" )
         , ( "stateRequest", Encode.object [ ( "uuid", Encode.string uuid ) ] )
+        ]
+
+
+-- ── IQ-test client→server envelopes (all payload-less) ──────────────────────────
+-- The client never sends a count; the server owns it.
+
+
+iqStartCountdownEnvelope : Encode.Value
+iqStartCountdownEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqStartCountdown" )
+        , ( "iqStartCountdown", Encode.object [] )
+        ]
+
+
+iqReadyForDingEnvelope : Encode.Value
+iqReadyForDingEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqReadyForDing" )
+        , ( "iqReadyForDing", Encode.object [] )
+        ]
+
+
+iqCaughtEnvelope : Encode.Value
+iqCaughtEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqCaught" )
+        , ( "iqCaught", Encode.object [] )
+        ]
+
+
+-- Sent right after restoring a saved IQ screen from a reconnect, so the server
+-- re-arms whatever it paused on disconnect (see Server.elm's resumeIqTimer).
+iqResumeEnvelope : Encode.Value
+iqResumeEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqResume" )
+        , ( "iqResume", Encode.object [] )
         ]
 
 
@@ -95,17 +161,6 @@ encodeIQTestScreenState s =
     Encode.object
         [ ( "questionIdx", Encode.int s.questionIdx )
         , ( "totalDings", Encode.int s.totalDings )
-        , ( "fakeFlashUsed", Encode.bool s.fakeFlashUsed )
-        , ( "in50PercentPhase", Encode.bool s.in50PercentPhase )
-        ]
-
-
-encodeIQTestInit : IQTestInit -> Encode.Value
-encodeIQTestInit s =
-    Encode.object
-        [ ( "delay", Encode.float s.delay )
-        , ( "nextRandom", Encode.bool s.nextRandom )
-        , ( "fakeFlashPoint", Encode.int s.fakeFlashPoint )
         ]
 
 
@@ -114,10 +169,7 @@ encodeIQTestCountdownState s =
     Encode.object
         [ ( "questionIdx", Encode.int s.questionIdx )
         , ( "totalDings", Encode.int s.totalDings )
-        , ( "fakeFlashUsed", Encode.bool s.fakeFlashUsed )
-        , ( "in50PercentPhase", Encode.bool s.in50PercentPhase )
         , ( "countdown", Encode.int s.countdown )
-        , ( "initData", encodeIQTestInit s.initData )
         ]
 
 
@@ -130,11 +182,8 @@ encodeIQTestState s =
         , ( "isFlashing", Encode.bool s.isFlashing )
         , ( "dingActive", Encode.bool s.dingActive )
         , ( "fakeFlashActive", Encode.bool s.fakeFlashActive )
+        , ( "fakeIsTrap", Encode.bool s.fakeIsTrap )
         , ( "loudPlaying", Encode.bool s.loudPlaying )
-        , ( "fakeFlashUsed", Encode.bool s.fakeFlashUsed )
-        , ( "fakeFlashPoint", Encode.int s.fakeFlashPoint )
-        , ( "nextRandom", Encode.bool s.nextRandom )
-        , ( "in50PercentPhase", Encode.bool s.in50PercentPhase )
         ]
 
 
@@ -218,12 +267,6 @@ encodeMsg msg =
         TrackEnded filename ->
             Encode.object [ ( "tag", Encode.string "TrackEnded" ), ( "filename", Encode.string filename ) ]
 
-        ScheduleNextDing s ->
-            Encode.object [ ( "tag", Encode.string "ScheduleNextDing" ), ( "delay", Encode.float s.delay ), ( "nextRandom", Encode.bool s.nextRandom ) ]
-
-        IQTestStarted s ->
-            Encode.object [ ( "tag", Encode.string "IQTestStarted" ), ( "initData", encodeIQTestInit s ) ]
-
         DingFlashEnd ->
             Encode.object [ ( "tag", Encode.string "DingFlashEnd" ) ]
 
@@ -239,14 +282,8 @@ encodeMsg msg =
         FakeFlashNextPhase ->
             Encode.object [ ( "tag", Encode.string "FakeFlashNextPhase" ) ]
 
-        CountdownTick ->
-            Encode.object [ ( "tag", Encode.string "CountdownTick" ) ]
-
         StartLoudMusic ->
             Encode.object [ ( "tag", Encode.string "StartLoudMusic" ) ]
-
-        DingOccurred ->
-            Encode.object [ ( "tag", Encode.string "DingOccurred" ) ]
 
         WsReconnect ->
             Encode.object [ ( "tag", Encode.string "WsReconnect" ) ]
@@ -324,48 +361,28 @@ decodeFakeFlashPhase =
 
 decodeIQTestScreenState : Decoder IQTestScreenState
 decodeIQTestScreenState =
-    Decode.map4
-        (\qi td ffu i50 -> { questionIdx = qi, totalDings = td, fakeFlashUsed = ffu, in50PercentPhase = i50 })
+    Decode.map2
+        (\qi td -> { questionIdx = qi, totalDings = td })
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "totalDings" Decode.int)
-        (Decode.field "fakeFlashUsed" Decode.bool)
-        (Decode.field "in50PercentPhase" Decode.bool)
-
-
-decodeIQTestInit : Decoder IQTestInit
-decodeIQTestInit =
-    Decode.map3
-        (\d nr fp -> { delay = d, nextRandom = nr, fakeFlashPoint = fp })
-        (Decode.field "delay" Decode.float)
-        (Decode.field "nextRandom" Decode.bool)
-        (Decode.field "fakeFlashPoint" Decode.int)
 
 
 decodeIQTestCountdownState : Decoder IQTestCountdownState
 decodeIQTestCountdownState =
-    Decode.map6
-        (\qi td ffu i50 cd initData ->
-            { questionIdx = qi, totalDings = td, fakeFlashUsed = ffu
-            , in50PercentPhase = i50, countdown = cd, initData = initData
-            }
-        )
+    Decode.map3
+        (\qi td cd -> { questionIdx = qi, totalDings = td, countdown = cd })
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "totalDings" Decode.int)
-        (Decode.field "fakeFlashUsed" Decode.bool)
-        (Decode.field "in50PercentPhase" Decode.bool)
         (Decode.field "countdown" Decode.int)
-        (Decode.field "initData" decodeIQTestInit)
 
 
 decodeIQTestState : Decoder IQTestState
 decodeIQTestState =
     Decode.map8
-        (\qi dc td isF dA ffA lP ffU ->
-            \ffP nr i50 ->
-                { questionIdx = qi, dingCount = dc, totalDings = td, isFlashing = isF
-                , dingActive = dA, fakeFlashActive = ffA, loudPlaying = lP, fakeFlashUsed = ffU
-                , fakeFlashPoint = ffP, nextRandom = nr, in50PercentPhase = i50
-                }
+        (\qi dc td isF dA ffA fit lP ->
+            { questionIdx = qi, dingCount = dc, totalDings = td, isFlashing = isF
+            , dingActive = dA, fakeFlashActive = ffA, fakeIsTrap = fit, loudPlaying = lP
+            }
         )
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "dingCount" Decode.int)
@@ -373,15 +390,8 @@ decodeIQTestState =
         (Decode.field "isFlashing" Decode.bool)
         (Decode.field "dingActive" Decode.bool)
         (Decode.field "fakeFlashActive" Decode.bool)
+        (Decode.field "fakeIsTrap" Decode.bool)
         (Decode.field "loudPlaying" Decode.bool)
-        (Decode.field "fakeFlashUsed" Decode.bool)
-        |> Decode.andThen
-            (\partial ->
-                Decode.map3 partial
-                    (Decode.field "fakeFlashPoint" Decode.int)
-                    (Decode.field "nextRandom" Decode.bool)
-                    (Decode.field "in50PercentPhase" Decode.bool)
-            )
 
 
 decodeFakeFlashCaughtState : Decoder FakeFlashCaughtState
@@ -480,14 +490,6 @@ decodeMsg =
                     "TrackEnded" ->
                         Decode.map TrackEnded (Decode.field "filename" Decode.string)
 
-                    "ScheduleNextDing" ->
-                        Decode.map2 (\d nr -> ScheduleNextDing { delay = d, nextRandom = nr })
-                            (Decode.field "delay" Decode.float)
-                            (Decode.field "nextRandom" Decode.bool)
-
-                    "IQTestStarted" ->
-                        Decode.map IQTestStarted (Decode.field "initData" decodeIQTestInit)
-
                     "DingFlashEnd" ->
                         Decode.succeed DingFlashEnd
 
@@ -503,14 +505,8 @@ decodeMsg =
                     "FakeFlashNextPhase" ->
                         Decode.succeed FakeFlashNextPhase
 
-                    "CountdownTick" ->
-                        Decode.succeed CountdownTick
-
                     "StartLoudMusic" ->
                         Decode.succeed StartLoudMusic
-
-                    "DingOccurred" ->
-                        Decode.succeed DingOccurred
 
                     "WsReconnect" ->
                         Decode.succeed WsReconnect

@@ -17,6 +17,10 @@ type ClientEnvelope
     | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String }
     | ClientDistUndeploy String
     | ClientDistList
+    | ClientIqStartCountdown
+    | ClientIqReadyForDing
+    | ClientIqCaught
+    | ClientIqResume
     | ClientUnknown
 
 
@@ -93,6 +97,18 @@ decodeClientEnvelope =
 
                     "distList" ->
                         Decode.succeed ClientDistList
+
+                    "iqStartCountdown" ->
+                        Decode.succeed ClientIqStartCountdown
+
+                    "iqReadyForDing" ->
+                        Decode.succeed ClientIqReadyForDing
+
+                    "iqCaught" ->
+                        Decode.succeed ClientIqCaught
+
+                    "iqResume" ->
+                        Decode.succeed ClientIqResume
 
                     _ ->
                         Decode.succeed ClientUnknown
@@ -230,4 +246,56 @@ rejectEnvelope reason =
     Encode.object
         [ ( "payload", Encode.string "stateRequestRejected" )
         , ( "stateRequestRejected", Encode.object [ ( "reason", Encode.string reason ) ] )
+        ]
+
+
+-- ── IQ-test server→client envelopes ─────────────────────────────────────────────
+-- The server owns all IQ-test timing and the ding/question count. These carry the
+-- server's authoritative view down to the client, which only renders it.
+
+
+iqCountdownTickEnvelope : Int -> Encode.Value
+iqCountdownTickEnvelope remaining =
+    Encode.object
+        [ ( "payload", Encode.string "iqCountdownTick" )
+        , ( "iqCountdownTick", Encode.object [ ( "remaining", Encode.int remaining ) ] )
+        ]
+
+
+iqCountdownCompleteEnvelope : Encode.Value
+iqCountdownCompleteEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqCountdownComplete" )
+        , ( "iqCountdownComplete", Encode.object [] )
+        ]
+
+
+iqDingEnvelope : { fake : Bool, trap : Bool, dingCount : Int, totalDings : Int } -> Encode.Value
+iqDingEnvelope { fake, trap, dingCount, totalDings } =
+    Encode.object
+        [ ( "payload", Encode.string "iqDing" )
+        , ( "iqDing"
+          , Encode.object
+                [ ( "fake", Encode.bool fake )
+                , ( "trap", Encode.bool trap )
+                , ( "dingCount", Encode.int dingCount )
+                , ( "totalDings", Encode.int totalDings )
+                ]
+          )
+        ]
+
+
+iqStartLoudEnvelope : Encode.Value
+iqStartLoudEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqStartLoud" )
+        , ( "iqStartLoud", Encode.object [] )
+        ]
+
+
+iqTestCompleteEnvelope : Encode.Value
+iqTestCompleteEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqTestComplete" )
+        , ( "iqTestComplete", Encode.object [] )
         ]
