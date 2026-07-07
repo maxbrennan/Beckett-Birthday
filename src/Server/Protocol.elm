@@ -123,24 +123,64 @@ stateEnvelope state =
         ]
 
 
-ackEnvelope : Encode.Value
-ackEnvelope =
+stateUpdateAckEnvelope : Encode.Value
+stateUpdateAckEnvelope =
     Encode.object
-        [ ( "payload", Encode.string "ack" )
-        , ( "ack", Encode.object [] )
+        [ ( "payload", Encode.string "stateUpdateAck" )
+        , ( "stateUpdateAck", Encode.object [] )
         ]
 
 
-{-| A plain ack carrying a marker that tells the JS host to mint and attach an
-upload token (the crypto stays in JS). The marker never reaches the protobuf
-codec: `sendToClient` in server/index.js rewrites the payload to
-`{ ack : { uploadToken } }` before encoding.
+{-| A marker that tells the JS host to mint and attach an upload token (the
+crypto stays in JS). The marker never reaches the protobuf codec:
+`sendToClient` in server/index.js rewrites the payload to
+`{ distRegisterAck : { uploadToken } }` before encoding.
 -}
-ackWithUploadTokenEnvelope : Encode.Value
-ackWithUploadTokenEnvelope =
+distRegisterAckEnvelope : Encode.Value
+distRegisterAckEnvelope =
     Encode.object
-        [ ( "payload", Encode.string "ack" )
-        , ( "ack", Encode.object [ ( "mintUploadToken", Encode.bool True ) ] )
+        [ ( "payload", Encode.string "distRegisterAck" )
+        , ( "distRegisterAck", Encode.object [ ( "mintUploadToken", Encode.bool True ) ] )
+        ]
+
+
+distUploadAckEnvelope : Encode.Value
+distUploadAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distUploadAck" )
+        , ( "distUploadAck", Encode.object [] )
+        ]
+
+
+distCompleteAckEnvelope : Encode.Value
+distCompleteAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distCompleteAck" )
+        , ( "distCompleteAck", Encode.object [] )
+        ]
+
+
+distStateEditSaveAckEnvelope : Encode.Value
+distStateEditSaveAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distStateEditSaveAck" )
+        , ( "distStateEditSaveAck", Encode.object [] )
+        ]
+
+
+distReplaceCompleteAckEnvelope : Encode.Value
+distReplaceCompleteAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distReplaceCompleteAck" )
+        , ( "distReplaceCompleteAck", Encode.object [] )
+        ]
+
+
+distUndeployAckEnvelope : Encode.Value
+distUndeployAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distUndeployAck" )
+        , ( "distUndeployAck", Encode.object [] )
         ]
 
 

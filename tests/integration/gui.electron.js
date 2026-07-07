@@ -14,13 +14,13 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { _electron: electron } = require('playwright');
-const { startTestServer } = require('./helpers/testServer');
-const { AdminClient } = require('./helpers/adminAuth');
-const distClient = require('./helpers/distClient');
-const { PROJECT_ROOT } = require('./helpers/certPaths');
-const globalSetup = require('./helpers/globalSetup');
-const globalTeardown = require('./helpers/globalTeardown');
-const { waitUntil } = require('./helpers/waitUntil');
+const { startTestServer } = require('../helpers/testServer');
+const { AdminClient } = require('../helpers/adminAuth');
+const distClient = require('../helpers/distClient');
+const { PROJECT_ROOT } = require('../helpers/certPaths');
+const globalSetup = require('../helpers/globalSetup');
+const globalTeardown = require('../helpers/globalTeardown');
+const { waitUntil } = require('../helpers/waitUntil');
 
 const TEST_PORT = 19451;
 const USERNAME = 'testadmin';
@@ -127,6 +127,20 @@ async function main() {
 
         await waitUntil(async () => (await bodyText(window)).includes('Connecting to server...'), GUI_WAIT_OPTS);
         console.log('  ✓ client shows "Connecting to server..." after the server stops');
+
+        // Regression guard for #51: while the server stays down, the client should hold a
+        // stable "Connecting..." message rather than flash through the error screen (an
+        // unthrottled reconnect-retry loop previously caused rapid cycling between
+        // "Connecting...", "Loading...", and this error message before the server came back).
+        const flapCheckDeadline = Date.now() + 2000;
+        while (Date.now() < flapCheckDeadline) {
+            const text = await bodyText(window);
+            if (text.includes('Something is wrong with the internet connection')) {
+                throw new Error('client flashed the error screen while the server was cleanly stopped (issue #51 regression)');
+            }
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        console.log('  ✓ client holds a stable "Connecting..." message without flashing the error screen');
 
         server = await startTestServer({ port: TEST_PORT, existingTempDir: tempDir });
 

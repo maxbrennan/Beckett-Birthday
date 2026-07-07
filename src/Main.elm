@@ -1,4 +1,4 @@
-port module Main exposing (main)
+port module Main exposing (..)
 
 import Audio exposing (..)
 import Browser
@@ -594,6 +594,7 @@ update msg model =
                                             , dingKey = model.dingKey
                                             , myUuid = model.myUuid
                                             , wsUrl = model.wsUrl
+                                            , questions = model.questions
                                           }
                                         , videoCmd
                                         )
@@ -734,13 +735,8 @@ update msg model =
                 WsConnectingScreen ->
                     ( model |> scheduleReconnect, Cmd.none )
 
-                WsLoadingScreen ->
-                    ( { model | screen = WsConnectingScreen, wsClientId = Nothing } |> scheduleReconnect, Cmd.none )
-
                 _ ->
-                    ( { model | wsClientId = Nothing, screen = WsConnectingScreen }
-                    , initWebSocketClient model.wsUrl
-                    )
+                    ( { model | wsClientId = Nothing, screen = WsConnectingScreen } |> scheduleReconnect, Cmd.none )
 
         WsReconnect ->
             case model.screen of

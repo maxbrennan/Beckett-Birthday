@@ -2,10 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { startTestServer } = require('./helpers/testServer');
-const { AdminClient } = require('./helpers/adminAuth');
-const distClient = require('./helpers/distClient');
-const { waitUntil } = require('./helpers/waitUntil');
+const { startTestServer } = require('../helpers/testServer');
+const { AdminClient } = require('../helpers/adminAuth');
+const distClient = require('../helpers/distClient');
+const { waitUntil } = require('../helpers/waitUntil');
 
 const TEST_PORT = 19449;
 const USERNAME = 'testadmin';
@@ -59,7 +59,7 @@ describe('edit state', () => {
 
         const newState = { jeopardyPlaying: false, screen: 'BeginScreen' };
         const resultMsg = await distClient.saveStateEdit(conn, build.uuid, JSON.stringify(newState));
-        expect(resultMsg.payload).toBe('ack');
+        expect(resultMsg.payload).toBe('distStateEditSaveAck');
         await conn.close();
 
         // the ack and the registry write are dispatched in the same Elm Cmd.batch, so
@@ -81,7 +81,7 @@ describe('edit state', () => {
         {
             const { conn } = await distClient.requestStateEdit(TEST_PORT, admin, invalidJsonBuild.uuid);
             const saveResult = await distClient.saveStateEdit(conn, invalidJsonBuild.uuid, JSON.stringify(goodState));
-            expect(saveResult.payload).toBe('ack');
+            expect(saveResult.payload).toBe('distStateEditSaveAck');
             await conn.close();
         }
 

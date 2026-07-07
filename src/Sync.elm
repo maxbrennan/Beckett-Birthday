@@ -33,7 +33,7 @@ decodeServerEnvelope =
                         Decode.at [ "stateUpdate", "json" ] Decode.string
                             |> Decode.map ServerStateUpdate
 
-                    "ack" ->
+                    "stateUpdateAck" ->
                         Decode.succeed ServerAck
 
                     "winText" ->
