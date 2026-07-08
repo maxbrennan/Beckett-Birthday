@@ -92,7 +92,7 @@ jobs:
         with:
           name: elm-coverage-data
           path: .coverage
-      # Interim floor, not the 95% target from issue #26 — raised from 9% after #48
-      # added tests for Game.Quiz/Game.IQTest/Sync/Audio/View's pure surface; see the
-      # follow-up issue tracking Main.elm's update-logic extraction for the remaining gap.
-      - run: node ci/check-elm-coverage.js 20
+      # Interim floor, not the 95% target from issue #26 — raised from 20% after #57
+      # extracted Main.elm's update-logic into pure, tested functions (measured ~52%
+      # with View.elm's Html-rendering functions excluded, see ci/check-elm-coverage.js).
+      - run: node ci/check-elm-coverage.js 50

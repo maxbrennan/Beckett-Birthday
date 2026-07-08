@@ -1,7 +1,7 @@
 module QuizTest exposing (..)
 
 import Expect
-import Game.Quiz exposing (Question, capitalize, decodeQuestions, getQuestion, isVideo, normalize)
+import Game.Quiz exposing (AnswerOutcome(..), Question, capitalize, decideAnswer, decodeQuestions, getQuestion, isVideo, normalize)
 import Test exposing (Test, describe, test)
 
 
@@ -56,6 +56,24 @@ getQuestionTests =
             \_ -> Expect.equal Nothing (getQuestion questions 10)
         , test "returns Nothing for an empty list" <|
             \_ -> Expect.equal Nothing (getQuestion [] 0)
+        ]
+
+
+decideAnswerTests : Test
+decideAnswerTests =
+    let
+        questions =
+            [ Question "a.mp3" [ "Alpha" ], Question "b.mp3" [ "Beta" ] ]
+    in
+    describe "decideAnswer"
+        [ test "correct answer with a following question continues to it" <|
+            \_ -> decideAnswer questions 0 "alpha" |> Expect.equal (CorrectContinue 1)
+        , test "correct answer on the last question wins" <|
+            \_ -> decideAnswer questions 1 "beta" |> Expect.equal CorrectWin
+        , test "wrong answer" <|
+            \_ -> decideAnswer questions 0 "gamma" |> Expect.equal IncorrectAnswer
+        , test "no question at this index" <|
+            \_ -> decideAnswer questions 5 "alpha" |> Expect.equal NoQuestion
         ]
 
 

@@ -1,5 +1,14 @@
 module View exposing (..)
 
+-- This module's `Html Msg`-producing functions are intentionally excluded from
+-- the elm-coverage unit-test target (see ci/check-elm-coverage.js's
+-- EXCLUDED_MODULES) -- they take the full Model rather than narrow view-model
+-- data, so unit-testing them meaningfully would mean either full-Model
+-- snapshot fixtures per screen or a view-model refactor, neither warranted
+-- here. They're verified instead by tests/integration/gui.electron.js, which
+-- drives the real rendered app. Pure non-rendering helpers (formatTimer) are
+-- still unit-tested normally, in tests/AudioViewTest.elm.
+
 import Audio exposing (viewAudio)
 import Game.IQTest exposing (..)
 import Game.Quiz exposing (..)

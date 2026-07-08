@@ -4,15 +4,104 @@ import Expect
 import Game.IQTest
     exposing
         ( FakeFlashPhase(..)
+        , IQTestState
+        , SpaceBarOutcome(..)
+        , decideSpaceBar
         , dingDelayGen
+        , exitFakeFlash
         , fakeFlashPointGen
+        , iqQuestionCount
         , isCounterBig
         , lastTriggerForSlot
         , maxDingDelay
+        , maxTotalDings
         , minDingDelay
+        , nextFfPhase
         )
 import Random
 import Test exposing (Test, describe, test)
+
+
+iqState : IQTestState
+iqState =
+    { questionIdx = 0
+    , dingCount = 0
+    , totalDings = iqQuestionCount
+    , isFlashing = False
+    , dingActive = False
+    , fakeFlashActive = False
+    , fakeIsTrap = False
+    , loudPlaying = False
+    }
+
+
+decideSpaceBarTests : Test
+decideSpaceBarTests =
+    describe "decideSpaceBar"
+        [ test "catching the one-time trap starts the cutscene" <|
+            \_ ->
+                decideSpaceBar { iqState | fakeFlashActive = True, fakeIsTrap = True, dingCount = 5, totalDings = 100 }
+                    |> Expect.equal
+                        (CaughtTrap
+                            { questionIdx = 0
+                            , originalTotal = 100
+                            , displayNumerator = 5
+                            , displayDenominator = 100
+                            , phase = FfDelay
+                            }
+                        )
+        , test "pressing during a 50%-phase fake (not the trap) fails" <|
+            \_ -> decideSpaceBar { iqState | fakeFlashActive = True, fakeIsTrap = False } |> Expect.equal SpaceBarFailed
+        , test "pressing with nothing active fails" <|
+            \_ -> decideSpaceBar iqState |> Expect.equal SpaceBarFailed
+        , test "clearing a real ding while still in the doubled-punishment range grinds totalDings down" <|
+            \_ ->
+                decideSpaceBar { iqState | dingActive = True, dingCount = 3, totalDings = iqQuestionCount + 1 }
+                    |> Expect.equal
+                        (OptimisticClear { iqState | dingActive = False, dingCount = 3, totalDings = iqQuestionCount })
+        , test "clearing a real ding back at the target count advances dingCount instead" <|
+            \_ ->
+                decideSpaceBar { iqState | dingActive = True, dingCount = 3, totalDings = iqQuestionCount }
+                    |> Expect.equal
+                        (OptimisticClear { iqState | dingActive = False, dingCount = 4, totalDings = iqQuestionCount })
+        ]
+
+
+nextFfPhaseTests : Test
+nextFfPhaseTests =
+    describe "nextFfPhase"
+        [ test "walks the linear text/delay phases in order" <|
+            \_ ->
+                Expect.equal
+                    [ Just ( FfText1In, 1000 )
+                    , Just ( FfText1Hold, 2500 )
+                    , Just ( FfText1Out, 1000 )
+                    , Just ( FfText2In, 800 )
+                    , Just ( FfText2Hold, 2500 )
+                    , Just ( FfText2Out, 1000 )
+                    , Just ( FfCounterIn, 700 )
+                    ]
+                    (List.map nextFfPhase [ FfDelay, FfText1In, FfText1Hold, FfText1Out, FfText2In, FfText2Hold, FfText2Out ])
+        , test "Nothing for the counter/tick/terminal phases handled outside the table" <|
+            \_ ->
+                Expect.equal
+                    [ Nothing, Nothing, Nothing, Nothing, Nothing ]
+                    (List.map nextFfPhase [ FfCounterIn, FfTickNumerator, FfTickDelay, FfTickDenominator, FfCounterOut ])
+        ]
+
+
+exitFakeFlashTests : Test
+exitFakeFlashTests =
+    describe "exitFakeFlash"
+        [ test "doubles the display total on exit" <|
+            \_ ->
+                exitFakeFlash { questionIdx = 2, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut }
+                    |> Expect.equal { questionIdx = 2, totalDings = 20 }
+        , test "caps the doubled total at maxTotalDings" <|
+            \_ ->
+                exitFakeFlash { questionIdx = 0, originalTotal = maxTotalDings, displayNumerator = 0, displayDenominator = 0, phase = FfCounterOut }
+                    |> Expect.equal { questionIdx = 0, totalDings = maxTotalDings }
+        ]
 
 
 isCounterBigTests : Test
