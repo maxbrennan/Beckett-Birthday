@@ -1,0 +1,162 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { startTestServer, TEST_QUIZ_QUESTION_COUNT } = require('../helpers/testServer');
+const { AdminClient } = require('../helpers/adminAuth');
+const distClient = require('../helpers/distClient');
+const { connectAsPlayer } = require('../helpers/playerClient');
+const { waitUntil } = require('../helpers/waitUntil');
+
+const TEST_PORT = 19453;
+const USERNAME = 'testadmin';
+const PASSWORD = 'correct-horse-battery-staple';
+const WIN_TEXT = 'Text "creeper... awwww man" to Max to claim your reward!';
+
+let server;
+let admin;
+
+function readRegistry() {
+    const file = path.join(server.tempDir, 'app-builds', 'builds.jsonl');
+    if (!fs.existsSync(file)) return [];
+    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
+// Minimal player state; a raw stateUpdate the fabricated-exploit test uses to simulate a
+// modified client bypassing the Elm client's Msg system entirely (see win-text.test.js).
+function stateWithScreen(screen) {
+    return JSON.stringify({
+        screen,
+        jeopardyPlaying: false,
+        now: 0,
+        pending: [],
+        savedState: null,
+        dingKey: 0,
+        pendingStartTime: null,
+        wsClientId: null,
+        timerEndsAt: 0,
+    });
+}
+
+describe('server-side quiz-progress win gating', () => {
+    beforeAll(async () => {
+        server = await startTestServer({
+            port: TEST_PORT,
+            seedUsers: [{ username: USERNAME, password: PASSWORD, level: 2 }],
+        });
+        admin = new AdminClient({ username: USERNAME, password: PASSWORD });
+    }, 20000);
+
+    afterAll(async () => {
+        if (server) await server.stop();
+    }, 10000);
+
+    test('in-order quizAdvanced events yield winText only after the final question', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'quiz-progress-in-order.dmg',
+            winText: WIN_TEXT,
+        });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+
+        for (let idx = 0; idx < TEST_QUIZ_QUESTION_COUNT - 1; idx += 1) {
+            conn.send({ quizAdvanced: { idx } });
+            // No winText yet -- there's still at least one more question to pass.
+            await expect(conn.waitFor((m) => m.payload === 'winText', 300)).rejects.toThrow();
+        }
+
+        conn.send({ quizAdvanced: { idx: TEST_QUIZ_QUESTION_COUNT - 1 } });
+        const winMsg = await conn.waitFor((m) => m.payload === 'winText');
+        expect(winMsg.winText.text).toBe(WIN_TEXT);
+
+        await conn.close();
+    }, 10000);
+
+    test('an out-of-order idx (skipping ahead) never produces winText', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'quiz-progress-skip-ahead.dmg',
+            winText: WIN_TEXT,
+        });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        // Jump straight to the last question's index without earning the earlier ones.
+        conn.send({ quizAdvanced: { idx: TEST_QUIZ_QUESTION_COUNT - 1 } });
+        await expect(conn.waitFor((m) => m.payload === 'winText', 500)).rejects.toThrow();
+
+        await conn.close();
+    }, 10000);
+
+    test('a duplicate idx does not double-advance or trigger early completion', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'quiz-progress-duplicate.dmg',
+            winText: WIN_TEXT,
+        });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        conn.send({ quizAdvanced: { idx: 0 } });
+        conn.send({ quizAdvanced: { idx: 0 } });
+        await expect(conn.waitFor((m) => m.payload === 'winText', 500)).rejects.toThrow();
+
+        const entry = await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === build.uuid);
+            return e && e.quizProgress === 1 ? e : undefined;
+        });
+        expect(entry.quizProgress).toBe(1);
+
+        await conn.close();
+    }, 10000);
+
+    // Regression test for the fixed exploit (issue #33): a freshly connected player who
+    // never sent a single quizAdvanced event crafts a raw stateUpdate claiming the win
+    // screen directly, simulating a modified client bypassing the Elm client's Msg system.
+    // The server must not grant winText from this self-reported claim alone.
+    test('a crafted win-claiming stateUpdate with zero quizAdvanced events never triggers winText', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'quiz-progress-exploit.dmg',
+            winText: WIN_TEXT,
+        });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        conn.send({
+            stateUpdate: {
+                json: stateWithScreen({ tag: 'ConfirmingAnswerScreen', nextScreen: { tag: 'WinScreen' } }),
+            },
+        });
+        await conn.waitFor((m) => m.payload === 'stateUpdateAck');
+        await expect(conn.waitFor((m) => m.payload === 'winText', 500)).rejects.toThrow();
+
+        await conn.close();
+    }, 10000);
+
+    test('completed progress persists into builds.jsonl', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'quiz-progress-persist.dmg',
+            winText: WIN_TEXT,
+        });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        for (let idx = 0; idx < TEST_QUIZ_QUESTION_COUNT; idx += 1) {
+            conn.send({ quizAdvanced: { idx } });
+        }
+        await conn.waitFor((m) => m.payload === 'winText');
+        await conn.close();
+
+        // writeRegistry's fs write is async and can land after winText is already
+        // delivered over the socket, so poll rather than reading the file exactly once.
+        const entry = await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === build.uuid);
+            return e && e.quizProgress === TEST_QUIZ_QUESTION_COUNT ? e : undefined;
+        });
+        expect(entry.quizProgress).toBe(TEST_QUIZ_QUESTION_COUNT);
+    }, 10000);
+});
