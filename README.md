@@ -130,7 +130,7 @@ Edit **`config/quiz-questions.json`**. It is a JSON array; questions are asked i
 
 ```jsonc
 [
-  { "song": "baby-shark.mp3", "answers": ["Baby Shark Hip Hop", "Baby Shark (Hip Hip Version)"] },
+  { "song": "baby-shark.mp3", "answers": ["Baby Shark Hip Hop", "Baby Shark (Hip Hop Version)"] },
   { "song": "revenge.mp4",    "answers": ["Revenge", "Revenge a Minecraft Parody"] }
 ]
 ```
