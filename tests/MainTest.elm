@@ -3,9 +3,31 @@ module MainTest exposing (..)
 import Expect
 import Game.IQTest exposing (FakeFlashPhase(..), IQTestState, iqQuestionCount)
 import Game.Quiz exposing (Question)
-import Main exposing (update)
+import Json.Encode as Encode
+import Main exposing (decodeReadFileResult, everySecond, init, subscriptions, tickFromPosix, update)
 import Test exposing (Test, describe, test)
+import Time
 import Types exposing (Model, Msg(..), PausedState, Screen(..))
+
+
+stateUpdateEnvelope : String -> String
+stateUpdateEnvelope innerJson =
+    Encode.encode 0
+        (Encode.object
+            [ ( "payload", Encode.string "stateUpdate" )
+            , ( "stateUpdate", Encode.object [ ( "json", Encode.string innerJson ) ] )
+            ]
+        )
+
+
+validModelJson : String
+validModelJson =
+    """{"screen":{"tag":"BeginScreen"},"jeopardyPlaying":false,"now":0,"pending":[],"savedState":null,"dingKey":0,"pendingStartTime":null,"wsClientId":null,"timerEndsAt":0}"""
+
+
+modelJsonWithVideoResume : String
+modelJsonWithVideoResume =
+    """{"screen":{"tag":"BeginScreen"},"jeopardyPlaying":false,"now":0,"pending":[],"savedState":{"screen":{"tag":"VideoScreen","idx":0,"s":"v.mp4"},"pending":[],"savedAt":0,"songResumeTime":null,"videoResumeTime":5.5},"dingKey":0,"pendingStartTime":null,"wsClientId":null,"timerEndsAt":0}"""
 
 
 baseModel : Model
@@ -359,4 +381,973 @@ wsSyncTickSuite =
                         update WsSyncTick { baseModel | wsClientId = Nothing, screen = CheckingAnswerScreen (BlankScreen 0) }
                 in
                 result.screen |> Expect.equal (BlankScreen 0)
+        , test "with a live connection on WsLoadingScreen, does nothing" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update WsSyncTick { baseModel | wsClientId = Just "ws1", screen = WsLoadingScreen }
+                in
+                result.screen |> Expect.equal WsLoadingScreen
+        , test "with a live connection on WsConnectingScreen, does nothing" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update WsSyncTick { baseModel | wsClientId = Just "ws1", screen = WsConnectingScreen }
+                in
+                result.screen |> Expect.equal WsConnectingScreen
+        , test "with a live connection on WsErrorScreen, does nothing" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update WsSyncTick { baseModel | wsClientId = Just "ws1", screen = WsErrorScreen }
+                in
+                result.screen |> Expect.equal WsErrorScreen
+        ]
+
+
+initSuite : Test
+initSuite =
+    describe "init"
+        [ test "starts on WsConnectingScreen with a fresh model" <|
+            \_ ->
+                let
+                    ( model, _ ) =
+                        init "wss://example.test"
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal WsConnectingScreen
+                    , \m -> m.wsUrl |> Expect.equal "wss://example.test"
+                    , \m -> m.now |> Expect.equal 0
+                    , \m -> m.myUuid |> Expect.equal Nothing
+                    ]
+                    model
+        ]
+
+
+tickFromPosixSuite : Test
+tickFromPosixSuite =
+    describe "tickFromPosix"
+        [ test "converts a Posix into a Tick with millisecond precision" <|
+            \_ -> tickFromPosix (Time.millisToPosix 12345) |> Expect.equal (Tick 12345)
+        ]
+
+
+everySecondSuite : Test
+everySecondSuite =
+    describe "everySecond"
+        [ test "always produces WsSyncTick" <|
+            \_ -> everySecond (Time.millisToPosix 0) |> Expect.equal WsSyncTick
+        ]
+
+
+decodeReadFileResultSuite : Test
+decodeReadFileResultSuite =
+    describe "decodeReadFileResult"
+        [ test "decodes the quiz-questions file into QuestionsLoaded" <|
+            \_ ->
+                decodeReadFileResult
+                    { path = "config/quiz-questions.json"
+                    , contents = Just """[{"song":"a.mp3","answers":["a"]}]"""
+                    , error = Nothing
+                    }
+                    |> Expect.equal (QuestionsLoaded [ Question "a.mp3" [ "a" ] ])
+        , test "an empty/unparseable quiz-questions file yields no questions" <|
+            \_ ->
+                decodeReadFileResult { path = "config/quiz-questions.json", contents = Nothing, error = Just "boom" }
+                    |> Expect.equal (QuestionsLoaded [])
+        , test "any other file with a valid uuid field yields UuidLoaded (Just uuid)" <|
+            \_ ->
+                decodeReadFileResult { path = "app-uuid.json", contents = Just """{"uuid":"abc-123"}""", error = Nothing }
+                    |> Expect.equal (UuidLoaded (Just "abc-123"))
+        , test "any other file with malformed contents yields UuidLoaded Nothing" <|
+            \_ ->
+                decodeReadFileResult { path = "app-uuid.json", contents = Just "not json", error = Nothing }
+                    |> Expect.equal (UuidLoaded Nothing)
+        , test "any other file with no contents yields UuidLoaded Nothing" <|
+            \_ ->
+                decodeReadFileResult { path = "app-uuid.json", contents = Nothing, error = Just "not found" }
+                    |> Expect.equal (UuidLoaded Nothing)
+        ]
+
+
+subscriptionsSuite : Test
+subscriptionsSuite =
+    describe "subscriptions"
+        [ test "builds a subscription set on an active IQ test screen" <|
+            \_ ->
+                let
+                    _ =
+                        subscriptions { baseModel | screen = IQTestActiveScreen iqActiveState }
+                in
+                Expect.pass
+        , test "builds a subscription set off the IQ test screen" <|
+            \_ ->
+                let
+                    _ =
+                        subscriptions { baseModel | screen = BeginScreen }
+                in
+                Expect.pass
+        ]
+
+
+playSongMoreSuite : Test
+playSongMoreSuite =
+    describe "PlaySong (remaining branches)"
+        [ test "no question at this index leaves the screen untouched" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (PlaySong 5) { baseModel | screen = BlankScreen 5 }
+                in
+                result.screen |> Expect.equal (BlankScreen 5)
+        , test "a screen that isn't blank-wrapped is untouched" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (PlaySong 0) { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+trackEndedMoreSuite : Test
+trackEndedMoreSuite =
+    describe "TrackEnded (remaining branches)"
+        [ test "a non-matching screen/song is untouched" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (TrackEnded "song0.mp3") { baseModel | screen = QuestionScreen 0 "x" }
+                in
+                result.screen |> Expect.equal (QuestionScreen 0 "x")
+        ]
+
+
+showQuestionSuite : Test
+showQuestionSuite =
+    describe "ShowQuestion"
+        [ test "matching BlankScreen shows the question" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (ShowQuestion 0) { baseModel | screen = BlankScreen 0 }
+                in
+                result.screen |> Expect.equal (QuestionScreen 0 "")
+        , test "a stale ShowQuestion for a different index is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (ShowQuestion 1) { baseModel | screen = BlankScreen 0 }
+                in
+                result.screen |> Expect.equal (BlankScreen 0)
+        , test "ignored off a blank screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (ShowQuestion 0) { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+answerChangedSuite : Test
+answerChangedSuite =
+    describe "AnswerChanged"
+        [ test "updates the typed answer on a question screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (AnswerChanged "hi") { baseModel | screen = QuestionScreen 0 "" }
+                in
+                result.screen |> Expect.equal (QuestionScreen 0 "hi")
+        , test "ignored off a question screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (AnswerChanged "hi") { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+answerSubmittedMoreSuite : Test
+answerSubmittedMoreSuite =
+    describe "AnswerSubmitted (remaining branches)"
+        [ test "ignored off a question screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update AnswerSubmitted { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+continuePressedSuite : Test
+continuePressedSuite =
+    describe "ContinuePressed"
+        [ test "moves from the wrong-answer screen back to the IQ begin screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update ContinuePressed { baseModel | screen = WrongAnswerScreen 2 }
+                in
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = iqQuestionCount })
+        , test "ignored off the wrong-answer screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update ContinuePressed { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+iqTestBeginPressedSuite : Test
+iqTestBeginPressedSuite =
+    describe "IQTestBeginPressed"
+        [ test "starts the countdown from the IQ begin screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQTestBeginPressed { baseModel | screen = IQTestScreen { questionIdx = 0, totalDings = iqQuestionCount } }
+                in
+                result.screen |> Expect.equal (IQTestCountdownScreen { questionIdx = 0, totalDings = iqQuestionCount, countdown = iqQuestionCount })
+        , test "ignored off the IQ begin screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQTestBeginPressed { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+dingFlashEndSuite : Test
+dingFlashEndSuite =
+    describe "DingFlashEnd"
+        [ test "clears isFlashing on the active IQ screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update DingFlashEnd { baseModel | screen = IQTestActiveScreen { iqActiveState | isFlashing = True } }
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | isFlashing = False })
+        , test "ignored off the active IQ screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update DingFlashEnd { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+dingWindowExpiredSuite : Test
+dingWindowExpiredSuite =
+    describe "DingWindowExpired"
+        [ test "a still-active ding times out to a fail" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update DingWindowExpired { baseModel | screen = IQTestActiveScreen { iqActiveState | dingActive = True, totalDings = 9 } }
+                in
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 9 })
+        , test "an already-cleared ding is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update DingWindowExpired { baseModel | screen = IQTestActiveScreen { iqActiveState | dingActive = False } }
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | dingActive = False })
+        , test "ignored off the active IQ screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update DingWindowExpired { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+fakeFlashWindowExpiredSuite : Test
+fakeFlashWindowExpiredSuite =
+    describe "FakeFlashWindowExpired"
+        [ test "correctly-ignored fake clears fakeFlashActive" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update FakeFlashWindowExpired { baseModel | screen = IQTestActiveScreen { iqActiveState | fakeFlashActive = True } }
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | fakeFlashActive = False })
+        , test "a no-longer-active fake is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update FakeFlashWindowExpired { baseModel | screen = IQTestActiveScreen { iqActiveState | fakeFlashActive = False } }
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | fakeFlashActive = False })
+        , test "ignored off the active IQ screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update FakeFlashWindowExpired { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+startLoudMusicSuite : Test
+startLoudMusicSuite =
+    describe "StartLoudMusic"
+        [ test "sets loudPlaying on the active IQ screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update StartLoudMusic { baseModel | screen = IQTestActiveScreen iqActiveState }
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | loudPlaying = True })
+        , test "ignored off the active IQ screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update StartLoudMusic { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+fakeFlashNextPhaseMoreSuite : Test
+fakeFlashNextPhaseMoreSuite =
+    describe "FakeFlashNextPhase (remaining branches)"
+        [ test "FfTickDelay starts the denominator tick" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickDelay }
+
+                    ( result, _ ) =
+                        update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen { state | phase = FfTickDenominator })
+        , test "a mid-tick phase is a no-op (advanced by FakeFlashCounterTick instead)" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 5, displayDenominator = 10, phase = FfTickNumerator }
+
+                    ( result, _ ) =
+                        update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen state)
+        , test "ignored off the fake-flash-caught screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update FakeFlashNextPhase { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+wsClientReadySuite : Test
+wsClientReadySuite =
+    describe "WsClientReady"
+        [ test "with a known uuid, requests state and loads" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsClientReady "ws1") { baseModel | myUuid = Just "uuid1" }
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal WsLoadingScreen
+                    , \m -> m.wsClientId |> Expect.equal (Just "ws1")
+                    ]
+                    result
+        , test "with no uuid yet, falls back to the error screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsClientReady "ws1") { baseModel | myUuid = Nothing }
+                in
+                result.screen |> Expect.equal WsErrorScreen
+        ]
+
+
+wsDisconnectedMoreSuite : Test
+wsDisconnectedMoreSuite =
+    describe "WsDisconnected (remaining branches)"
+        [ test "from any other screen, drops the ws id and reconnects" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDisconnected "closed") { baseModel | screen = BlankScreen 0, wsClientId = Just "ws1" }
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal WsConnectingScreen
+                    , \m -> m.wsClientId |> Expect.equal Nothing
+                    ]
+                    result
+        ]
+
+
+wsReconnectSuite : Test
+wsReconnectSuite =
+    describe "WsReconnect"
+        [ test "from the error screen, reconnects" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update WsReconnect { baseModel | screen = WsErrorScreen }
+                in
+                result.screen |> Expect.equal WsConnectingScreen
+        , test "from the connecting screen, retries" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update WsReconnect { baseModel | screen = WsConnectingScreen }
+                in
+                result.screen |> Expect.equal WsConnectingScreen
+        , test "ignored elsewhere" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update WsReconnect { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+uuidLoadedSuite : Test
+uuidLoadedSuite =
+    describe "UuidLoaded"
+        [ test "a loaded uuid connects the websocket" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (UuidLoaded (Just "uuid9")) baseModel
+                in
+                result.myUuid |> Expect.equal (Just "uuid9")
+        , test "no uuid falls back to the error screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (UuidLoaded Nothing) baseModel
+                in
+                result.screen |> Expect.equal WsErrorScreen
+        ]
+
+
+miscTrivialSuite : Test
+miscTrivialSuite =
+    describe "trivial Msg branches"
+        [ test "QuestionsLoaded replaces the question list" <|
+            \_ ->
+                let
+                    qs =
+                        [ Question "x.mp3" [ "x" ] ]
+
+                    ( result, _ ) =
+                        update (QuestionsLoaded qs) baseModel
+                in
+                result.questions |> Expect.equal qs
+        , test "NoOp is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update NoOp baseModel
+                in
+                result |> Expect.equal baseModel
+        , test "SongMetadataLoaded seeks to the pending start time" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update SongMetadataLoaded { baseModel | pendingStartTime = Just 5 }
+                in
+                result.pendingStartTime |> Expect.equal Nothing
+        , test "SongMetadataLoaded with no pending start time is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update SongMetadataLoaded { baseModel | pendingStartTime = Nothing }
+                in
+                result.pendingStartTime |> Expect.equal Nothing
+        , test "DomPropertyReceived is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (DomPropertyReceived { elementId = "x", property = "y", value = Encode.null }) baseModel
+                in
+                result |> Expect.equal baseModel
+        , test "DomPropertyError is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (DomPropertyError "boom") baseModel
+                in
+                result |> Expect.equal baseModel
+        ]
+
+
+fakeFlashCounterTickSuite : Test
+fakeFlashCounterTickSuite =
+    describe "FakeFlashCounterTick"
+        [ test "ticks the numerator down while it's above zero" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 3, displayDenominator = 10, phase = FfTickNumerator }
+
+                    ( result, _ ) =
+                        update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen { state | displayNumerator = 2 })
+        , test "numerator reaching zero moves to the tick-delay phase" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickNumerator }
+
+                    ( result, _ ) =
+                        update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen { state | phase = FfTickDelay })
+        , test "ticks the denominator up while under target" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 15, phase = FfTickDenominator }
+
+                    ( result, _ ) =
+                        update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen { state | displayDenominator = 16 })
+        , test "denominator reaching target moves to the counter-out phase" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfTickDenominator }
+
+                    ( result, _ ) =
+                        update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen { state | phase = FfCounterOut })
+        , test "a non-tick phase is a no-op" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay }
+
+                    ( result, _ ) =
+                        update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen state)
+        , test "ignored off the fake-flash-caught screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update FakeFlashCounterTick { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+wsDataReceivedSuite : Test
+wsDataReceivedSuite =
+    describe "WsDataReceived"
+        [ test "stateUpdate of an empty object on WsLoadingScreen enters BeginScreen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (stateUpdateEnvelope "{}")) { baseModel | screen = WsLoadingScreen }
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal BeginScreen
+                    , \m -> m.jeopardyPlaying |> Expect.equal True
+                    ]
+                    result
+        , test "stateUpdate of a real model on WsLoadingScreen restores it" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (stateUpdateEnvelope validModelJson)) { baseModel | screen = WsLoadingScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "stateUpdate with an undecodable model is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (stateUpdateEnvelope "not json")) { baseModel | screen = WsLoadingScreen }
+                in
+                result.screen |> Expect.equal WsLoadingScreen
+        , test "stateUpdate off WsLoadingScreen is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (stateUpdateEnvelope "{}")) { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "stateRequestRejected falls back to the error screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"stateRequestRejected","stateRequestRejected":{"reason":"locked"}}""") baseModel
+                in
+                result.screen |> Expect.equal WsErrorScreen
+        , test "stateUpdateAck on ConfirmingAnswerScreen(WinScreen) waits for winText" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"stateUpdateAck"}""") { baseModel | screen = ConfirmingAnswerScreen (WinScreen "") }
+                in
+                result.screen |> Expect.equal (ConfirmingAnswerScreen (WinScreen ""))
+        , test "stateUpdateAck on ConfirmingAnswerScreen resolves to the next screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"stateUpdateAck"}""") { baseModel | screen = ConfirmingAnswerScreen (BlankScreen 1) }
+                in
+                result.screen |> Expect.equal (BlankScreen 1)
+        , test "stateUpdateAck elsewhere is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"stateUpdateAck"}""") { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "winText on CheckingAnswerScreen(WinScreen) reveals the win screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"winText","winText":{"text":"yay"}}""") { baseModel | screen = CheckingAnswerScreen (WinScreen "") }
+                in
+                result.screen |> Expect.equal (WinScreen "yay")
+        , test "winText on ConfirmingAnswerScreen(WinScreen) reveals the win screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"winText","winText":{"text":"yay"}}""") { baseModel | screen = ConfirmingAnswerScreen (WinScreen "") }
+                in
+                result.screen |> Expect.equal (WinScreen "yay")
+        , test "winText on WinScreen updates the text" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"winText","winText":{"text":"yay"}}""") { baseModel | screen = WinScreen "" }
+                in
+                result.screen |> Expect.equal (WinScreen "yay")
+        , test "winText elsewhere is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"winText","winText":{"text":"yay"}}""") { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "iqCountdownTick updates the displayed countdown" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, totalDings = iqQuestionCount, countdown = 5 }
+
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownTick","iqCountdownTick":{"remaining":3}}""") { baseModel | screen = IQTestCountdownScreen state }
+                in
+                result.screen |> Expect.equal (IQTestCountdownScreen { state | countdown = 3 })
+        , test "iqCountdownTick elsewhere is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownTick","iqCountdownTick":{"remaining":3}}""") { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "iqCountdownComplete enters the active test" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, totalDings = iqQuestionCount, countdown = 0 }
+
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownComplete"}""") { baseModel | screen = IQTestCountdownScreen state }
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | questionIdx = 1 })
+        , test "iqCountdownComplete elsewhere is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownComplete"}""") { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "iqDing (fake) arms the fake-flash window" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqDing","iqDing":{"fake":true,"trap":true,"dingCount":5,"totalDings":100}}""")
+                            { baseModel | screen = IQTestActiveScreen iqActiveState }
+                in
+                result.screen
+                    |> Expect.equal (IQTestActiveScreen { iqActiveState | dingCount = 5, totalDings = 100, isFlashing = True, dingActive = False, fakeFlashActive = True, fakeIsTrap = True })
+        , test "iqDing (real) arms the ding window" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqDing","iqDing":{"fake":false,"trap":false,"dingCount":2,"totalDings":100}}""")
+                            { baseModel | screen = IQTestActiveScreen iqActiveState }
+                in
+                result.screen
+                    |> Expect.equal (IQTestActiveScreen { iqActiveState | dingCount = 2, totalDings = 100, isFlashing = True, dingActive = True, fakeFlashActive = False })
+        , test "iqDing elsewhere is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqDing","iqDing":{"fake":false,"trap":false,"dingCount":2,"totalDings":100}}""") { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "iqStartLoud arms the loud loop on the active screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqStartLoud"}""") { baseModel | screen = IQTestActiveScreen iqActiveState }
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen iqActiveState)
+        , test "iqStartLoud elsewhere is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqStartLoud"}""") { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "iqTestComplete releases to the next song" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqTestComplete"}""") { baseModel | screen = IQTestActiveScreen iqActiveState }
+                in
+                result.screen |> Expect.equal (BlankScreen 1)
+        , test "iqTestComplete elsewhere is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqTestComplete"}""") { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "an unrecognized payload is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"authChallenge"}""") { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "stateUpdate with a saved video-resume time seeks the video on restore" <|
+            \_ ->
+                let
+                    ( _, cmd ) =
+                        update (WsDataReceived (stateUpdateEnvelope modelJsonWithVideoResume)) { baseModel | screen = WsLoadingScreen }
+                in
+                cmd |> Expect.notEqual Cmd.none
+        ]
+
+
+remainingEdgeCasesSuite : Test
+remainingEdgeCasesSuite =
+    describe "remaining edge cases for full branch coverage"
+        [ test "Tick's very first tick (now == 0) just initializes the clock" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (Tick 5000) { baseModel | now = 0, screen = BeginScreen }
+                in
+                Expect.all
+                    [ \m -> m.now |> Expect.equal 5000
+                    , \m -> m.screen |> Expect.equal BeginScreen
+                    ]
+                    result
+        , test "Tick does not time out WsErrorScreen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (Tick 5000) { baseModel | screen = WsErrorScreen, timerEndsAt = 4000 }
+                in
+                result.screen |> Expect.equal WsErrorScreen
+        , test "Tick does not time out WsLoadingScreen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (Tick 5000) { baseModel | screen = WsLoadingScreen, timerEndsAt = 4000 }
+                in
+                result.screen |> Expect.equal WsLoadingScreen
+        , test "Tick does not re-time-out an already-timed-out screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (Tick 5000) { baseModel | screen = TimedOutScreen, timerEndsAt = 4000 }
+                in
+                result.screen |> Expect.equal TimedOutScreen
+        , test "a WsDisconnected burst dedupes an already-queued reconnect" <|
+            \_ ->
+                let
+                    model =
+                        { baseModel
+                            | screen = BlankScreen 0
+                            , wsClientId = Just "ws1"
+                            , pending = [ { fireAt = 1200, msg = WsReconnect }, { fireAt = 1300, msg = ShowQuestion 0 } ]
+                        }
+
+                    ( result, _ ) =
+                        update (WsDisconnected "closed") model
+                in
+                Expect.all
+                    [ \m -> m.pending |> List.filter (\e -> e.msg == WsReconnect) |> List.length |> Expect.equal 1
+                    , \m -> m.pending |> List.any (\e -> e.msg == ShowQuestion 0) |> Expect.equal True
+                    ]
+                    result
+        , test "SpaceBarPressed with no connection still updates optimistically without a Cmd effect" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update SpaceBarPressed { baseModel | wsClientId = Nothing, screen = IQTestActiveScreen { iqActiveState | dingActive = True } }
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | dingActive = False, dingCount = 1 })
+        , test "SpaceBarPressed ignored off the active IQ screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update SpaceBarPressed { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "resuming into a saved IQTestCountdownScreen re-arms the server timer" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = IQTestCountdownScreen { questionIdx = 0, totalDings = iqQuestionCount, countdown = 3 }
+                        , pending = []
+                        , savedAt = 0
+                        , songResumeTime = Nothing
+                        , videoResumeTime = Nothing
+                        }
+
+                    ( result, _ ) =
+                        update BeginPressed { baseModel | savedState = Just saved }
+                in
+                result.screen |> Expect.equal saved.screen
+        , test "resuming into a saved IQTestActiveScreen re-arms the server timer" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = IQTestActiveScreen iqActiveState, pending = [], savedAt = 0, songResumeTime = Nothing, videoResumeTime = Nothing }
+
+                    ( result, _ ) =
+                        update BeginPressed { baseModel | savedState = Just saved }
+                in
+                result.screen |> Expect.equal saved.screen
+        , test "resuming into a saved FakeFlashCaughtScreen re-arms the server timer" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = FakeFlashCaughtScreen { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay }
+                        , pending = []
+                        , savedAt = 0
+                        , songResumeTime = Nothing
+                        , videoResumeTime = Nothing
+                        }
+
+                    ( result, _ ) =
+                        update BeginPressed { baseModel | savedState = Just saved }
+                in
+                result.screen |> Expect.equal saved.screen
+        , test "resuming into a saved VideoScreen with a resume time seeks the video" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = VideoScreen 0 "v.mp4", pending = [], savedAt = 0, songResumeTime = Nothing, videoResumeTime = Just 3.5 }
+
+                    ( _, cmd ) =
+                        update BeginPressed { baseModel | savedState = Just saved }
+                in
+                cmd |> Expect.notEqual Cmd.none
+        , test "resuming into a saved loud-playing IQTestActiveScreen seeks the audio" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = IQTestActiveScreen { iqActiveState | loudPlaying = True }, pending = [], savedAt = 0, songResumeTime = Nothing, videoResumeTime = Just 3.5 }
+
+                    ( _, cmd ) =
+                        update BeginPressed { baseModel | savedState = Just saved }
+                in
+                cmd |> Expect.notEqual Cmd.none
+        , test "resuming into a saved non-loud IQTestActiveScreen does not seek" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = IQTestActiveScreen { iqActiveState | loudPlaying = False }, pending = [], savedAt = 0, songResumeTime = Nothing, videoResumeTime = Just 3.5 }
+
+                    ( result, _ ) =
+                        update BeginPressed { baseModel | savedState = Just saved }
+                in
+                result.screen |> Expect.equal saved.screen
+        , test "resuming into a saved screen with a resume time but no video/loud context does not seek" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = BeginScreen, pending = [], savedAt = 0, songResumeTime = Nothing, videoResumeTime = Just 3.5 }
+
+                    ( result, _ ) =
+                        update BeginPressed { baseModel | savedState = Just saved }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "PlaySong unwraps a CheckingAnswerScreen-wrapped blank screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (PlaySong 1) { baseModel | screen = CheckingAnswerScreen (BlankScreen 1) }
+                in
+                result.screen |> Expect.equal (VideoScreen 1 "video1.mp4")
+        , test "PlaySong unwraps a ConfirmingAnswerScreen-wrapped blank screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (PlaySong 1) { baseModel | screen = ConfirmingAnswerScreen (BlankScreen 1) }
+                in
+                result.screen |> Expect.equal (VideoScreen 1 "video1.mp4")
+        , test "TrackEnded ignores a track that doesn't match the scheduled song" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (TrackEnded "someone-elses-song.mp3") { baseModel | screen = BlankScreen 0 }
+                in
+                result.screen |> Expect.equal (BlankScreen 0)
+        , test "TrackEnded ignores an out-of-range blank screen index" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (TrackEnded "song0.mp3") { baseModel | screen = BlankScreen 99 }
+                in
+                result.screen |> Expect.equal (BlankScreen 99)
+        , test "AnswerSubmitted with no question at this index is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update AnswerSubmitted { baseModel | screen = QuestionScreen 99 "x" }
+                in
+                result.screen |> Expect.equal (QuestionScreen 99 "x")
+        , test "WsSyncTick with a connection but an unrelated screen leaves it untouched" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update WsSyncTick { baseModel | wsClientId = Just "ws1", screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        , test "WsSyncTick with no connection and an unrelated screen leaves it untouched" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update WsSyncTick { baseModel | wsClientId = Nothing, screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
         ]

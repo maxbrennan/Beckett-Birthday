@@ -1519,6 +1519,22 @@ update msg model =
                     ( model, Cmd.none )
 
 
+-- Decides the FileRead Msg a readFile port response becomes: a decent error
+-- message even in the (shouldn't-happen) case where the JS host reports
+-- neither contents nor an error.
+classifyFileRead : { path : String, contents : Maybe String, error : Maybe String } -> Msg
+classifyFileRead { path, contents, error } =
+    case ( contents, error ) of
+        ( Just c, _ ) ->
+            FileRead path (Ok c)
+
+        ( _, Just e ) ->
+            FileRead path (Err e)
+
+        _ ->
+            FileRead path (Err "unknown error")
+
+
 subscriptions : Model -> Sub Msg
 subscriptions _ =
     Sub.batch
@@ -1527,18 +1543,7 @@ subscriptions _ =
         , onMessage MessageReceived
         , authResult AuthCompleted
         , writeFileResult WriteFileCompleted
-        , readFileResult
-            (\{ path, contents, error } ->
-                case ( contents, error ) of
-                    ( Just c, _ ) ->
-                        FileRead path (Ok c)
-
-                    ( _, Just e ) ->
-                        FileRead path (Err e)
-
-                    _ ->
-                        FileRead path (Err "unknown error")
-            )
+        , readFileResult classifyFileRead
         ]
 
 

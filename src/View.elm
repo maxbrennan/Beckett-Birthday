@@ -9,14 +9,77 @@ module View exposing (..)
 -- drives the real rendered app. Pure non-rendering helpers (formatTimer) are
 -- still unit-tested normally, in tests/AudioViewTest.elm.
 
-import Audio exposing (viewAudio)
+import Audio exposing (currentQuizSong)
 import Game.IQTest exposing (..)
 import Game.Quiz exposing (..)
 import Html exposing (Html, audio, button, div, img, input, p, text, video)
-import Html.Attributes exposing (autoplay, id, loop, placeholder, src, style, type_, value)
+import Html.Attributes exposing (autoplay, id, loop, placeholder, property, src, style, type_, value)
 import Html.Events exposing (on, onClick, onInput)
+import Html.Keyed
 import Json.Decode as Decode exposing (Decoder)
+import Json.Encode as Encode
 import Types exposing (..)
+
+
+viewAudio : Model -> Html Msg
+viewAudio model =
+    let
+        jeopardyAudio =
+            if model.jeopardyPlaying then
+                audio
+                    [ id "jeopardy-audio"
+                    , src "assets/jeopardy-theme.mp3"
+                    , autoplay True
+                    , loop True
+                    ]
+                    []
+
+            else
+                text ""
+
+        quizAudio =
+            case currentQuizSong model of
+                Just songSrc ->
+                    audio
+                        [ id "quiz-audio"
+                        , src ("assets/songs/" ++ songSrc)
+                        , autoplay True
+                        , on "loadedmetadata" (Decode.succeed SongMetadataLoaded)
+                        , on "ended" (Decode.succeed (TrackEnded songSrc))
+                        ]
+                        []
+
+                Nothing ->
+                    text ""
+
+        dingAudio =
+            Html.Keyed.node "div"
+                []
+                (List.range 0 (dingSlotCount - 1)
+                    |> List.filterMap
+                        (\s ->
+                            let
+                                lastTrigger =
+                                    lastTriggerForSlot s model.dingKey
+                            in
+                            if lastTrigger == 0 then
+                                Nothing
+
+                            else
+                                Just
+                                    ( "ding-slot-" ++ String.fromInt s ++ "-" ++ String.fromInt lastTrigger
+                                    , audio
+                                        [ id ("ding-audio-" ++ String.fromInt s)
+                                        , src "assets/ding.mp3"
+                                        , autoplay True
+                                        , property "volume" (Encode.float iqDingVolume)
+                                        ]
+                                        []
+                                    )
+                        )
+                )
+    in
+    div [] [ jeopardyAudio, quizAudio, dingAudio ]
 
 
 -- ── Layout Helpers ────────────────────────────────────────────────────────────

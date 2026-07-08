@@ -64,9 +64,15 @@ init wsUrl =
     , Cmd.batch
         [ readFile "app-uuid.json"
         , readFile "config/quiz-questions.json"
-        , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
+        , Task.perform tickFromPosix Time.now
         ]
     )
+
+
+-- Converts an animation-frame/Time.now Posix into the Tick Msg it drives.
+tickFromPosix : Time.Posix -> Msg
+tickFromPosix posix =
+    Tick (toFloat (Time.posixToMillis posix))
 
 
 -- Queue a message to fire `delay` ms from now.
@@ -860,6 +866,34 @@ update msg model =
 
 
 
+-- Decides what Msg a readFile port response becomes: the quiz-questions file
+-- decodes straight to a question list, while anything else (app-uuid.json) is
+-- read for its "uuid" field.
+decodeReadFileResult : { path : String, contents : Maybe String, error : Maybe String } -> Msg
+decodeReadFileResult { path, contents } =
+    case path of
+        "config/quiz-questions.json" ->
+            QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
+
+        _ ->
+            case contents of
+                Just raw ->
+                    case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
+                        Ok uuid ->
+                            UuidLoaded (Just uuid)
+
+                        Err _ ->
+                            UuidLoaded Nothing
+
+                Nothing ->
+                    UuidLoaded Nothing
+
+
+everySecond : Time.Posix -> Msg
+everySecond _ =
+    WsSyncTick
+
+
 subscriptions : Model -> Sub Msg
 subscriptions model =
     let
@@ -876,30 +910,12 @@ subscriptions model =
         [ wsClientReady WsClientReady
         , receiveFromWs WsDataReceived
         , wsClientFailed WsDisconnected
-        , Time.every 1000 (\_ -> WsSyncTick)
+        , Time.every 1000 everySecond
         , keyboardSub
-        , Browser.Events.onAnimationFrame (\posix -> Tick (toFloat (Time.posixToMillis posix)))
+        , Browser.Events.onAnimationFrame tickFromPosix
         , receiveDomProperty DomPropertyReceived
         , domPropertyError DomPropertyError
-        , readFileResult
-            (\{ path, contents } ->
-                case path of
-                    "config/quiz-questions.json" ->
-                        QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
-
-                    _ ->
-                        case contents of
-                            Just raw ->
-                                case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
-                                    Ok uuid ->
-                                        UuidLoaded (Just uuid)
-
-                                    Err _ ->
-                                        UuidLoaded Nothing
-
-                            Nothing ->
-                                UuidLoaded Nothing
-            )
+        , readFileResult decodeReadFileResult
         ]
 
 main : Program String Model Msg

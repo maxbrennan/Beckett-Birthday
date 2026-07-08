@@ -6,10 +6,12 @@ import Game.IQTest
         ( FakeFlashPhase(..)
         , IQTestState
         , SpaceBarOutcome(..)
+        , coinFlipGen
         , decideSpaceBar
         , dingDelayGen
         , exitFakeFlash
         , fakeFlashPointGen
+        , iqDingVolume
         , iqQuestionCount
         , isCounterBig
         , lastTriggerForSlot
@@ -155,4 +157,23 @@ randomBoundsTests =
                 fakeFlashPointSamples
                     |> List.all (\point -> point >= 0 && point <= 99)
                     |> Expect.equal True
+        , test "coinFlipGen produces both outcomes across seeds" <|
+            \_ ->
+                let
+                    coinSamples =
+                        List.map (\s -> Tuple.first (Random.step coinFlipGen s)) seeds
+                in
+                Expect.all
+                    [ List.member True >> Expect.equal True
+                    , List.member False >> Expect.equal True
+                    ]
+                    coinSamples
+        ]
+
+
+constantsTests : Test
+constantsTests =
+    describe "audio/timing constants"
+        [ test "iqDingVolume is a valid volume level" <|
+            \_ -> Expect.within (Expect.Absolute 0.0001) 0.8 iqDingVolume
         ]
