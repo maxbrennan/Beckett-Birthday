@@ -1,0 +1,47 @@
+name: Version Bump
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    # GITHUB_TOKEN-authored pushes don't retrigger workflows on their own, so this
+    # isn't what prevents the infinite loop — it's defense-in-depth in case the
+    # push auth method here is ever changed to a PAT (which would retrigger).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.head_commit.author.name != 'github-actions[bot]' &&
+       !contains(github.event.head_commit.message, '[skip version-bump]'))
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+
+      - name: Bump version
+        run: |
+          BUMP="${{ github.event.inputs.bump || 'patch' }}"
+          npm version "$BUMP" --no-git-tag-version
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          git add package.json package-lock.json
+          git commit -m "Bump version to $NEW_VERSION [skip version-bump]"
+          git push
