@@ -482,6 +482,7 @@ iqState =
     , fakeFlashUsed = False
     , in50PercentPhase = False
     , lastDing = RealDing
+    , dingDelay = Nothing
     }
 
 
@@ -663,6 +664,26 @@ iqUpdateSuite =
                 Dict.get "uuid1" m.iqTimers
                     |> Maybe.map (\s -> ( s.totalDings, s.phase ))
                     |> Expect.equal (Just ( IQTest.iqQuestionCount, IqCounting ))
+        , test "iqReadyForDing from IqAwaitingReady rolls and stores a dingDelay in range" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqAwaitingReady, dingDelay = Nothing }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqReadyForDing") staged
+
+                    delay =
+                        Dict.get "uuid1" m.iqTimers |> Maybe.andThen .dingDelay
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.iqTimers |> Maybe.map .phase |> Expect.equal (Just IqDingScheduled)
+                    , \_ -> delay |> Maybe.map (\d -> d >= IQTest.minDingDelay && d <= IQTest.maxDingDelay) |> Expect.equal (Just True)
+                    ]
+                    ()
         , test "iqCaught doubles the server's own count and goes idle" <|
             \_ ->
                 let
@@ -725,14 +746,28 @@ iqUpdateSuite =
                     staged =
                         { baseModel
                             | connectedPlayers = Dict.singleton "uuid1" "c1"
-                            , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, dingCount = 10, phase = IqDingShown }
+                            , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, dingCount = 10, phase = IqDingScheduled, dingDelay = Just 5000 }
                         }
 
                     ( m, _ ) =
                         update (ClientDisconnected "c1") staged
                 in
                 Dict.get "uuid1" m.iqTimers
-                    |> Expect.equal (Just { iqState | epoch = 2, dingCount = 10, phase = IqDingShown })
+                    |> Expect.equal (Just { iqState | epoch = 2, dingCount = 10, phase = IqDingScheduled, dingDelay = Just 5000 })
+        , test "a disconnect while a ding is shown and unresolved rewinds it to IqDingScheduled, preserving dingDelay" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, dingCount = 10, phase = IqDingShown, dingDelay = Just 11000 }
+                        }
+
+                    ( m, _ ) =
+                        update (ClientDisconnected "c1") staged
+                in
+                Dict.get "uuid1" m.iqTimers
+                    |> Expect.equal (Just { iqState | epoch = 2, dingCount = 10, phase = IqDingScheduled, dingDelay = Just 11000 })
         , test "a paused CountdownStep fire (stale epoch after disconnect) is a no-op" <|
             \_ ->
                 let
@@ -780,6 +815,36 @@ iqUpdateSuite =
                 in
                 Dict.get "uuid1" m.iqTimers
                     |> Expect.equal (Just { iqState | phase = IqIdle, totalDings = 200 })
+        , test "iqResume on IqDingScheduled with a preserved dingDelay replays it without drawing a new random delay" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingScheduled, dingDelay = Just 9000 }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqResume") staged
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.iqTimers |> Maybe.map .dingDelay |> Expect.equal (Just (Just 9000))
+                    , \_ -> Expect.equal staged.seed m.seed
+                    ]
+                    ()
+        , test "iqResume on IqDingScheduled with no preserved dingDelay falls back to drawing a fresh one" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingScheduled, dingDelay = Nothing }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqResume") staged
+                in
+                Expect.notEqual staged.seed m.seed
         ]
 
 
@@ -941,12 +1006,45 @@ iqTimerCodecSuite =
                             , fakeFlashUsed = True
                             , in50PercentPhase = True
                             , lastDing = PhaseFake
+                            , dingDelay = Just 8500
                         }
                 in
                 state
                     |> encodeIqTimerStateFull
                     |> Decode.decodeValue decodeIqTimerStateFull
                     |> Expect.equal (Ok state)
+        , test "round-trips a Nothing dingDelay" <|
+            \_ ->
+                let
+                    state =
+                        { iqState | phase = IqAwaitingReady, dingDelay = Nothing }
+                in
+                state
+                    |> encodeIqTimerStateFull
+                    |> Decode.decodeValue decodeIqTimerStateFull
+                    |> Expect.equal (Ok state)
+        , test "decodes a JSON blob missing dingDelay entirely as Nothing (back-compat with pre-fix persisted entries)" <|
+            \_ ->
+                let
+                    legacyJson =
+                        Encode.object
+                            [ ( "epoch", Encode.int 1 )
+                            , ( "phase", Encode.string "IqDingScheduled" )
+                            , ( "questionIdx", Encode.int 0 )
+                            , ( "countdownRemaining", Encode.int 0 )
+                            , ( "dingCount", Encode.int 10 )
+                            , ( "totalDings", Encode.int IQTest.iqQuestionCount )
+                            , ( "fakeFlashPoint", Encode.int 90 )
+                            , ( "fakeFlashUsed", Encode.bool False )
+                            , ( "in50PercentPhase", Encode.bool False )
+                            , ( "lastDing", Encode.string "RealDing" )
+                            ]
+                in
+                legacyJson
+                    |> Decode.decodeValue decodeIqTimerStateFull
+                    |> Result.toMaybe
+                    |> Maybe.andThen .dingDelay
+                    |> Expect.equal Nothing
         ]
 
 
