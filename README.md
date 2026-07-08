@@ -85,13 +85,23 @@ cp localhost+2-key.pem certs/key.pem
 > accepts the cert regardless. mkcert here is just a fast way to generate a valid
 > cert/key pair; a plain `openssl` self‑signed pair works too.
 
+### 1c. Quiz questions
+
+Copy the example and edit it. `config/quiz-questions.json` is git‑ignored — it holds
+the real trivia answers, which are spoilers for the birthday recipient (see §4).
+
+```bash
+cp config/quiz-questions.example.json config/quiz-questions.json
+```
+
 ---
 
 ## 2. Project layout you'll edit
 
 ```
 config/
-  quiz-questions.json   ← trivia questions & answers   (§4)
+  quiz-questions.json           ← trivia questions & answers, git‑ignored   (§1c, §4)
+  quiz-questions.example.json   ← template for the above, tracked in git
   win-screen.json       ← reward / win‑screen text      (§5)
 assets/
   songs/                ← all quiz songs (§6)
@@ -99,9 +109,11 @@ assets/
 .env                    ← ports, prod host, cert paths   (§1a)
 ```
 
-`config/*.json` and everything under `assets/` are loaded at client **startup** and
-bundled into distributed builds. Editing them changes the game **without touching Elm
-source** — but already‑distributed builds must be rebuilt/redeployed to pick up changes.
+`config/quiz-questions.json`, `config/win-screen.json`, and everything under `assets/`
+are loaded at client **startup** and bundled into distributed builds. Editing them
+changes the game **without touching Elm source** — but already‑distributed builds must
+be rebuilt/redeployed to pick up changes. `config/quiz-questions.example.json` is a
+dev‑only template (§1c); it is neither loaded at runtime nor bundled into builds.
 
 ---
 
@@ -126,7 +138,14 @@ Production equivalent (port 443, `DEV=false`): `npm run start:server`.
 
 ## 4. Add / edit trivia questions & answers
 
-Edit **`config/quiz-questions.json`**. It is a JSON array; questions are asked in order.
+`config/quiz-questions.json` is git‑ignored (see §1c). If you don't have it yet:
+
+```bash
+cp config/quiz-questions.example.json config/quiz-questions.json
+```
+
+Then edit **`config/quiz-questions.json`**. It is a JSON array; questions are asked in
+order.
 
 ```jsonc
 [
