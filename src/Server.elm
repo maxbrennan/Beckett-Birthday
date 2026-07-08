@@ -45,7 +45,9 @@ never supplies the count -- the server initializes it to `iqQuestionCount` and
 doubles it on a catch.
 
 On disconnect the entry is *paused*, not dropped: `ClientDisconnected` bumps
-`epoch` (invalidating any in-flight `Process.sleep`) but keeps every field, and
+`epoch` (invalidating any in-flight `Process.sleep`) and otherwise keeps every field,
+*except* a disconnect while `phase == IqDingShown` is rewound to `IqDingScheduled`
+(see `ClientDisconnected`) so a resume replays the ding rather than skipping past it.
 `ClientIqResume` re-arms the appropriate schedule once the player is back and
 has actually rendered the IQ screen again -- see `resumeIqTimer`.
 
@@ -76,6 +78,7 @@ type alias IqTimerState =
     , fakeFlashUsed : Bool
     , in50PercentPhase : Bool
     , lastDing : DingKind -- kind of the ding most recently emitted
+    , dingDelay : Maybe Float -- the delay rolled for the ding currently in flight; Just while a wait is pending or its ding is shown (IqDingScheduled/IqDingShown), Nothing otherwise. Preserved across a disconnect so a resume replays the same wait instead of rolling a new one.
     }
 
 
@@ -374,6 +377,7 @@ encodeIqTimerStateFull state =
         , ( "fakeFlashUsed", Encode.bool state.fakeFlashUsed )
         , ( "in50PercentPhase", Encode.bool state.in50PercentPhase )
         , ( "lastDing", encodeDingKind state.lastDing )
+        , ( "dingDelay", state.dingDelay |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
         ]
 
 
@@ -381,7 +385,7 @@ decodeIqTimerStateFull : Decode.Decoder IqTimerState
 decodeIqTimerStateFull =
     Decode.map8
         (\epoch phase questionIdx countdownRemaining dingCount totalDings fakeFlashPoint fakeFlashUsed ->
-            \in50PercentPhase lastDing ->
+            \in50PercentPhase lastDing dingDelay ->
                 { epoch = epoch
                 , phase = phase
                 , questionIdx = questionIdx
@@ -392,6 +396,7 @@ decodeIqTimerStateFull =
                 , fakeFlashUsed = fakeFlashUsed
                 , in50PercentPhase = in50PercentPhase
                 , lastDing = lastDing
+                , dingDelay = dingDelay
                 }
         )
         (Decode.field "epoch" Decode.int)
@@ -404,9 +409,14 @@ decodeIqTimerStateFull =
         (Decode.field "fakeFlashUsed" Decode.bool)
         |> Decode.andThen
             (\partial ->
-                Decode.map2 partial
+                Decode.map3 partial
                     (Decode.field "in50PercentPhase" Decode.bool)
                     (Decode.field "lastDing" decodeDingKind)
+                    (Decode.oneOf
+                        [ Decode.field "dingDelay" (Decode.nullable Decode.float)
+                        , Decode.succeed Nothing
+                        ]
+                    )
             )
 
 
@@ -562,6 +572,7 @@ reconcileIqTimerAfterEdit uuid parsedState model =
                 , fakeFlashUsed = carriedFakeFlashUsed
                 , in50PercentPhase = carriedIn50Percent
                 , lastDing = RealDing
+                , dingDelay = Nothing
                 }
                 model
 
@@ -581,6 +592,7 @@ reconcileIqTimerAfterEdit uuid parsedState model =
                 , fakeFlashUsed = carriedFakeFlashUsed
                 , in50PercentPhase = carriedIn50Percent
                 , lastDing = RealDing
+                , dingDelay = Nothing
                 }
                 { model | seed = newSeed }
 
@@ -600,6 +612,7 @@ reconcileIqTimerAfterEdit uuid parsedState model =
                 , fakeFlashUsed = carriedFakeFlashUsed
                 , in50PercentPhase = carriedIn50Percent
                 , lastDing = RealDing
+                , dingDelay = Nothing
                 }
                 { model | seed = newSeed }
 
@@ -680,6 +693,7 @@ startCountdown uuid model =
             , fakeFlashUsed = prev |> Maybe.map .fakeFlashUsed |> Maybe.withDefault False
             , in50PercentPhase = prev |> Maybe.map .in50PercentPhase |> Maybe.withDefault False
             , lastDing = RealDing
+            , dingDelay = Nothing
             }
 
         ( withTimer, persistCmd ) =
@@ -697,10 +711,10 @@ scheduleNextDing uuid state model =
             Random.step IQTest.dingDelayGen model.seed
 
         ( withTimer, persistCmd ) =
-            setIqTimer uuid { state | phase = IqDingScheduled } { model | seed = newSeed }
+            setIqTimer uuid { state | phase = IqDingScheduled, dingDelay = Just delay } { model | seed = newSeed }
     in
     ( withTimer
-    , scheduleDing uuid state.epoch delay
+    , Cmd.batch [ persistCmd, scheduleDing uuid state.epoch delay ]
     )
 
 
@@ -712,11 +726,15 @@ already bumped it, and nothing was scheduled against the new epoch until now.
 
 - `IqCounting`: resend the current tick immediately (so the UI doesn't wait up
   to 1s for the next natural tick) and re-arm the 1s loop.
-- `IqDingScheduled` / `IqAwaitingReady`: nothing was shown yet -- just arm the
-  next ding (a fresh random delay; the exact remaining wait isn't tracked).
-- `IqDingShown`: resend the same ding fresh, so the player gets a full
-  250ms/2000ms window rather than whatever's left of the generic client-side
-  pending-resume's rebased (and floor-clamped) window.
+- `IqDingScheduled`: replay the preserved `dingDelay` so the ding re-fires after
+  exactly the same wait it would have without the disconnect, rather than rolling a
+  new one. (`ClientDisconnected` rewinds an entry that was `IqDingShown` back to this
+  phase, so a disconnect mid-ding also lands here -- see its docs.)
+- `IqAwaitingReady`: nothing was ever rolled yet in this phase (the client hasn't sent
+  `iqReadyForDing`) -- just arm the next ding with a fresh random delay.
+- `IqDingShown`: resend the same ding fresh. In practice `ClientDisconnected` already
+  rewinds any `IqDingShown` entry to `IqDingScheduled` before this ever runs, so this
+  branch is a defensive fallback rather than a normally-reachable path.
 - `IqIdle`: nothing to resume; the player will press Begin to send a fresh
   `iqStartCountdown`.
 -}
@@ -737,7 +755,13 @@ resumeIqTimer uuid model =
                     )
 
                 IqDingScheduled ->
-                    scheduleNextDing uuid state model
+                    case state.dingDelay of
+                        Just delay ->
+                            ( model, scheduleDing uuid state.epoch delay )
+
+                        Nothing ->
+                            -- Defensive fallback for entries persisted before this field existed.
+                            scheduleNextDing uuid state model
 
                 IqAwaitingReady ->
                     scheduleNextDing uuid state model
@@ -879,36 +903,45 @@ update msg model =
 
                 maybeUuid =
                     findUuidByClient clientId model.connectedPlayers
-
-                -- Pause (don't drop) any live IQ timer for this player: bump its
-                -- epoch so any in-flight Process.sleep becomes a stale no-op when it
-                -- fires, but keep every field (dingCount/totalDings/phase/...) so a
-                -- reconnect (ClientIqResume) picks up exactly where they left off.
-                pausedTimers =
-                    case maybeUuid of
-                        Just uuid ->
-                            Dict.update uuid (Maybe.map (\s -> { s | epoch = s.epoch + 1 })) model.iqTimers
-
-                        Nothing ->
-                            model.iqTimers
             in
             case maybeUuid of
                 Nothing ->
-                    ( { model | distClients = cleanedDist, iqTimers = pausedTimers }, Cmd.none )
+                    ( { model | distClients = cleanedDist }, Cmd.none )
 
                 Just uuid ->
-                    -- Leave the player's persisted state exactly as it was. The
-                    -- jeopardy snapshot (mid-game screen → savedState, reset to
-                    -- BeginScreen) now happens lazily on their next stateRequest
-                    -- (see ClientStateRequest below), so a server stop/restart that
-                    -- never fires a disconnect still resumes the player correctly.
-                    ( { model
-                        | connectedPlayers = Dict.remove uuid model.connectedPlayers
-                        , distClients = cleanedDist
-                        , iqTimers = pausedTimers
-                      }
-                    , Cmd.none
-                    )
+                    let
+                        -- Leave the player's persisted state exactly as it was. The
+                        -- jeopardy snapshot (mid-game screen → savedState, reset to
+                        -- BeginScreen) now happens lazily on their next stateRequest
+                        -- (see ClientStateRequest below), so a server stop/restart that
+                        -- never fires a disconnect still resumes the player correctly.
+                        baseModel =
+                            { model
+                                | connectedPlayers = Dict.remove uuid model.connectedPlayers
+                                , distClients = cleanedDist
+                            }
+                    in
+                    case Dict.get uuid model.iqTimers of
+                        Just s ->
+                            if s.phase == IqDingShown then
+                                -- Disconnecting while a ding is shown and unresolved
+                                -- rewinds it, not just pauses it: phase goes back to
+                                -- IqDingScheduled so the resume (resumeIqTimer) replays
+                                -- dingDelay's preserved wait and the ding re-fires as if
+                                -- it hadn't happened yet, rather than the player either
+                                -- dodging it or seeing it resent immediately.
+                                setIqTimer uuid { s | epoch = s.epoch + 1, phase = IqDingScheduled } baseModel
+
+                            else
+                                -- Pause (don't drop) the live IQ timer: bump its epoch
+                                -- so any in-flight Process.sleep becomes a stale no-op
+                                -- when it fires, but keep every other field so a
+                                -- reconnect (ClientIqResume) picks up exactly where
+                                -- they left off.
+                                ( { baseModel | iqTimers = Dict.insert uuid { s | epoch = s.epoch + 1 } model.iqTimers }, Cmd.none )
+
+                        Nothing ->
+                            ( baseModel, Cmd.none )
 
         MessageReceived { clientId, payload } ->
             case Decode.decodeValue decodeClientEnvelope payload of
