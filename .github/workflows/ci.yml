@@ -72,9 +72,10 @@ jobs:
         with:
           name: js-coverage-data
           path: coverage/js
-      # Interim floor, not the 95% target from issue #26 — see the follow-up issue
-      # tracking the refactor-for-testability work needed to close the gap.
-      - run: node ci/check-js-coverage.js 5
+      # Interim floor, not the 95% target from issue #26 — raised from 5% after #48's
+      # testability refactor of bridge.js/server/index.js/scripts; see the follow-up
+      # issue tracking Main.elm's update-logic extraction for the remaining gap.
+      - run: node ci/check-js-coverage.js 15
 
   elm-coverage:
     name: Elm Coverage
@@ -91,6 +92,7 @@ jobs:
         with:
           name: elm-coverage-data
           path: .coverage
-      # Interim floor, not the 95% target from issue #26 — see the follow-up issue
-      # tracking the refactor-for-testability work needed to close the gap.
-      - run: node ci/check-elm-coverage.js 9
+      # Interim floor, not the 95% target from issue #26 — raised from 9% after #48
+      # added tests for Game.Quiz/Game.IQTest/Sync/Audio/View's pure surface; see the
+      # follow-up issue tracking Main.elm's update-logic extraction for the remaining gap.
+      - run: node ci/check-elm-coverage.js 20

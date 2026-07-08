@@ -65,22 +65,22 @@ Two-level challenge–response auth (Ed25519 keys or username/password), impleme
 
 ```
 src/
-  Main.elm          — client entry point, top-level Model/Msg/update/view
+  Main.elm          — client entry point: init/update/subscriptions/main, wired to Types/Sync/View
   Server.elm        — server entry point, top-level Model/Msg/update
-  View.elm          — rendering helpers (stub; view logic lives in Main.elm)
-  Audio.elm         — audio port helpers
-  Sync.elm          — WebSocket connection handling / state sync (stub)
-  Types.elm         — shared type aliases (stub)
+  View.elm          — rendering: Html Msg view functions, plus pure helpers like formatTimer
+  Audio.elm         — audio element rendering, plus pure helpers like currentQuizSong
+  Sync.elm          — ServerEnvelope decoding and Model/Screen JSON encode/decode
+  Types.elm         — canonical Model/Screen/Msg/PausedState/PendingEvent type definitions
   Game/
     IQTest.elm      — IQ test screen: ding scheduling, fake-flash trap, scoring
     Quiz.elm        — music quiz: questions, answer validation, flow
   Server/
-    Distribution.elm — dist register/upload/auth handlers (stub)
-    Protocol.elm     — client envelope decoder, server envelope builders (stub)
-    Registry.elm     — RegistryEntry JSONL encode/decode, writeRegistry (stub)
+    Distribution.elm — DistInfo/DistStage type declarations (the one genuinely thin module here)
+    Protocol.elm     — client envelope decoder, server envelope builders
+    Registry.elm     — RegistryEntry JSONL encode/decode, writeRegistry, snapshotForJeopardy
 ```
 
-Stubs marked above are planned modules; their logic currently lives in the monolithic `Main.elm` and `Server.elm` files.
+`Main.elm`'s `update` is still a single ~740-line function handling all 41 `Msg` cases with `Cmd`/port calls interleaved into the decision logic — unlike `Server.elm`, which already extracts its IQ/admin-op logic into standalone pure functions (`classifyDing`, `advanceOnClear`, etc.) that `tests/ServerTest.elm` exercises directly. `Server.Distribution.elm` is the only module above that's genuinely a stub (type declarations only, no functions).
 
 ## Plan Implementation Workflow
 

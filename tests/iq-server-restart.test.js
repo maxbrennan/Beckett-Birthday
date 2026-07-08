@@ -153,7 +153,7 @@ describe('IQ timer survives a server restart', () => {
             savedState: null,
         };
         conn.send({ stateUpdate: { json: JSON.stringify(midGameState) } });
-        await conn.waitFor((m) => m.payload === 'ack');
+        await conn.waitFor((m) => m.payload === 'stateUpdateAck');
         await conn.close();
 
         await server.stop({ keepData: true });

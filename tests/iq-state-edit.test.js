@@ -59,7 +59,7 @@ describe('IQ timer reconciliation after an admin state edit', () => {
         const isTick = (m) => m.payload === 'iqCountdownTick';
         const firstTick = await conn.waitFor(isTick, 3000);
         conn.send({ stateUpdate: { json: iqCountdownState(build.uuid, { countdown: firstTick.iqCountdownTick.remaining }) } });
-        await conn.waitFor((m) => m.payload === 'ack');
+        await conn.waitFor((m) => m.payload === 'stateUpdateAck');
 
         // Admin edits state: this kicks the player (closeClient -> ClientDisconnected,
         // pausing the server's iqTimers entry) and hands back the just-persisted JSON.
@@ -71,7 +71,7 @@ describe('IQ timer reconciliation after an admin state edit', () => {
         // Lower the countdown to 5 and save.
         parsed.screen.state.countdown = 5;
         const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(parsed));
-        expect(saveResult.payload).toBe('ack');
+        expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 
         // Reconnect as the same player and resume (mirrors the client's BeginPressed
@@ -104,7 +104,7 @@ describe('IQ timer reconciliation after an admin state edit', () => {
         const isTick = (m) => m.payload === 'iqCountdownTick';
         const firstTick = await conn.waitFor(isTick, 3000);
         conn.send({ stateUpdate: { json: iqCountdownState(build.uuid, { countdown: firstTick.iqCountdownTick.remaining }) } });
-        await conn.waitFor((m) => m.payload === 'ack');
+        await conn.waitFor((m) => m.payload === 'stateUpdateAck');
 
         const { authResult, conn: adminConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
         expect(authResult.success).toBe(true);
@@ -113,7 +113,7 @@ describe('IQ timer reconciliation after an admin state edit', () => {
 
         parsed.screen.state.countdown = 7;
         const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(parsed));
-        expect(saveResult.payload).toBe('ack');
+        expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 
         // Restart (rather than just reconnecting) so the rehydration in
