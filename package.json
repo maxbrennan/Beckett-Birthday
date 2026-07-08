@@ -46,7 +46,8 @@
       "assets/**/*",
       "app-uuid.json",
       "config/**/*",
-      "!config/win-screen.json"
+      "!config/win-screen.json",
+      "!config/quiz-questions.example.json"
     ],
     "mac": {
       "icon": "assets/icon.icns",
