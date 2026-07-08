@@ -2,6 +2,7 @@ port module Server exposing (..)
 
 import Dict exposing (Dict)
 import Game.IQTest as IQTest
+import Game.Quiz exposing (decodeQuestions)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Platform
@@ -23,6 +24,14 @@ type alias Model =
     , pendingStateEdits : Set String
     , iqTimers : Dict String IqTimerState
     , seed : Random.Seed
+
+    -- Server-owned quiz completion tracking (see acceptQuizAdvance/
+    -- quizJustCompleted below): the furthest question index each uuid has been
+    -- independently confirmed to have passed, and the true question count
+    -- read from config/quiz-questions.json at startup -- never from the
+    -- client's own self-reported state.
+    , quizProgress : Dict String Int
+    , totalQuestions : Int
     }
 
 
@@ -185,6 +194,40 @@ applyCatch s =
         , in50PercentPhase = False
         , dingCount = 0
     }
+
+
+-- ── Quiz-progress server-side logic ──────────────────────────────────────────
+-- Server-authoritative gate for the win screen: the server only trusts an
+-- explicit, monotonic sequence of quizAdvanced events -- never the freeform
+-- client-reported `state.screen` -- to decide when a player has passed every
+-- question. See RegistryEntry.quizProgress and Model.quizProgress/totalQuestions.
+
+
+quizQuestionsFilePath : String
+quizQuestionsFilePath =
+    "config/quiz-questions.json"
+
+
+{-| Accept an incoming quizAdvanced idx only if it's exactly the next one this
+player is expected to report -- replays (idx < current) and skips
+(idx > current) are rejected, so a crafted client can't jump straight to "done".
+-}
+acceptQuizAdvance : { current : Int, idx : Int } -> Maybe Int
+acceptQuizAdvance { current, idx } =
+    if idx == current then
+        Just (current + 1)
+
+    else
+        Nothing
+
+
+{-| True once the player's confirmed progress has reached the real question
+count. `total <= 0` (config unread/unreadable) can never be "complete" -- a
+fail-safe default, not a trivially satisfiable edge case.
+-}
+quizJustCompleted : { next : Int, total : Int } -> Bool
+quizJustCompleted { next, total } =
+    total > 0 && next == total
 
 
 {-| The client's overall trivia slide index, read off whatever's already
@@ -858,9 +901,12 @@ init () =
       , pendingStateEdits = Set.empty
       , iqTimers = Dict.empty
       , seed = Random.initialSeed 0
+      , quizProgress = Dict.empty
+      , totalQuestions = 0
       }
     , Cmd.batch
         [ readFile registryFilePath
+        , readFile quizQuestionsFilePath
         , Task.perform GotTime Time.now
         ]
     )
@@ -995,26 +1041,11 @@ update msg model =
 
                                         Nothing ->
                                             rawRegistry
-
-                                -- Deliver the win text only at win time, as its own message
-                                -- (never bundled into the client), when the incoming state
-                                -- shows the player is transitioning into the win screen.
-                                winTextCmd =
-                                    if stateIsWin inner then
-                                        model.registry
-                                            |> List.filter (\e -> e.uuid == uuid)
-                                            |> List.head
-                                            |> Maybe.map (\e -> sendToClient { clientId = clientId, payload = winTextEnvelope e.winText })
-                                            |> Maybe.withDefault Cmd.none
-
-                                    else
-                                        Cmd.none
                             in
                             ( { model | registry = newRegistry }
                             , Cmd.batch
                                 [ writeRegistry newRegistry
                                 , sendToClient { clientId = clientId, payload = stateUpdateAckEnvelope }
-                                , winTextCmd
                                 ]
                             )
 
@@ -1049,6 +1080,7 @@ update msg model =
                                             , pendingStateEdit = False
                                             , winText = ""
                                             , iqTimer = Nothing
+                                            , quizProgress = 0
                                             }
 
                                         newRegistry =
@@ -1088,6 +1120,7 @@ update msg model =
                                         , pendingStateEdit = False
                                         , winText = winText
                                         , iqTimer = Nothing
+                                        , quizProgress = 0
                                         }
 
                                     newRegistry =
@@ -1195,6 +1228,10 @@ update msg model =
                                         -- rehydrates it under newUuid from this registry row -- a pre-existing
                                         -- gap in replacement handling, not something this change introduces.)
                                         , iqTimer = oldEntry |> Maybe.andThen .iqTimer
+
+                                        -- Carry quiz progress forward too -- a build replacement
+                                        -- shouldn't reset a returning player's earned progress.
+                                        , quizProgress = oldEntry |> Maybe.map .quizProgress |> Maybe.withDefault 0
                                         }
 
                                     newRegistry =
@@ -1333,6 +1370,48 @@ update msg model =
                         Nothing ->
                             ( model, Cmd.none )
 
+                Ok (ClientQuizAdvanced idx) ->
+                    -- "The player just passed question idx" -- accepted only if it's
+                    -- exactly the next one expected (see acceptQuizAdvance), so a
+                    -- crafted client can't skip straight to a win. Only when the
+                    -- server's own tally reaches totalQuestions does it grant winText.
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just uuid ->
+                            let
+                                current =
+                                    Dict.get uuid model.quizProgress |> Maybe.withDefault 0
+                            in
+                            case acceptQuizAdvance { current = current, idx = idx } of
+                                Nothing ->
+                                    ( model, Cmd.none )
+
+                                Just next ->
+                                    let
+                                        newRegistry =
+                                            updateEntryQuizProgress uuid next model.registry
+
+                                        newModel =
+                                            { model
+                                                | quizProgress = Dict.insert uuid next model.quizProgress
+                                                , registry = newRegistry
+                                            }
+
+                                        winCmd =
+                                            if quizJustCompleted { next = next, total = model.totalQuestions } then
+                                                newRegistry
+                                                    |> List.filter (\e -> e.uuid == uuid)
+                                                    |> List.head
+                                                    |> Maybe.map (\e -> sendToClient { clientId = clientId, payload = winTextEnvelope e.winText })
+                                                    |> Maybe.withDefault Cmd.none
+
+                                            else
+                                                Cmd.none
+                                    in
+                                    ( newModel, Cmd.batch [ writeRegistry newRegistry, winCmd ] )
+
                 _ ->
                     ( model, Cmd.none )
 
@@ -1423,14 +1502,33 @@ update msg model =
                                                 |> Maybe.map (\s -> ( e.uuid, s ))
                                         )
                                     |> Dict.fromList
+
+                            -- Rehydrate server-tracked quiz progress the same way, so a
+                            -- restart doesn't require re-earning already-confirmed questions.
+                            rehydratedQuizProgress =
+                                parsedRegistry
+                                    |> List.map (\e -> ( e.uuid, e.quizProgress ))
+                                    |> Dict.fromList
                         in
                         ( { model
                             | registry = parsedRegistry
                             , pendingStateEdits = rehydratedPendingStateEdits
                             , iqTimers = rehydratedIqTimers
+                            , quizProgress = rehydratedQuizProgress
                           }
                         , Cmd.none
                         )
+
+                    Err _ ->
+                        ( model, Cmd.none )
+
+            else if path == quizQuestionsFilePath then
+                case result of
+                    Ok contents ->
+                        -- decodeQuestions swallows decode errors internally (returns []),
+                        -- so an unreadable/malformed config naturally yields totalQuestions
+                        -- = 0, the same fail-safe default as the Err branch below.
+                        ( { model | totalQuestions = decodeQuestions contents |> List.length }, Cmd.none )
 
                     Err _ ->
                         ( model, Cmd.none )

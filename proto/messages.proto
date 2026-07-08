@@ -101,6 +101,12 @@ message IqDing              { bool fake = 1; bool trap = 2; uint32 ding_count = 
 message IqStartLoud         {}
 message IqTestComplete      {}
 
+// "I just passed question idx" (correct answer, or an IQ-test penalty
+// clearing after a wrong one). The server, not this message, decides whether
+// this means the game is won -- see Server.elm's acceptQuizAdvance/
+// quizJustCompleted.
+message QuizAdvanced { uint32 idx = 1; }
+
 message ServerMessage {
   oneof payload {
     StateUpdate          state_update            = 1;
@@ -142,5 +148,6 @@ message ClientMessage {
     IqReadyForDing       iq_ready_for_ding     = 13;
     IqCaught             iq_caught             = 14;
     IqResume             iq_resume             = 15;
+    QuizAdvanced         quiz_advanced         = 16;
   }
 }

@@ -124,6 +124,18 @@ iqResumeEnvelope =
         ]
 
 
+-- Tells the server "I just passed question idx" (correct answer, or an IQ-test
+-- penalty clearing after a wrong one). The server, not this message, decides
+-- whether this means the game is won -- see Server.elm's acceptQuizAdvance/
+-- quizJustCompleted.
+quizAdvancedEnvelope : Int -> Encode.Value
+quizAdvancedEnvelope idx =
+    Encode.object
+        [ ( "payload", Encode.string "quizAdvanced" )
+        , ( "quizAdvanced", Encode.object [ ( "idx", Encode.int idx ) ] )
+        ]
+
+
 -- ── JSON Encoders ─────────────────────────────────────────────────────────────
 
 
