@@ -17,6 +17,10 @@ type ClientEnvelope
     | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String }
     | ClientDistUndeploy String
     | ClientDistList
+    | ClientIqStartCountdown
+    | ClientIqReadyForDing
+    | ClientIqCaught
+    | ClientIqResume
     | ClientUnknown
 
 
@@ -94,6 +98,18 @@ decodeClientEnvelope =
                     "distList" ->
                         Decode.succeed ClientDistList
 
+                    "iqStartCountdown" ->
+                        Decode.succeed ClientIqStartCountdown
+
+                    "iqReadyForDing" ->
+                        Decode.succeed ClientIqReadyForDing
+
+                    "iqCaught" ->
+                        Decode.succeed ClientIqCaught
+
+                    "iqResume" ->
+                        Decode.succeed ClientIqResume
+
                     _ ->
                         Decode.succeed ClientUnknown
             )
@@ -107,24 +123,64 @@ stateEnvelope state =
         ]
 
 
-ackEnvelope : Encode.Value
-ackEnvelope =
+stateUpdateAckEnvelope : Encode.Value
+stateUpdateAckEnvelope =
     Encode.object
-        [ ( "payload", Encode.string "ack" )
-        , ( "ack", Encode.object [] )
+        [ ( "payload", Encode.string "stateUpdateAck" )
+        , ( "stateUpdateAck", Encode.object [] )
         ]
 
 
-{-| A plain ack carrying a marker that tells the JS host to mint and attach an
-upload token (the crypto stays in JS). The marker never reaches the protobuf
-codec: `sendToClient` in server/index.js rewrites the payload to
-`{ ack : { uploadToken } }` before encoding.
+{-| A marker that tells the JS host to mint and attach an upload token (the
+crypto stays in JS). The marker never reaches the protobuf codec:
+`sendToClient` in server/index.js rewrites the payload to
+`{ distRegisterAck : { uploadToken } }` before encoding.
 -}
-ackWithUploadTokenEnvelope : Encode.Value
-ackWithUploadTokenEnvelope =
+distRegisterAckEnvelope : Encode.Value
+distRegisterAckEnvelope =
     Encode.object
-        [ ( "payload", Encode.string "ack" )
-        , ( "ack", Encode.object [ ( "mintUploadToken", Encode.bool True ) ] )
+        [ ( "payload", Encode.string "distRegisterAck" )
+        , ( "distRegisterAck", Encode.object [ ( "mintUploadToken", Encode.bool True ) ] )
+        ]
+
+
+distUploadAckEnvelope : Encode.Value
+distUploadAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distUploadAck" )
+        , ( "distUploadAck", Encode.object [] )
+        ]
+
+
+distCompleteAckEnvelope : Encode.Value
+distCompleteAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distCompleteAck" )
+        , ( "distCompleteAck", Encode.object [] )
+        ]
+
+
+distStateEditSaveAckEnvelope : Encode.Value
+distStateEditSaveAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distStateEditSaveAck" )
+        , ( "distStateEditSaveAck", Encode.object [] )
+        ]
+
+
+distReplaceCompleteAckEnvelope : Encode.Value
+distReplaceCompleteAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distReplaceCompleteAck" )
+        , ( "distReplaceCompleteAck", Encode.object [] )
+        ]
+
+
+distUndeployAckEnvelope : Encode.Value
+distUndeployAckEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "distUndeployAck" )
+        , ( "distUndeployAck", Encode.object [] )
         ]
 
 
@@ -190,4 +246,56 @@ rejectEnvelope reason =
     Encode.object
         [ ( "payload", Encode.string "stateRequestRejected" )
         , ( "stateRequestRejected", Encode.object [ ( "reason", Encode.string reason ) ] )
+        ]
+
+
+-- ── IQ-test server→client envelopes ─────────────────────────────────────────────
+-- The server owns all IQ-test timing and the ding/question count. These carry the
+-- server's authoritative view down to the client, which only renders it.
+
+
+iqCountdownTickEnvelope : Int -> Encode.Value
+iqCountdownTickEnvelope remaining =
+    Encode.object
+        [ ( "payload", Encode.string "iqCountdownTick" )
+        , ( "iqCountdownTick", Encode.object [ ( "remaining", Encode.int remaining ) ] )
+        ]
+
+
+iqCountdownCompleteEnvelope : Encode.Value
+iqCountdownCompleteEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqCountdownComplete" )
+        , ( "iqCountdownComplete", Encode.object [] )
+        ]
+
+
+iqDingEnvelope : { fake : Bool, trap : Bool, dingCount : Int, totalDings : Int } -> Encode.Value
+iqDingEnvelope { fake, trap, dingCount, totalDings } =
+    Encode.object
+        [ ( "payload", Encode.string "iqDing" )
+        , ( "iqDing"
+          , Encode.object
+                [ ( "fake", Encode.bool fake )
+                , ( "trap", Encode.bool trap )
+                , ( "dingCount", Encode.int dingCount )
+                , ( "totalDings", Encode.int totalDings )
+                ]
+          )
+        ]
+
+
+iqStartLoudEnvelope : Encode.Value
+iqStartLoudEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqStartLoud" )
+        , ( "iqStartLoud", Encode.object [] )
+        ]
+
+
+iqTestCompleteEnvelope : Encode.Value
+iqTestCompleteEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqTestComplete" )
+        , ( "iqTestComplete", Encode.object [] )
         ]

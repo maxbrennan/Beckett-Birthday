@@ -4,8 +4,8 @@ import Expect
 import Game.IQTest
     exposing
         ( FakeFlashPhase(..)
-        , dingScheduleGen
-        , iqTestInitGen
+        , dingDelayGen
+        , fakeFlashPointGen
         , isCounterBig
         , lastTriggerForSlot
         , maxDingDelay
@@ -49,26 +49,21 @@ randomBoundsTests =
         seeds =
             List.map Random.initialSeed (List.range 0 25)
 
-        dingScheduleSamples =
-            List.map (\s -> Tuple.first (Random.step dingScheduleGen s)) seeds
+        dingDelaySamples =
+            List.map (\s -> Tuple.first (Random.step dingDelayGen s)) seeds
 
-        iqInitSamples =
-            List.map (\s -> Tuple.first (Random.step (iqTestInitGen 100) s)) seeds
+        fakeFlashPointSamples =
+            List.map (\s -> Tuple.first (Random.step (fakeFlashPointGen 100) s)) seeds
     in
     describe "generator bounds (sampled across 26 fixed seeds)"
-        [ test "dingScheduleGen.delay stays within [minDingDelay, maxDingDelay]" <|
+        [ test "dingDelayGen stays within [minDingDelay, maxDingDelay]" <|
             \_ ->
-                dingScheduleSamples
-                    |> List.all (\r -> r.delay >= minDingDelay && r.delay <= maxDingDelay)
+                dingDelaySamples
+                    |> List.all (\delay -> delay >= minDingDelay && delay <= maxDingDelay)
                     |> Expect.equal True
-        , test "iqTestInitGen.fakeFlashPoint stays within [0, total - 1]" <|
+        , test "fakeFlashPointGen stays within [0, total - 1]" <|
             \_ ->
-                iqInitSamples
-                    |> List.all (\r -> r.fakeFlashPoint >= 0 && r.fakeFlashPoint <= 99)
-                    |> Expect.equal True
-        , test "iqTestInitGen.delay stays within [minDingDelay, maxDingDelay]" <|
-            \_ ->
-                iqInitSamples
-                    |> List.all (\r -> r.delay >= minDingDelay && r.delay <= maxDingDelay)
+                fakeFlashPointSamples
+                    |> List.all (\point -> point >= 0 && point <= 99)
                     |> Expect.equal True
         ]

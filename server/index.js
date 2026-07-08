@@ -32,12 +32,12 @@ function resolveDownloadDecision(entry) {
     return { type: 'ok', filename: entry.filename };
 }
 
-// Elm requests an upload token via a marker inside the ack (crypto stays in JS).
+// Elm requests an upload token via a marker inside the distRegisterAck (crypto stays in JS).
 // mintToken is injected so tests don't need real crypto.randomBytes.
 function buildSendToClientPayload(payload, mintToken) {
-    if (payload.ack && payload.ack.mintUploadToken) {
+    if (payload.distRegisterAck && payload.distRegisterAck.mintUploadToken) {
         const token = mintToken();
-        return { serverPayload: { ack: { uploadToken: token } }, token };
+        return { serverPayload: { distRegisterAck: { uploadToken: token } }, token };
     }
     return { serverPayload: payload, token: null };
 }

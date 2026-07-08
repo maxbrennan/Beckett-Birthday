@@ -121,7 +121,7 @@ if (require.main === module) {
 
                     console.log('[edit-state] saving state...');
                     send(ws, { distStateEditSave: { uuid, json: edited } });
-                } else if (msg.payload === 'ack') {
+                } else if (msg.payload === 'distStateEditSaveAck') {
                     console.log('[edit-state] done');
                     ws.close();
                     break;

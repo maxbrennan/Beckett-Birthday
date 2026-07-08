@@ -97,9 +97,9 @@ serverEnvelopeTests =
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"stateUpdate","stateUpdate":{"json":"{\\"a\\":1}"}}"""
                     |> Expect.equal (Ok (ServerStateUpdate "{\"a\":1}"))
-        , test "ack" <|
+        , test "stateUpdateAck" <|
             \_ ->
-                Decode.decodeString decodeServerEnvelope """{"payload":"ack"}"""
+                Decode.decodeString decodeServerEnvelope """{"payload":"stateUpdateAck"}"""
                     |> Expect.equal (Ok ServerAck)
         , test "winText carries the text" <|
             \_ ->

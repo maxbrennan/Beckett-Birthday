@@ -92,7 +92,7 @@ if (require.main === module) {
                     if (isKeyFailure) { pendingRetry = true; }
                     else if (!success) { fail('authentication failed'); }
                     else { console.log('[undeploy] authenticated'); }
-                } else if (msg.payload === 'ack') {
+                } else if (msg.payload === 'distUndeployAck') {
                     console.log('[undeploy] done');
                     ws.close();
                     break;

@@ -35,7 +35,7 @@ hasPendingPlaySongTests =
         , test "False when there are no pending events" <|
             \_ -> Expect.equal False (hasPendingPlaySong 2 [])
         , test "False when pending events exist but none are PlaySong" <|
-            \_ -> Expect.equal False (hasPendingPlaySong 0 [ PendingEvent 1000 CountdownTick ])
+            \_ -> Expect.equal False (hasPendingPlaySong 0 [ PendingEvent 1000 DingFlashEnd ])
         ]
 
 

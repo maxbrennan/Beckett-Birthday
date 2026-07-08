@@ -98,10 +98,10 @@ describe('resolveDownloadDecision', () => {
 });
 
 describe('buildSendToClientPayload', () => {
-    test('mints a token and rewrites the ack when mintUploadToken marker is present', () => {
+    test('mints a token and rewrites the distRegisterAck when mintUploadToken marker is present', () => {
         const mintToken = () => 'minted-token';
-        const result = buildSendToClientPayload({ ack: { mintUploadToken: true } }, mintToken);
-        expect(result).toEqual({ serverPayload: { ack: { uploadToken: 'minted-token' } }, token: 'minted-token' });
+        const result = buildSendToClientPayload({ distRegisterAck: { mintUploadToken: true } }, mintToken);
+        expect(result).toEqual({ serverPayload: { distRegisterAck: { uploadToken: 'minted-token' } }, token: 'minted-token' });
     });
 
     test('passes other payloads through unchanged', () => {

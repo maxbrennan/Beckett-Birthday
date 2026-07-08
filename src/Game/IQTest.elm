@@ -23,6 +23,14 @@ iqQuestionCount =
         100
 
 
+-- Hard cap on totalDings after fake-flash catches double it. Bounds both the
+-- server's authoritative count and the client's display copy so they agree, and
+-- stops a client spamming catches from blowing the count up unboundedly.
+maxTotalDings : Int
+maxTotalDings =
+    iqQuestionCount * 8
+
+
 -- Lower bound (as a fraction of iqQuestionCount) for the fake-flash trap position.
 -- Debug: 0.65  |  Production: 0.85
 fakeFlashRangeLo : Float
@@ -113,19 +121,13 @@ timeLimitMs =
 -- ── Types ─────────────────────────────────────────────────────────────────────
 
 
-type alias DingSchedule =
-    { delay : Float, nextRandom : Bool }
-
-
-type alias IQTestInit =
-    { delay : Float, nextRandom : Bool, fakeFlashPoint : Int }
-
-
+-- The IQ test is now driven by the server (all timing, the ding/question count,
+-- and the real/fake decision). These client screen states hold only what the UI
+-- renders plus what the client needs to react to a raw key press; `totalDings`
+-- here is a display copy synced from the server, not the source of truth.
 type alias IQTestScreenState =
     { questionIdx : Int
     , totalDings : Int
-    , fakeFlashUsed : Bool
-    , in50PercentPhase : Bool
     }
 
 
@@ -133,10 +135,7 @@ type alias IQTestScreenState =
 type alias IQTestCountdownState =
     { questionIdx : Int
     , totalDings : Int
-    , fakeFlashUsed : Bool
-    , in50PercentPhase : Bool
     , countdown : Int
-    , initData : IQTestInit
     }
 
 
@@ -147,11 +146,8 @@ type alias IQTestState =
     , isFlashing : Bool
     , dingActive : Bool
     , fakeFlashActive : Bool
+    , fakeIsTrap : Bool -- when fakeFlashActive: pressing catches (cutscene) vs fails
     , loudPlaying : Bool
-    , fakeFlashUsed : Bool
-    , fakeFlashPoint : Int
-    , nextRandom : Bool
-    , in50PercentPhase : Bool
     }
 
 
@@ -182,15 +178,11 @@ type alias FakeFlashCaughtState =
 -- ── Generators ────────────────────────────────────────────────────────────────
 
 
-dingScheduleGen : Random.Generator DingSchedule
-dingScheduleGen =
-    Random.map2 (\d r -> { delay = d, nextRandom = r })
-        (Random.float minDingDelay maxDingDelay)
-        (Random.map (\n -> n < 0.5) (Random.float 0 1))
-
-
-iqTestInitGen : Int -> Random.Generator IQTestInit
-iqTestInitGen total =
+-- The trap position (which real-ding index secretly becomes a fake flash),
+-- picked in [fakeFlashRangeLo, fakeFlashRangeHi] × total. Shared by the server,
+-- which now owns the trap decision, so both sides agree on the range.
+fakeFlashPointGen : Int -> Random.Generator Int
+fakeFlashPointGen total =
     let
         lo =
             Basics.max 0 (floor (fakeFlashRangeLo * toFloat total))
@@ -198,10 +190,20 @@ iqTestInitGen total =
         hi =
             Basics.max lo (Basics.min (total - 1) (floor (fakeFlashRangeHi * toFloat total)))
     in
-    Random.map3 (\d r fp -> { delay = d, nextRandom = r, fakeFlashPoint = fp })
-        (Random.float minDingDelay maxDingDelay)
-        (Random.map (\n -> n < 0.5) (Random.float 0 1))
-        (Random.int lo hi)
+    Random.int lo hi
+
+
+-- Delay (ms) before the next ding. The server draws this to enforce the wait,
+-- so the client can no longer fast-forward the gap between dings.
+dingDelayGen : Random.Generator Float
+dingDelayGen =
+    Random.float minDingDelay maxDingDelay
+
+
+-- A fair coin; drives the 50%-phase fake/real choice.
+coinFlipGen : Random.Generator Bool
+coinFlipGen =
+    Random.map (\n -> n < 0.5) (Random.float 0 1)
 
 
 -- ── Pure Helpers ──────────────────────────────────────────────────────────────
