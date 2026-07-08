@@ -15,6 +15,7 @@ import Server
         , IqTimerState
         , Model
         , Msg(..)
+        , acceptQuizAdvance
         , advanceOnClear
         , applyCatch
         , classifyDing
@@ -25,6 +26,7 @@ import Server
         , encodeIqTimerStateFull
         , extractQuestionIdx
         , persistIqTimerInRegistry
+        , quizJustCompleted
         , reconcileIqTimerAfterEdit
         , setIqTimer
         , update
@@ -37,7 +39,6 @@ import Server.Protocol
         , distListResultEnvelope
         , iqDingEnvelope
         , distRegisterAckEnvelope
-        , stateIsWin
         , stateUpdateAckEnvelope
         , winTextEnvelope
         )
@@ -88,23 +89,6 @@ quizSavedState =
         ]
 
 
-screenValue : String -> Encode.Value
-screenValue tag =
-    Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string tag ) ] ) ]
-
-
-wrappedWinValue : String -> Encode.Value
-wrappedWinValue wrapperTag =
-    Encode.object
-        [ ( "screen"
-          , Encode.object
-                [ ( "tag", Encode.string wrapperTag )
-                , ( "nextScreen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] )
-                ]
-          )
-        ]
-
-
 winTextOf : Encode.Value -> Maybe String
 winTextOf value =
     Decode.decodeValue (Decode.at [ "winText", "text" ] Decode.string) value
@@ -116,7 +100,7 @@ registrySuite =
     describe "RegistryEntry winText codec"
         [ test "round-trips winText through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0 }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -134,27 +118,7 @@ registrySuite =
 protocolSuite : Test
 protocolSuite =
     describe "win detection and delivery"
-        [ test "stateIsWin: direct WinScreen" <|
-            \_ -> stateIsWin (screenValue "WinScreen") |> Expect.equal True
-        , test "stateIsWin: ConfirmingAnswerScreen wrapping WinScreen" <|
-            \_ -> stateIsWin (wrappedWinValue "ConfirmingAnswerScreen") |> Expect.equal True
-        , test "stateIsWin: CheckingAnswerScreen wrapping WinScreen" <|
-            \_ -> stateIsWin (wrappedWinValue "CheckingAnswerScreen") |> Expect.equal True
-        , test "stateIsWin: ordinary screen is not a win" <|
-            \_ -> stateIsWin (screenValue "QuizScreen") |> Expect.equal False
-        , test "stateIsWin: wrapper around a non-win screen is not a win" <|
-            \_ ->
-                Encode.object
-                    [ ( "screen"
-                      , Encode.object
-                            [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
-                            , ( "nextScreen", Encode.object [ ( "tag", Encode.string "BlankScreen" ) ] )
-                            ]
-                      )
-                    ]
-                    |> stateIsWin
-                    |> Expect.equal False
-        , test "winTextEnvelope carries the text under winText.text" <|
+        [ test "winTextEnvelope carries the text under winText.text" <|
             \_ ->
                 winTextEnvelope "hello reward"
                     |> winTextOf
@@ -209,6 +173,7 @@ entry uuid =
     , pendingStateEdit = False
     , winText = ""
     , iqTimer = Nothing
+    , quizProgress = 0
     }
 
 
@@ -220,6 +185,8 @@ baseModel =
     , pendingStateEdits = Set.empty
     , iqTimers = Dict.empty
     , seed = Random.initialSeed 0
+    , quizProgress = Dict.empty
+    , totalQuestions = 3
     }
 
 
@@ -1164,6 +1131,7 @@ persistIqTimerInRegistrySuite =
                           , pendingStateEdit = False
                           , winText = ""
                           , iqTimer = Nothing
+                          , quizProgress = 0
                           }
                         ]
 
@@ -1199,6 +1167,7 @@ persistIqTimerInRegistrySuite =
                           , pendingStateEdit = False
                           , winText = ""
                           , iqTimer = Just (Encode.object [ ( "epoch", Encode.int 1 ) ])
+                          , quizProgress = 0
                           }
                         ]
 
@@ -1224,6 +1193,7 @@ persistIqTimerInRegistrySuite =
                           , pendingStateEdit = False
                           , winText = ""
                           , iqTimer = Nothing
+                          , quizProgress = 0
                           }
                         ]
 
@@ -1324,4 +1294,121 @@ iqPersistenceRoutingSuite =
                             |> Expect.equal (Just 11)
                     ]
                     ()
+        ]
+
+
+-- ── Quiz-progress win gating ─────────────────────────────────────────────────
+-- The server no longer trusts the freeform client-reported `state.screen` to
+-- decide when to grant winText (see the removed stateIsWin); it only trusts an
+-- explicit, monotonic sequence of quizAdvanced events. See Server.elm's
+-- acceptQuizAdvance/quizJustCompleted and Model.quizProgress/totalQuestions.
+
+
+quizAdvancedMsg : String -> Int -> Msg
+quizAdvancedMsg clientId idx =
+    MessageReceived
+        { clientId = clientId
+        , payload = clientEnvelope "quizAdvanced" [ ( "idx", Encode.int idx ) ]
+        }
+
+
+quizProgressLogicSuite : Test
+quizProgressLogicSuite =
+    describe "quiz-progress win gating"
+        [ describe "acceptQuizAdvance"
+            [ test "accepts idx == current, advancing by one" <|
+                \_ -> acceptQuizAdvance { current = 0, idx = 0 } |> Expect.equal (Just 1)
+            , test "rejects a replayed idx (idx < current)" <|
+                \_ -> acceptQuizAdvance { current = 2, idx = 1 } |> Expect.equal Nothing
+            , test "rejects a skip-ahead idx (idx > current)" <|
+                \_ -> acceptQuizAdvance { current = 0, idx = 2 } |> Expect.equal Nothing
+            ]
+        , describe "quizJustCompleted"
+            [ test "true once next reaches total" <|
+                \_ -> quizJustCompleted { next = 3, total = 3 } |> Expect.equal True
+            , test "false while next is short of total" <|
+                \_ -> quizJustCompleted { next = 2, total = 3 } |> Expect.equal False
+            , test "false when total is unset/unreadable (0), even at next = 0" <|
+                \_ -> quizJustCompleted { next = 0, total = 0 } |> Expect.equal False
+            ]
+        , test "decodeClientEnvelope decodes quizAdvanced into ClientQuizAdvanced idx" <|
+            \_ ->
+                Decode.decodeValue decodeClientEnvelope (clientEnvelope "quizAdvanced" [ ( "idx", Encode.int 2 ) ])
+                    |> Expect.equal (Ok (ClientQuizAdvanced 2))
+        ]
+
+
+quizProgressRoutingSuite : Test
+quizProgressRoutingSuite =
+    describe "quiz-progress message routing in Server.update"
+        [ test "a quizAdvanced event advances the player's tracked progress" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAdvancedMsg "c1" 0) connected
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal (Just 1)
+        , test "in-order events advance one at a time up to totalQuestions" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( afterFirst, _ ) =
+                        update (quizAdvancedMsg "c1" 0) connected
+
+                    ( afterSecond, _ ) =
+                        update (quizAdvancedMsg "c1" 1) afterFirst
+
+                    ( afterThird, _ ) =
+                        update (quizAdvancedMsg "c1" 2) afterSecond
+                in
+                -- baseModel.totalQuestions is 3, so idx 0,1,2 reaches it exactly.
+                Dict.get "uuid1" afterThird.quizProgress |> Expect.equal (Just 3)
+        , test "a skip-ahead idx (out of order) is ignored" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAdvancedMsg "c1" 1) connected
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+        , test "a duplicate idx does not double-advance" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( afterFirst, _ ) =
+                        update (quizAdvancedMsg "c1" 0) connected
+
+                    ( afterDuplicate, _ ) =
+                        update (quizAdvancedMsg "c1" 0) afterFirst
+                in
+                Dict.get "uuid1" afterDuplicate.quizProgress |> Expect.equal (Just 1)
+        , test "quizAdvanced with no clientId->uuid mapping is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (quizAdvancedMsg "c1" 0) baseModel
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+        , test "progress is persisted into the registry as it advances" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAdvancedMsg "c1" 0) connected
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+                in
+                entryOf |> Maybe.map .quizProgress |> Expect.equal (Just 1)
         ]

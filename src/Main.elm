@@ -340,13 +340,18 @@ update msg model =
                                         ( { model | screen = CheckingAnswerScreen (BlankScreen nextIdx) }
                                             |> clearPending
                                             |> schedule 1000 (PlaySong nextIdx)
-                                        , Cmd.none
+                                        , sendWs model (quizAdvancedEnvelope idx)
                                         )
 
                                     Nothing ->
                                         -- Empty text for now; the server fills it in at win
-                                        -- time via the winText message (see ServerWinText).
-                                        ( clearPending { model | screen = CheckingAnswerScreen (WinScreen "") }, Cmd.none )
+                                        -- time via the winText message (see ServerWinText),
+                                        -- once it independently confirms quizAdvancedEnvelope
+                                        -- reached the real last question (see Server.elm's
+                                        -- acceptQuizAdvance/quizJustCompleted).
+                                        ( clearPending { model | screen = CheckingAnswerScreen (WinScreen "") }
+                                        , sendWs model (quizAdvancedEnvelope idx)
+                                        )
 
                             else
                                 ( { model | screen = CheckingAnswerScreen (WrongAnswerScreen idx) }, Cmd.none )
@@ -718,7 +723,11 @@ update msg model =
                             in
                             ( clearPending { model | screen = BlankScreen nextIdx }
                                 |> schedule 1000 (PlaySong nextIdx)
-                            , Cmd.none
+                            -- The wrong-answer -> IQ-test-penalty path doesn't replay the
+                            -- question -- it advances past it just like a correct answer
+                            -- would, so this counts as passing state.questionIdx too (see
+                            -- Server.elm's acceptQuizAdvance/quizJustCompleted).
+                            , sendWs model (quizAdvancedEnvelope state.questionIdx)
                             )
 
                         _ ->
