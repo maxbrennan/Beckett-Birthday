@@ -229,3 +229,82 @@ lastTriggerForSlot slotIndex dingKey =
 
     else
         dingKey - modBy dingSlotCount (dingKey - 1 - slotIndex)
+
+
+-- The client's optimistic guess at how a cleared ding advances the count, sent
+-- alongside the report so the UI updates immediately rather than waiting on the
+-- server's authoritative ServerIqDing/ServerIqTestComplete. Mirrors the server's
+-- own `advanceOnClear` rule (see Server.elm) so the guess is actually right, not
+-- just eventually corrected.
+type SpaceBarOutcome
+    = CaughtTrap FakeFlashCaughtState
+    | SpaceBarFailed
+    | OptimisticClear IQTestState
+
+
+decideSpaceBar : IQTestState -> SpaceBarOutcome
+decideSpaceBar state =
+    if state.fakeFlashActive then
+        if state.fakeIsTrap then
+            CaughtTrap
+                { questionIdx = state.questionIdx
+                , originalTotal = state.totalDings
+                , displayNumerator = state.dingCount
+                , displayDenominator = state.totalDings
+                , phase = FfDelay
+                }
+
+        else
+            SpaceBarFailed
+
+    else if state.dingActive then
+        if state.totalDings > iqQuestionCount then
+            OptimisticClear { state | dingActive = False, totalDings = state.totalDings - 1 }
+
+        else
+            OptimisticClear { state | dingActive = False, dingCount = state.dingCount + 1 }
+
+    else
+        SpaceBarFailed
+
+
+-- Table for the fake-flash-caught cutscene's simple linear phase progression
+-- (each phase just waits `delay` ms then advances to the next). The two phases
+-- that instead kick off the ticking counter (FfCounterIn, FfTickDelay) and the
+-- terminal FfCounterOut don't fit this shape and are handled separately by the
+-- caller.
+nextFfPhase : FakeFlashPhase -> Maybe ( FakeFlashPhase, Float )
+nextFfPhase phase =
+    case phase of
+        FfDelay ->
+            Just ( FfText1In, 1000 )
+
+        FfText1In ->
+            Just ( FfText1Hold, 2500 )
+
+        FfText1Hold ->
+            Just ( FfText1Out, 1000 )
+
+        FfText1Out ->
+            Just ( FfText2In, 800 )
+
+        FfText2In ->
+            Just ( FfText2Hold, 2500 )
+
+        FfText2Hold ->
+            Just ( FfText2Out, 1000 )
+
+        FfText2Out ->
+            Just ( FfCounterIn, 700 )
+
+        _ ->
+            Nothing
+
+
+-- The fake-flash-caught cutscene's exit: back to the IQ Begin screen with the
+-- doubled display count, capped to agree with the server's own doubling.
+exitFakeFlash : FakeFlashCaughtState -> IQTestScreenState
+exitFakeFlash state =
+    { questionIdx = state.questionIdx
+    , totalDings = Basics.min (state.originalTotal * 2) maxTotalDings
+    }

@@ -1,21 +1,32 @@
 module SyncTest exposing (..)
 
 import Expect
+import Game.IQTest exposing (FakeFlashPhase(..))
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Sync
     exposing
         ( ServerEnvelope(..)
         , clientStateEnvelope
+        , decodeFakeFlashPhase
+        , decodeMsg
         , decodeModel
+        , decodePausedState
         , decodeScreen
         , decodeServerEnvelope
+        , encodeFakeFlashPhase
         , encodeModel
+        , encodeMsg
+        , encodePausedState
         , encodeScreen
+        , iqCaughtEnvelope
+        , iqReadyForDingEnvelope
+        , iqResumeEnvelope
+        , iqStartCountdownEnvelope
         , stateRequestEnvelope
         )
 import Test exposing (Test, describe, test)
-import Types exposing (Model, Screen(..))
+import Types exposing (Model, Msg(..), PausedState, Screen(..))
 
 
 roundTripScreen : Screen -> Screen
@@ -42,6 +53,171 @@ screenRoundTripTests =
             \_ -> Expect.equal (CheckingAnswerScreen (QuestionScreen 4 "x")) (roundTripScreen (CheckingAnswerScreen (QuestionScreen 4 "x")))
         , test "WinScreen deliberately drops its text on encode (never persisted)" <|
             \_ -> Expect.equal (WinScreen "") (roundTripScreen (WinScreen "top secret win text"))
+        , test "WsConnectingScreen" <|
+            \_ -> Expect.equal WsConnectingScreen (roundTripScreen WsConnectingScreen)
+        , test "WsErrorScreen" <|
+            \_ -> Expect.equal WsErrorScreen (roundTripScreen WsErrorScreen)
+        , test "WsLoadingScreen" <|
+            \_ -> Expect.equal WsLoadingScreen (roundTripScreen WsLoadingScreen)
+        , test "WrongAnswerScreen carries its index" <|
+            \_ -> Expect.equal (WrongAnswerScreen 5) (roundTripScreen (WrongAnswerScreen 5))
+        , test "IQTestScreen carries its state" <|
+            \_ -> Expect.equal (IQTestScreen { questionIdx = 1, totalDings = 100 }) (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100 }))
+        , test "IQTestCountdownScreen carries its state" <|
+            \_ ->
+                Expect.equal
+                    (IQTestCountdownScreen { questionIdx = 1, totalDings = 100, countdown = 3 })
+                    (roundTripScreen (IQTestCountdownScreen { questionIdx = 1, totalDings = 100, countdown = 3 }))
+        , test "IQTestActiveScreen carries its state" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, dingCount = 2, totalDings = 100, isFlashing = True, dingActive = False, fakeFlashActive = True, fakeIsTrap = False, loudPlaying = True }
+                in
+                Expect.equal (IQTestActiveScreen state) (roundTripScreen (IQTestActiveScreen state))
+        , test "FakeFlashCaughtScreen carries its state" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold }
+                in
+                Expect.equal (FakeFlashCaughtScreen state) (roundTripScreen (FakeFlashCaughtScreen state))
+        , test "ConfirmingAnswerScreen nests the next screen" <|
+            \_ -> Expect.equal (ConfirmingAnswerScreen (BlankScreen 4)) (roundTripScreen (ConfirmingAnswerScreen (BlankScreen 4)))
+        , test "an unrecognized tag fails to decode" <|
+            \_ ->
+                Decode.decodeString decodeScreen """{"tag":"NotAScreen"}"""
+                    |> Result.toMaybe
+                    |> Expect.equal Nothing
+        ]
+
+
+fakeFlashPhaseRoundTripTests : Test
+fakeFlashPhaseRoundTripTests =
+    let
+        roundTrip phase =
+            encodeFakeFlashPhase phase
+                |> Decode.decodeValue decodeFakeFlashPhase
+    in
+    describe "encodeFakeFlashPhase / decodeFakeFlashPhase round-trip"
+        [ test "round-trips every phase" <|
+            \_ ->
+                [ FfDelay, FfText1In, FfText1Hold, FfText1Out, FfText2In, FfText2Hold, FfText2Out, FfCounterIn, FfTickNumerator, FfTickDelay, FfTickDenominator, FfCounterOut ]
+                    |> List.map roundTrip
+                    |> Expect.equal
+                        (List.map Ok [ FfDelay, FfText1In, FfText1Hold, FfText1Out, FfText2In, FfText2Hold, FfText2Out, FfCounterIn, FfTickNumerator, FfTickDelay, FfTickDenominator, FfCounterOut ])
+        , test "rejects an unknown phase string" <|
+            \_ ->
+                Decode.decodeValue decodeFakeFlashPhase (Encode.string "NotAPhase")
+                    |> Result.toMaybe
+                    |> Expect.equal Nothing
+        ]
+
+
+msgRoundTripTests : Test
+msgRoundTripTests =
+    let
+        roundTrip msg =
+            encodeMsg msg
+                |> Decode.decodeValue decodeMsg
+    in
+    describe "encodeMsg / decodeMsg round-trip"
+        [ test "round-trips every explicitly-encoded Msg variant" <|
+            \_ ->
+                let
+                    msgs =
+                        [ Tick 100
+                        , PlaySong 2
+                        , ShowQuestion 2
+                        , TrackEnded "song.mp3"
+                        , DingFlashEnd
+                        , DingWindowExpired
+                        , FakeFlashWindowExpired
+                        , FakeFlashCounterTick
+                        , FakeFlashNextPhase
+                        , StartLoudMusic
+                        , WsReconnect
+                        ]
+                in
+                List.map roundTrip msgs |> Expect.equal (List.map Ok msgs)
+        , test "a Msg with no dedicated encoding falls back to NoOp" <|
+            \_ -> roundTrip AnswerSubmitted |> Expect.equal (Ok NoOp)
+        , test "decodeMsg maps an unrecognized tag to NoOp" <|
+            \_ -> Decode.decodeString decodeMsg """{"tag":"SomethingUnknown"}""" |> Expect.equal (Ok NoOp)
+        ]
+
+
+pausedStateRoundTripTests : Test
+pausedStateRoundTripTests =
+    describe "encodePausedState / decodePausedState round-trip"
+        [ test "round-trips a paused state with pending events and resume times" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = BlankScreen 1
+                        , pending = [ { fireAt = 1500, msg = ShowQuestion 1 }, { fireAt = 2000, msg = PlaySong 2 } ]
+                        , savedAt = 1000
+                        , songResumeTime = Just 12.5
+                        , videoResumeTime = Just 3.5
+                        }
+                in
+                encodePausedState saved
+                    |> Decode.decodeValue decodePausedState
+                    |> Expect.equal (Ok saved)
+        , test "round-trips Nothing resume times" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = BeginScreen, pending = [], savedAt = 0, songResumeTime = Nothing, videoResumeTime = Nothing }
+                in
+                encodePausedState saved
+                    |> Decode.decodeValue decodePausedState
+                    |> Expect.equal (Ok saved)
+        ]
+
+
+modelWithSavedStateRoundTripTests : Test
+modelWithSavedStateRoundTripTests =
+    let
+        model : Model
+        model =
+            { screen = BlankScreen 0
+            , jeopardyPlaying = False
+            , now = 500
+            , pending = []
+            , savedState = Just { screen = VideoScreen 0 "v.mp4", pending = [], savedAt = 400, songResumeTime = Nothing, videoResumeTime = Just 1.5 }
+            , dingKey = 0
+            , pendingStartTime = Nothing
+            , wsClientId = Nothing
+            , timerEndsAt = 0
+            , myUuid = Nothing
+            , wsUrl = ""
+            , questions = []
+            }
+    in
+    describe "encodeModel / decodeModel round-trip with a saved state"
+        [ test "round-trips savedState" <|
+            \_ ->
+                encodeModel model
+                    |> Decode.decodeValue decodeModel
+                    |> Result.map .savedState
+                    |> Expect.equal (Ok model.savedState)
+        ]
+
+
+iqEnvelopeBuilderTests : Test
+iqEnvelopeBuilderTests =
+    describe "IQ-test client->server envelope builders"
+        [ test "iqStartCountdownEnvelope" <|
+            \_ -> Encode.encode 0 iqStartCountdownEnvelope |> Expect.equal """{"payload":"iqStartCountdown","iqStartCountdown":{}}"""
+        , test "iqReadyForDingEnvelope" <|
+            \_ -> Encode.encode 0 iqReadyForDingEnvelope |> Expect.equal """{"payload":"iqReadyForDing","iqReadyForDing":{}}"""
+        , test "iqCaughtEnvelope" <|
+            \_ -> Encode.encode 0 iqCaughtEnvelope |> Expect.equal """{"payload":"iqCaught","iqCaught":{}}"""
+        , test "iqResumeEnvelope" <|
+            \_ -> Encode.encode 0 iqResumeEnvelope |> Expect.equal """{"payload":"iqResume","iqResume":{}}"""
         ]
 
 
@@ -119,6 +295,38 @@ serverEnvelopeTests =
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"somethingElse"}"""
                     |> Expect.equal (Ok ServerUnknown)
+        , test "authChallenge" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"authChallenge"}"""
+                    |> Expect.equal (Ok ServerAuth)
+        , test "authResult" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"authResult"}"""
+                    |> Expect.equal (Ok ServerAuth)
+        , test "iqCountdownTick carries the remaining count" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqCountdownTick","iqCountdownTick":{"remaining":3}}"""
+                    |> Expect.equal (Ok (ServerIqCountdownTick 3))
+        , test "iqCountdownComplete" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqCountdownComplete"}"""
+                    |> Expect.equal (Ok ServerIqCountdownComplete)
+        , test "iqDing with all fields present" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqDing","iqDing":{"fake":true,"trap":true,"dingCount":5,"totalDings":100}}"""
+                    |> Expect.equal (Ok (ServerIqDing { fake = True, trap = True, dingCount = 5, totalDings = 100 }))
+        , test "iqDing defaults trap/dingCount/totalDings to false/0 when protobufjs omits them" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqDing","iqDing":{"fake":false}}"""
+                    |> Expect.equal (Ok (ServerIqDing { fake = False, trap = False, dingCount = 0, totalDings = 0 }))
+        , test "iqStartLoud" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqStartLoud"}"""
+                    |> Expect.equal (Ok ServerIqStartLoud)
+        , test "iqTestComplete" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqTestComplete"}"""
+                    |> Expect.equal (Ok ServerIqTestComplete)
         ]
 
 
