@@ -6,6 +6,7 @@ import Game.IQTest as IQTest
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Random
+import Time
 import Server
     exposing
         ( ClearOutcome(..)
@@ -19,8 +20,11 @@ import Server
         , advanceOnClear
         , applyCatch
         , classifyDing
+        , classifyFileRead
         , clearIqTimer
         , decodeEditedIqScreen
+        , decodeDingKind
+        , decodeIqPhase
         , decodeIqTimerStateFull
         , deriveIqScreen
         , encodeIqTimerStateFull
@@ -28,6 +32,7 @@ import Server
         , persistIqTimerInRegistry
         , quizJustCompleted
         , reconcileIqTimerAfterEdit
+        , resumeIqTimer
         , setIqTimer
         , update
         )
@@ -39,10 +44,21 @@ import Server.Protocol
         , distListResultEnvelope
         , iqDingEnvelope
         , distRegisterAckEnvelope
+        , stateEnvelope
         , stateUpdateAckEnvelope
         , winTextEnvelope
         )
-import Server.Registry exposing (RegistryEntry, decodeRegistryEntry, encodeRegistryEntry, snapshotForJeopardy)
+import Server.Registry
+    exposing
+        ( RegistryEntry
+        , decodeRegistryEntry
+        , encodeRegistry
+        , encodeRegistryEntry
+        , findUuidByClient
+        , parseRegistryJsonl
+        , registryFilePath
+        , snapshotForJeopardy
+        )
 import Sync exposing (decodeIQTestCountdownState, decodeIQTestState)
 import Set
 import Test exposing (Test, describe, test)
@@ -112,6 +128,58 @@ registrySuite =
                     |> Decode.decodeString decodeRegistryEntry
                     |> Result.map .winText
                     |> Expect.equal (Ok "")
+        , test "decodes a real (non-null) state value" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":{"screen":{"tag":"BeginScreen"}},"pendingStateEdit":false}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map (\e -> e.state /= Nothing)
+                    |> Expect.equal (Ok True)
+        ]
+
+
+encodeRegistryTests : Test
+encodeRegistryTests =
+    describe "encodeRegistry"
+        [ test "an empty registry encodes to an empty string" <|
+            \_ -> encodeRegistry [] |> Expect.equal ""
+        , test "a non-empty registry encodes one JSON line per entry, newline-terminated" <|
+            \_ ->
+                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0 } ]
+                    |> String.endsWith "\n"
+                    |> Expect.equal True
+        ]
+
+
+parseRegistryJsonlTests : Test
+parseRegistryJsonlTests =
+    describe "parseRegistryJsonl"
+        [ test "parses multiple lines, skipping blanks and malformed rows" <|
+            \_ ->
+                let
+                    raw =
+                        """{"uuid":"u1","filename":"f1","platform":"mac","state":null,"pendingStateEdit":false}
+
+not json
+{"uuid":"u2","filename":"f2","platform":"win","state":null,"pendingStateEdit":false}
+"""
+                in
+                parseRegistryJsonl raw
+                    |> List.map .uuid
+                    |> Expect.equal [ "u1", "u2" ]
+        ]
+
+
+findUuidByClientTests : Test
+findUuidByClientTests =
+    describe "findUuidByClient"
+        [ test "finds the uuid mapped to a connected clientId" <|
+            \_ ->
+                findUuidByClient "c1" (Dict.fromList [ ( "uuid1", "c1" ), ( "uuid2", "c2" ) ])
+                    |> Expect.equal (Just "uuid1")
+        , test "Nothing when no uuid maps to that clientId" <|
+            \_ ->
+                findUuidByClient "unknown" (Dict.fromList [ ( "uuid1", "c1" ) ])
+                    |> Expect.equal Nothing
         ]
 
 
@@ -123,6 +191,68 @@ protocolSuite =
                 winTextEnvelope "hello reward"
                     |> winTextOf
                     |> Expect.equal (Just "hello reward")
+        ]
+
+
+stateEnvelopeTests : Test
+stateEnvelopeTests =
+    describe "stateEnvelope"
+        [ test "wraps an encoded state under stateUpdate.json" <|
+            \_ ->
+                stateEnvelope (Encode.object [ ( "a", Encode.int 1 ) ])
+                    |> Decode.decodeValue (Decode.at [ "stateUpdate", "json" ] Decode.string)
+                    |> Expect.equal (Ok """{"a":1}""")
+        ]
+
+
+clientEnvelopeSuite : Test
+clientEnvelopeSuite =
+    describe "decodeClientEnvelope"
+        [ test "stateUpdate with malformed inner JSON maps to ClientUnknown" <|
+            \_ ->
+                """{"payload":"stateUpdate","stateUpdate":{"json":"not json"}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal (Ok ClientUnknown)
+        , test "stateRequest carries the uuid" <|
+            \_ ->
+                """{"payload":"stateRequest","stateRequest":{"uuid":"u1"}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal (Ok (ClientStateRequest "u1"))
+        , test "distRegister carries uuid and platform" <|
+            \_ ->
+                """{"payload":"distRegister","distRegister":{"uuid":"u1","platform":"mac"}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal (Ok (ClientDistRegister { uuid = "u1", platform = "mac" }))
+        , test "distUpload carries the chunk fields" <|
+            \_ ->
+                """{"payload":"distUpload","distUpload":{"uuid":"u1","filename":"f.dmg","contents":"YWJj","chunkIndex":2,"isLast":true}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal (Ok (ClientDistUpload { uuid = "u1", filename = "f.dmg", contentsBase64 = "YWJj", chunkIndex = 2, isLast = True }))
+        , test "distComplete with winText" <|
+            \_ ->
+                """{"payload":"distComplete","distComplete":{"uuid":"u1","filename":"f.dmg","winText":"gg"}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal (Ok (ClientDistComplete { uuid = "u1", filename = "f.dmg", winText = "gg" }))
+        , test "distComplete without winText defaults to empty string" <|
+            \_ ->
+                """{"payload":"distComplete","distComplete":{"uuid":"u1","filename":"f.dmg"}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal (Ok (ClientDistComplete { uuid = "u1", filename = "f.dmg", winText = "" }))
+        , test "distStateEdit carries the uuid" <|
+            \_ ->
+                """{"payload":"distStateEdit","distStateEdit":{"uuid":"u1"}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal (Ok (ClientDistStateEdit "u1"))
+        , test "distReplaceComplete carries the uuid swap and filename" <|
+            \_ ->
+                """{"payload":"distReplaceComplete","distReplaceComplete":{"newUuid":"n","oldUuid":"o","filename":"f.dmg"}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal (Ok (ClientDistReplaceComplete { newUuid = "n", oldUuid = "o", filename = "f.dmg" }))
+        , test "an unrecognized payload maps to ClientUnknown" <|
+            \_ ->
+                """{"payload":"somethingElse"}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal (Ok ClientUnknown)
         ]
 
 
@@ -1294,6 +1424,866 @@ iqPersistenceRoutingSuite =
                             |> Expect.equal (Just 11)
                     ]
                     ()
+        ]
+
+
+-- ── Remaining Server.update routing: connect/disconnect trivia, state
+-- request/update, distribution upload/complete/replace, file I/O, and the
+-- full IQ ready-for-ding / resume / countdown / ding-ready scheduling flow.
+
+
+trivialMsgSuite : Test
+trivialMsgSuite =
+    describe "trivial Msg branches"
+        [ test "ClientConnected is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (ClientConnected "c1") baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "ClientDisconnected for an unknown clientId is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (ClientDisconnected "unknown-client") baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "WriteFileCompleted is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (WriteFileCompleted { path = "x", ok = True, error = Nothing }) baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "GotTime reseeds the RNG" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (GotTime (Time.millisToPosix 12345)) baseModel
+                in
+                m.seed |> Expect.notEqual baseModel.seed
+        , test "AuthCompleted for a distClients stage it doesn't own is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "u1", platform = "mac" }) }
+
+                    ( m, _ ) =
+                        update (authDone "c1" True 2) staged
+                in
+                m.distClients |> Expect.equal staged.distClients
+        , test "AuthCompleted for a clientId with no staged distClients entry is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (authDone "unstaged" True 2) baseModel
+                in
+                m |> Expect.equal baseModel
+        ]
+
+
+stateRequestMsg : String -> String -> Msg
+stateRequestMsg clientId uuid =
+    MessageReceived { clientId = clientId, payload = clientEnvelope "stateRequest" [ ( "uuid", Encode.string uuid ) ] }
+
+
+stateRequestSuite : Test
+stateRequestSuite =
+    describe "ClientStateRequest routing"
+        [ test "rejects a uuid currently locked for admin state editing" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | pendingStateEdits = Set.singleton "uuid1" }
+
+                    ( m, _ ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+                in
+                m.connectedPlayers |> Expect.equal Dict.empty
+        , test "rejects a duplicate connection for an already-connected uuid" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "existing-client" }
+
+                    ( m, _ ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+                in
+                m.connectedPlayers |> Expect.equal staged.connectedPlayers
+        , test "rejects an unknown uuid not present in the registry" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (stateRequestMsg "c1" "no-such-uuid") baseModel
+                in
+                m.connectedPlayers |> Expect.equal Dict.empty
+        , test "delivers an empty/never-started state as-is (no snapshot)" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0 } ] }
+
+                    ( m, _ ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+                in
+                Expect.all
+                    [ \mm -> Dict.get "uuid1" mm.connectedPlayers |> Expect.equal (Just "c1")
+                    , \mm -> mm.registry |> List.head |> Maybe.andThen .state |> Expect.equal Nothing
+                    ]
+                    m
+        , test "delivers a BeginScreen state as-is (no snapshot)" <|
+            \_ ->
+                let
+                    beginState =
+                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "BeginScreen" ) ] ) ]
+
+                    staged =
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just beginState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0 } ] }
+
+                    ( m, _ ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+                in
+                m.registry |> List.head |> Maybe.andThen .state |> Expect.equal (Just beginState)
+        , test "snapshots a mid-game state into savedState and resets to BeginScreen" <|
+            \_ ->
+                let
+                    midGameState =
+                        Encode.object
+                            [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ] )
+                            , ( "pending", Encode.list identity [] )
+                            , ( "now", Encode.float 1000 )
+                            ]
+
+                    staged =
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just midGameState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0 } ] }
+
+                    ( m, _ ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    newTag =
+                        m.registry |> List.head |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+
+                    savedTag =
+                        m.registry |> List.head |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "savedState", "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                in
+                Expect.all
+                    [ \_ -> Expect.equal (Just "BeginScreen") newTag
+                    , \_ -> Expect.equal (Just "QuestionScreen") savedTag
+                    ]
+                    ()
+        ]
+
+
+stateUpdateMsg : String -> Encode.Value -> Msg
+stateUpdateMsg clientId innerState =
+    MessageReceived { clientId = clientId, payload = clientEnvelope "stateUpdate" [ ( "json", Encode.string (Encode.encode 0 innerState) ) ] }
+
+
+stateUpdateSuite : Test
+stateUpdateSuite =
+    describe "ClientStateUpdate routing"
+        [ test "an update from an unconnected clientId is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (stateUpdateMsg "c1" (Encode.object [])) baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "persists the client's raw reported state when there's no server-owned IQ timer" <|
+            \_ ->
+                let
+                    reported =
+                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 2 ) ] ) ]
+
+                    staged =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (stateUpdateMsg "c1" reported) staged
+
+                    tagOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head |> Maybe.andThen .state
+                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                in
+                tagOf |> Expect.equal (Just "BlankScreen")
+        , test "a state transitioning into the win screen still updates the registry (winText is sent separately)" <|
+            \_ ->
+                let
+                    winningReport =
+                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] ) ]
+
+                    staged =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (stateUpdateMsg "c1" winningReport) staged
+
+                    tagOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head |> Maybe.andThen .state
+                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                in
+                tagOf |> Expect.equal (Just "WinScreen")
+        ]
+
+
+distUploadMsg : String -> String -> String -> Int -> Bool -> Msg
+distUploadMsg clientId uuid filename chunkIndex isLast =
+    MessageReceived
+        { clientId = clientId
+        , payload =
+            clientEnvelope "distUpload"
+                [ ( "uuid", Encode.string uuid )
+                , ( "filename", Encode.string filename )
+                , ( "contents", Encode.string "YWJj" )
+                , ( "chunkIndex", Encode.int chunkIndex )
+                , ( "isLast", Encode.bool isLast )
+                ]
+        }
+
+
+distUploadSuite : Test
+distUploadSuite =
+    describe "ClientDistUpload routing"
+        [ test "with no staged distClients entry, is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (distUploadMsg "c1" "u1" "f.dmg" 0 True) baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "with a mismatched uuid, is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "other-uuid", platform = "mac" }) }
+
+                    ( m, _ ) =
+                        update (distUploadMsg "c1" "u1" "f.dmg" 0 True) staged
+                in
+                m.registry |> Expect.equal staged.registry
+        , test "a non-final chunk writes without touching the registry or clearing the stage" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "u1", platform = "mac" }) }
+
+                    ( m, _ ) =
+                        update (distUploadMsg "c1" "u1" "f.dmg" 0 False) staged
+                in
+                Expect.all
+                    [ \mm -> mm.registry |> Expect.equal staged.registry
+                    , \mm -> Dict.get "c1" mm.distClients |> Expect.notEqual Nothing
+                    ]
+                    m
+        , test "the final chunk adds a new registry entry and clears the stage" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "u3", platform = "mac" }) }
+
+                    ( m, _ ) =
+                        update (distUploadMsg "c1" "u3" "f3.dmg" 1 True) staged
+                in
+                Expect.all
+                    [ \mm -> mm.registry |> List.map .uuid |> List.member "u3" |> Expect.equal True
+                    , \mm -> Dict.get "c1" mm.distClients |> Expect.equal Nothing
+                    ]
+                    m
+        ]
+
+
+distCompleteMsg : String -> String -> String -> Msg
+distCompleteMsg clientId uuid filename =
+    MessageReceived
+        { clientId = clientId
+        , payload =
+            clientEnvelope "distComplete"
+                [ ( "uuid", Encode.string uuid ), ( "filename", Encode.string filename ), ( "winText", Encode.string "gg" ) ]
+        }
+
+
+distCompleteSuite : Test
+distCompleteSuite =
+    describe "ClientDistComplete routing"
+        [ test "with no staged distClients entry, is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (distCompleteMsg "c1" "u1" "f.dmg") baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "with a mismatched uuid, is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "other-uuid", platform = "mac" }) }
+
+                    ( m, _ ) =
+                        update (distCompleteMsg "c1" "u1" "f.dmg") staged
+                in
+                m.registry |> Expect.equal staged.registry
+        , test "a matching completion adds the entry with its winText and clears the stage" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "u4", platform = "win" }) }
+
+                    ( m, _ ) =
+                        update (distCompleteMsg "c1" "u4" "f4.exe") staged
+
+                    newEntry =
+                        m.registry |> List.filter (\e -> e.uuid == "u4") |> List.head
+                in
+                Expect.all
+                    [ \_ -> newEntry |> Maybe.map .winText |> Expect.equal (Just "gg")
+                    , \_ -> Dict.get "c1" m.distClients |> Expect.equal Nothing
+                    ]
+                    ()
+        ]
+
+
+distReplaceCompleteMsg : String -> String -> String -> String -> Msg
+distReplaceCompleteMsg clientId newUuid oldUuid filename =
+    MessageReceived
+        { clientId = clientId
+        , payload =
+            clientEnvelope "distReplaceComplete"
+                [ ( "newUuid", Encode.string newUuid ), ( "oldUuid", Encode.string oldUuid ), ( "filename", Encode.string filename ) ]
+        }
+
+
+distReplaceCompleteSuite : Test
+distReplaceCompleteSuite =
+    describe "ClientDistReplaceComplete routing"
+        [ test "with no staged distClients entry, is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (distReplaceCompleteMsg "c1" "new1" "uuid1" "f.dmg") baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "with a mismatched newUuid, is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "other-uuid", platform = "mac" }) }
+
+                    ( m, _ ) =
+                        update (distReplaceCompleteMsg "c1" "new1" "uuid1" "f.dmg") staged
+                in
+                m.registry |> Expect.equal staged.registry
+        , test "a matching replacement carries the old entry's state/winText to the new uuid and locks it pending" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "new1", platform = "mac" })
+                            , connectedPlayers = Dict.singleton "uuid1" "player-client"
+                        }
+
+                    ( m, _ ) =
+                        update (distReplaceCompleteMsg "c1" "new1" "uuid1" "f-new.dmg") staged
+
+                    newEntry =
+                        m.registry |> List.filter (\e -> e.uuid == "new1") |> List.head
+                in
+                Expect.all
+                    [ \_ -> newEntry |> Maybe.map .pendingStateEdit |> Expect.equal (Just True)
+                    , \_ -> newEntry |> Maybe.andThen .state |> Expect.equal (entry "uuid1").state
+                    , \_ -> m.registry |> List.map .uuid |> List.member "uuid1" |> Expect.equal False
+                    , \_ -> Dict.get "uuid1" m.connectedPlayers |> Expect.equal Nothing
+                    , \_ -> Set.member "new1" m.pendingStateEdits |> Expect.equal True
+                    ]
+                    ()
+        ]
+
+
+fileReadSuite : Test
+fileReadSuite =
+    describe "FileRead routing"
+        [ test "a path other than the registry file is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (FileRead "some/other/path" (Ok "contents")) baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "a registry read failure is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (FileRead registryFilePath (Err "ENOENT")) baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "a successful registry read parses entries and rehydrates pendingStateEdits/iqTimers" <|
+            \_ ->
+                let
+                    savedIqTimer =
+                        encodeIqTimerStateFull { iqState | phase = IqCounting, countdownRemaining = 9 }
+
+                    row1 =
+                        Encode.encode 0
+                            (Encode.object
+                                [ ( "uuid", Encode.string "u1" )
+                                , ( "filename", Encode.string "f1.dmg" )
+                                , ( "platform", Encode.string "mac" )
+                                , ( "state", Encode.null )
+                                , ( "pendingStateEdit", Encode.bool True )
+                                , ( "iqTimer", savedIqTimer )
+                                ]
+                            )
+
+                    ( m, _ ) =
+                        update (FileRead registryFilePath (Ok row1)) baseModel
+                in
+                Expect.all
+                    [ \mm -> mm.registry |> List.map .uuid |> Expect.equal [ "u1" ]
+                    , \mm -> Set.member "u1" mm.pendingStateEdits |> Expect.equal True
+                    , \mm -> Dict.get "u1" mm.iqTimers |> Maybe.map .countdownRemaining |> Expect.equal (Just 9)
+                    ]
+                    m
+        ]
+
+
+iqReadyForDingMsg : String -> Msg
+iqReadyForDingMsg clientId =
+    iqTimerMsg clientId "iqReadyForDing"
+
+
+iqReadyForDingSuite : Test
+iqReadyForDingSuite =
+    describe "ClientIqReadyForDing routing"
+        [ test "an unconnected clientId is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (iqReadyForDingMsg "c1") baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "a connected uuid with no iqTimer entry is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (iqReadyForDingMsg "c1") staged
+                in
+                m.iqTimers |> Expect.equal Dict.empty
+        , test "IqAwaitingReady arms the first ding" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqAwaitingReady }
+                        }
+
+                    ( m, _ ) =
+                        update (iqReadyForDingMsg "c1") staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Maybe.map .phase |> Expect.equal (Just IqDingScheduled)
+        , test "IqDingShown resolving to Completed clears the timer" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingShown, lastDing = RealDing, dingCount = IQTest.iqQuestionCount - 1, totalDings = IQTest.iqQuestionCount }
+                        }
+
+                    ( m, _ ) =
+                        update (iqReadyForDingMsg "c1") staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Expect.equal Nothing
+        , test "IqDingShown resolving to Advanced arms the next ding" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingShown, lastDing = RealDing, dingCount = 0, totalDings = IQTest.iqQuestionCount }
+                        }
+
+                    ( m, _ ) =
+                        update (iqReadyForDingMsg "c1") staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Maybe.map (\s -> ( s.phase, s.dingCount )) |> Expect.equal (Just ( IqDingScheduled, 1 ))
+        , test "a stale request in an unrelated phase (e.g. still counting down) is ignored" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqCounting, countdownRemaining = 5 }
+                        }
+
+                    ( m, _ ) =
+                        update (iqReadyForDingMsg "c1") staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Expect.equal (Just { iqState | phase = IqCounting, countdownRemaining = 5 })
+        ]
+
+
+resumeIqTimerSuite : Test
+resumeIqTimerSuite =
+    describe "resumeIqTimer (via ClientIqResume)"
+        [ test "no iqTimer entry at all is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqResume") staged
+                in
+                m.iqTimers |> Expect.equal Dict.empty
+        , test "IqAwaitingReady re-arms the next ding" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqAwaitingReady }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqResume") staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Maybe.map .phase |> Expect.equal (Just IqDingScheduled)
+        , test "IqDingScheduled re-arms the pending ding" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingScheduled }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqResume") staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Maybe.map .phase |> Expect.equal (Just IqDingScheduled)
+        , test "resumeIqTimer directly: an unconnected player's disconnected sendToPlayer is still a safe no-op Cmd" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingShown } }
+
+                    ( m, _ ) =
+                        resumeIqTimer "uuid1" staged
+                in
+                m |> Expect.equal staged
+        ]
+
+
+countdownStepSuite : Test
+countdownStepSuite =
+    describe "CountdownStep routing"
+        [ test "no iqTimer entry at all is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (CountdownStep { uuid = "uuid1", epoch = 1 }) baseModel
+                in
+                m.iqTimers |> Expect.equal Dict.empty
+        , test "a matching tick decrements the countdown" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, phase = IqCounting, countdownRemaining = 5 } }
+
+                    ( m, _ ) =
+                        update (CountdownStep { uuid = "uuid1", epoch = 1 }) staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Maybe.map (\s -> ( s.countdownRemaining, s.phase )) |> Expect.equal (Just ( 4, IqCounting ))
+        , test "reaching zero completes the countdown into IqAwaitingReady" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, phase = IqCounting, countdownRemaining = 1 } }
+
+                    ( m, _ ) =
+                        update (CountdownStep { uuid = "uuid1", epoch = 1 }) staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Maybe.map (\s -> ( s.countdownRemaining, s.phase )) |> Expect.equal (Just ( 0, IqAwaitingReady ))
+        , test "a disconnected player's countdown still ticks (sendToPlayer safely no-ops)" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, phase = IqCounting, countdownRemaining = 5 } }
+
+                    ( m, _ ) =
+                        update (CountdownStep { uuid = "uuid1", epoch = 1 }) staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Maybe.map .countdownRemaining |> Expect.equal (Just 4)
+        ]
+
+
+dingReadySuite : Test
+dingReadySuite =
+    describe "DingReady routing"
+        [ test "no iqTimer entry at all is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (DingReady { uuid = "uuid1", epoch = 1 }) baseModel
+                in
+                m.iqTimers |> Expect.equal Dict.empty
+        , test "a matching fire classifies and shows the next ding" <|
+            \_ ->
+                let
+                    state =
+                        { iqState | epoch = 1, phase = IqDingScheduled, dingCount = 5, fakeFlashPoint = 999 }
+
+                    staged =
+                        { baseModel | iqTimers = Dict.singleton "uuid1" state, seed = Random.initialSeed 42 }
+
+                    ( coin, _ ) =
+                        Random.step IQTest.coinFlipGen (Random.initialSeed 42)
+
+                    expectedKind =
+                        classifyDing coin state
+
+                    ( m, _ ) =
+                        update (DingReady { uuid = "uuid1", epoch = 1 }) staged
+                in
+                Dict.get "uuid1" m.iqTimers
+                    |> Maybe.map (\s -> ( s.phase, s.lastDing ))
+                    |> Expect.equal (Just ( IqDingShown, expectedKind ))
+        ]
+
+
+iqPhaseDingKindCodecSuite : Test
+iqPhaseDingKindCodecSuite =
+    describe "decodeIqPhase / decodeDingKind full coverage"
+        [ test "round-trips every IqPhase via the full state codec" <|
+            \_ ->
+                let
+                    roundTrip phase =
+                        encodeIqTimerStateFull { iqState | phase = phase }
+                            |> Decode.decodeValue decodeIqTimerStateFull
+                            |> Result.map .phase
+                in
+                [ IqCounting, IqAwaitingReady, IqDingScheduled, IqDingShown, IqIdle ]
+                    |> List.map roundTrip
+                    |> Expect.equal (List.map Ok [ IqCounting, IqAwaitingReady, IqDingScheduled, IqDingShown, IqIdle ])
+        , test "round-trips every DingKind via the full state codec" <|
+            \_ ->
+                let
+                    roundTrip kind =
+                        encodeIqTimerStateFull { iqState | lastDing = kind }
+                            |> Decode.decodeValue decodeIqTimerStateFull
+                            |> Result.map .lastDing
+                in
+                [ RealDing, TrapFake, PhaseFake ]
+                    |> List.map roundTrip
+                    |> Expect.equal (List.map Ok [ RealDing, TrapFake, PhaseFake ])
+        , test "decodeIqPhase rejects an unknown phase string" <|
+            \_ -> Decode.decodeString decodeIqPhase "\"NotAPhase\"" |> Result.toMaybe |> Expect.equal Nothing
+        , test "decodeDingKind rejects an unknown kind string" <|
+            \_ -> Decode.decodeString decodeDingKind "\"NotAKind\"" |> Result.toMaybe |> Expect.equal Nothing
+        ]
+
+
+editedIqBeginSuite : Test
+editedIqBeginSuite =
+    describe "reconcileIqTimerAfterEdit: EditedIqBegin"
+        [ test "reconciling an IQTestScreen (begin) edit resets to IqIdle with the edited totalDings" <|
+            \_ ->
+                let
+                    edited =
+                        editedScreenState "IQTestScreen" [ ( "questionIdx", Encode.int 0 ), ( "totalDings", Encode.int 250 ) ]
+
+                    reconciled =
+                        reconcileIqTimerAfterEdit "uuid1" edited baseModel
+                in
+                Dict.get "uuid1" reconciled.iqTimers
+                    |> Maybe.map (\s -> ( s.totalDings, s.phase ))
+                    |> Expect.equal (Just ( 250, IqIdle ))
+        ]
+
+
+distRegisterMsg : String -> String -> String -> Msg
+distRegisterMsg clientId uuid platform =
+    MessageReceived
+        { clientId = clientId
+        , payload = clientEnvelope "distRegister" [ ( "uuid", Encode.string uuid ), ( "platform", Encode.string platform ) ]
+        }
+
+
+distStateEditMsg : String -> String -> Msg
+distStateEditMsg clientId uuid =
+    MessageReceived { clientId = clientId, payload = clientEnvelope "distStateEdit" [ ( "uuid", Encode.string uuid ) ] }
+
+
+distListMsg : String -> Msg
+distListMsg clientId =
+    MessageReceived { clientId = clientId, payload = clientEnvelope "distList" [] }
+
+
+remainingRoutingSuite : Test
+remainingRoutingSuite =
+    describe "remaining update routing for full branch coverage"
+        [ test "distRegister stages AwaitingAuth and requests admin auth" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (distRegisterMsg "c1" "u5" "mac") baseModel
+                in
+                Dict.get "c1" m.distClients |> Expect.equal (Just (AwaitingAuth { uuid = "u5", platform = "mac" }))
+        , test "distStateEdit stages AwaitingStateEditAuth and requests admin auth" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (distStateEditMsg "c1" "uuid1") baseModel
+                in
+                Dict.get "c1" m.distClients |> Expect.equal (Just (AwaitingStateEditAuth "uuid1"))
+        , test "distList stages AwaitingListAuth and requests admin auth" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (distListMsg "c1") baseModel
+                in
+                Dict.get "c1" m.distClients |> Expect.equal (Just AwaitingListAuth)
+        , test "undeploying a build with a currently-connected player also closes their connection" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | distClients = Dict.singleton "c1" (AwaitingUndeployAuth "uuid1")
+                            , connectedPlayers = Dict.singleton "uuid1" "player-client"
+                        }
+
+                    ( m, _ ) =
+                        update (authDone "c1" True 2) staged
+                in
+                Expect.all
+                    [ \mm -> registryUuids mm |> Expect.equal [ "uuid2" ]
+                    , \mm -> Dict.get "uuid1" mm.connectedPlayers |> Expect.equal Nothing
+                    ]
+                    m
+        , test "undeploying a uuid that isn't in the registry still acks without crashing" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingUndeployAuth "no-such-uuid") }
+
+                    ( m, _ ) =
+                        update (authDone "c1" True 2) staged
+                in
+                registryUuids m |> Expect.equal [ "uuid1", "uuid2" ]
+        , test "opening a build's state for editing with a currently-connected player also closes their connection" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | distClients = Dict.singleton "c1" (AwaitingStateEditAuth "uuid1")
+                            , connectedPlayers = Dict.singleton "uuid1" "player-client"
+                        }
+
+                    ( m, _ ) =
+                        update (authDone "c1" True 2) staged
+                in
+                Set.member "uuid1" m.pendingStateEdits |> Expect.equal True
+        , test "failed auth for a pending state-edit request closes the admin connection" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingStateEditAuth "uuid1") }
+
+                    ( m, _ ) =
+                        update (authDone "c1" False 0) staged
+                in
+                Dict.get "c1" m.distClients |> Expect.equal Nothing
+        , test "a replacement with no currently-connected old player still succeeds" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "new1", platform = "mac" }) }
+
+                    ( m, _ ) =
+                        update (distReplaceCompleteMsg "c1" "new1" "uuid1" "f-new.dmg") staged
+                in
+                m.registry |> List.map .uuid |> List.member "new1" |> Expect.equal True
+        , test "iqStartCountdown from an unconnected clientId is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (iqTimerMsg "unconnected-client" "iqStartCountdown") baseModel
+                in
+                m.iqTimers |> Expect.equal Dict.empty
+        , test "restarting a countdown after a previous run preserves totalDings and bumps the epoch" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 3, totalDings = 250, questionIdx = 2, phase = IqIdle }
+                        }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqStartCountdown") staged
+                in
+                Dict.get "uuid1" m.iqTimers
+                    |> Maybe.map (\s -> ( s.epoch, s.totalDings, s.questionIdx ))
+                    |> Expect.equal (Just ( 4, 250, 2 ))
+        , test "the 4th real ding cleared arms the loud gag alongside the next ding" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingShown, lastDing = RealDing, dingCount = 3, totalDings = IQTest.iqQuestionCount }
+                        }
+
+                    ( m, _ ) =
+                        update (iqReadyForDingMsg "c1") staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Maybe.map .dingCount |> Expect.equal (Just 4)
+        , test "iqCaught for a connected player with no iqTimer entry is a no-op" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (iqTimerMsg "c1" "iqCaught") staged
+                in
+                m.iqTimers |> Expect.equal Dict.empty
+        , test "iqResume from an unconnected clientId is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (iqTimerMsg "unconnected-client" "iqResume") baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "an unrecognized MessageReceived payload is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (MessageReceived { clientId = "c1", payload = clientEnvelope "somethingElse" [] }) baseModel
+                in
+                m |> Expect.equal baseModel
+        ]
+
+
+classifyFileReadSuite : Test
+classifyFileReadSuite =
+    describe "classifyFileRead"
+        [ test "contents present maps to a successful FileRead" <|
+            \_ ->
+                classifyFileRead { path = "p", contents = Just "data", error = Nothing }
+                    |> Expect.equal (FileRead "p" (Ok "data"))
+        , test "an error with no contents maps to a failed FileRead" <|
+            \_ ->
+                classifyFileRead { path = "p", contents = Nothing, error = Just "boom" }
+                    |> Expect.equal (FileRead "p" (Err "boom"))
+        , test "neither contents nor error falls back to a generic failure" <|
+            \_ ->
+                classifyFileRead { path = "p", contents = Nothing, error = Nothing }
+                    |> Expect.equal (FileRead "p" (Err "unknown error"))
         ]
 
 

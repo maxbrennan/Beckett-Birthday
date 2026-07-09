@@ -16,6 +16,14 @@
 
 const { execFileSync } = require('child_process');
 
+// View-rendering functions (Html Msg-producing) are excluded from the unit-coverage
+// tally: they take the full Model rather than narrow view-model data, so meaningfully
+// unit-testing them would mean either full-Model snapshot fixtures per screen (low
+// signal -- mostly re-testing update's output shape) or a view-model refactor. They're
+// covered instead by tests/integration/gui.electron.js, which drives the real rendered
+// app. See CLAUDE.md's Tests section.
+const EXCLUDED_MODULES = ['View'];
+
 const THRESHOLD = Number(process.argv[2]);
 
 if (Number.isNaN(THRESHOLD)) {
@@ -39,7 +47,8 @@ const { coverageData } = JSON.parse(output.trim().split('\n').pop());
 
 let total = 0;
 let covered = 0;
-for (const entries of Object.values(coverageData)) {
+for (const [moduleName, entries] of Object.entries(coverageData)) {
+    if (EXCLUDED_MODULES.includes(moduleName)) continue;
     for (const entry of entries) {
         total += 1;
         if (entry.count > 0) covered += 1;

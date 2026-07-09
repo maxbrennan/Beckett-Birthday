@@ -92,7 +92,11 @@ jobs:
         with:
           name: elm-coverage-data
           path: .coverage
-      # Interim floor, not the 95% target from issue #26 — raised from 9% after #48
-      # added tests for Game.Quiz/Game.IQTest/Sync/Audio/View's pure surface; see the
-      # follow-up issue tracking Main.elm's update-logic extraction for the remaining gap.
-      - run: node ci/check-elm-coverage.js 20
+      # Meets the 95% target from issue #26 — raised from 50% after #57 also closed
+      # out Server.elm/Sync.elm/Game.IQTest's remaining gaps (measured ~98% with
+      # View.elm's Html-rendering functions excluded, see ci/check-elm-coverage.js).
+      # The residual ~2% is genuinely unreachable via elm-test: Task.perform/port
+      # callbacks only invoked by the real runtime, Platform.worker/Browser.element
+      # program wiring (init/subscriptions/main), and one provably-dead decode
+      # fallback branch — see the comments at each site in Main.elm/Server.elm.
+      - run: node ci/check-elm-coverage.js 95

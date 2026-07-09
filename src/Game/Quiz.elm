@@ -64,3 +64,35 @@ capitalize s =
 isVideo : String -> Bool
 isVideo filename =
     String.endsWith ".mp4" filename
+
+
+-- Scoring decision for a submitted answer: is it right, and if so is there
+-- another question after it or was this the last one.
+type AnswerOutcome
+    = NoQuestion
+    | IncorrectAnswer
+    | CorrectContinue Int
+    | CorrectWin
+
+
+decideAnswer : List Question -> Int -> String -> AnswerOutcome
+decideAnswer questions idx answer =
+    case getQuestion questions idx of
+        Nothing ->
+            NoQuestion
+
+        Just q ->
+            if List.any (\a -> normalize answer == normalize a) q.answers then
+                let
+                    nextIdx =
+                        idx + 1
+                in
+                case getQuestion questions nextIdx of
+                    Just _ ->
+                        CorrectContinue nextIdx
+
+                    Nothing ->
+                        CorrectWin
+
+            else
+                IncorrectAnswer

@@ -64,9 +64,15 @@ init wsUrl =
     , Cmd.batch
         [ readFile "app-uuid.json"
         , readFile "config/quiz-questions.json"
-        , Task.perform (\posix -> Tick (toFloat (Time.posixToMillis posix))) Time.now
+        , Task.perform tickFromPosix Time.now
         ]
     )
+
+
+-- Converts an animation-frame/Time.now Posix into the Tick Msg it drives.
+tickFromPosix : Time.Posix -> Msg
+tickFromPosix posix =
+    Tick (toFloat (Time.posixToMillis posix))
 
 
 -- Queue a message to fire `delay` ms from now.
@@ -143,6 +149,120 @@ iqFail model state =
     )
 
 
+-- Whether a Tick landing past timerEndsAt should actually time the game out --
+-- false on the connection-status screens, since the clock hasn't meaningfully
+-- started for the player yet.
+screenAllowsTimeout : Screen -> Bool
+screenAllowsTimeout screen =
+    case screen of
+        WsConnectingScreen ->
+            False
+
+        WsErrorScreen ->
+            False
+
+        WsLoadingScreen ->
+            False
+
+        TimedOutScreen ->
+            False
+
+        _ ->
+            True
+
+
+-- Unwraps a BlankScreen index through the CheckingAnswerScreen/ConfirmingAnswerScreen
+-- wrappers a screen may be paused/synced under.
+innerBlankIdx : Screen -> Maybe Int
+innerBlankIdx s =
+    case s of
+        BlankScreen i ->
+            Just i
+
+        CheckingAnswerScreen inner ->
+            innerBlankIdx inner
+
+        ConfirmingAnswerScreen inner ->
+            innerBlankIdx inner
+
+        _ ->
+            Nothing
+
+
+-- Whether resuming a saved screen should seek the video/loud-loop audio back
+-- to where it left off.
+videoSeekTime : PausedState -> Maybe Float
+videoSeekTime saved =
+    case saved.videoResumeTime of
+        Just t ->
+            case saved.screen of
+                VideoScreen _ _ ->
+                    Just t
+
+                IQTestActiveScreen state ->
+                    if state.loudPlaying then
+                        Just t
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        Nothing ->
+            Nothing
+
+
+-- Which BlankScreen index (if any) a TrackEnded event should advance to.
+-- VideoScreen always advances (its own end already gates on the right video);
+-- BlankScreen only advances if the reported track matches the song scheduled
+-- for that question, rejecting a stale TrackEnded left over from a transition.
+trackEndedTarget : List Question -> Screen -> String -> Maybe Int
+trackEndedTarget questions screen name =
+    case screen of
+        BlankScreen idx ->
+            case getQuestion questions idx of
+                Just q ->
+                    if q.song == name then
+                        Just idx
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        VideoScreen idx _ ->
+            Just idx
+
+        _ ->
+            Nothing
+
+
+-- Promotes a CheckingAnswerScreen to ConfirmingAnswerScreen once the client
+-- actually has a connection to send that state over.
+promoteChecking : Screen -> Screen
+promoteChecking screen =
+    case screen of
+        CheckingAnswerScreen nextScreen ->
+            ConfirmingAnswerScreen nextScreen
+
+        _ ->
+            screen
+
+
+-- Falls a CheckingAnswerScreen straight through to its wrapped screen when
+-- there's no connection to confirm it over.
+resolveChecking : Screen -> Screen
+resolveChecking screen =
+    case screen of
+        CheckingAnswerScreen nextScreen ->
+            nextScreen
+
+        _ ->
+            screen
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
@@ -173,14 +293,7 @@ update msg model =
                             due
 
                     timedOut =
-                        finalModel.timerEndsAt > 0 && t >= finalModel.timerEndsAt &&
-                            (case finalModel.screen of
-                                WsConnectingScreen -> False
-                                WsErrorScreen -> False
-                                WsLoadingScreen -> False
-                                TimedOutScreen -> False
-                                _ -> True
-                            )
+                        finalModel.timerEndsAt > 0 && t >= finalModel.timerEndsAt && screenAllowsTimeout finalModel.screen
                 in
                 if timedOut then
                     ( { finalModel | screen = TimedOutScreen }, finalCmd )
@@ -199,24 +312,9 @@ update msg model =
                                 saved.pending
 
                         videoCmd =
-                            case saved.videoResumeTime of
-                                Just t ->
-                                    case saved.screen of
-                                        VideoScreen _ _ ->
-                                            setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t }
-
-                                        IQTestActiveScreen state ->
-                                            if state.loudPlaying then
-                                                setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t }
-
-                                            else
-                                                Cmd.none
-
-                                        _ ->
-                                            Cmd.none
-
-                                Nothing ->
-                                    Cmd.none
+                            videoSeekTime saved
+                                |> Maybe.map (\t -> setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t })
+                                |> Maybe.withDefault Cmd.none
                     in
                     ( { model
                         | screen = saved.screen
@@ -236,21 +334,6 @@ update msg model =
                     )
 
         PlaySong idx ->
-            let
-                innerBlankIdx s =
-                    case s of
-                        BlankScreen i ->
-                            Just i
-
-                        CheckingAnswerScreen inner ->
-                            innerBlankIdx inner
-
-                        ConfirmingAnswerScreen inner ->
-                            innerBlankIdx inner
-
-                        _ ->
-                            Nothing
-            in
             case innerBlankIdx model.screen of
                 Just blankIdx ->
                     if blankIdx == idx then
@@ -281,26 +364,14 @@ update msg model =
                         ( { model | jeopardyPlaying = False }, Cmd.none )
 
             else
-                case model.screen of
-                    BlankScreen idx ->
-                        case getQuestion model.questions idx of
-                            Just q ->
-                                if q.song == name then
-                                    ( schedule 1000 (ShowQuestion idx) model, Cmd.none )
-
-                                else
-                                    ( model, Cmd.none )
-
-                            Nothing ->
-                                ( model, Cmd.none )
-
-                    VideoScreen idx _ ->
+                case trackEndedTarget model.questions model.screen name of
+                    Just idx ->
                         ( { model | screen = BlankScreen idx }
                             |> schedule 1000 (ShowQuestion idx)
                         , Cmd.none
                         )
 
-                    _ ->
+                    Nothing ->
                         ( model, Cmd.none )
 
         ShowQuestion idx ->
@@ -328,36 +399,29 @@ update msg model =
         AnswerSubmitted ->
             case model.screen of
                 QuestionScreen idx answer ->
-                    case getQuestion model.questions idx of
-                        Just q ->
-                            if List.any (\a -> normalize answer == normalize a) q.answers then
-                                let
-                                    nextIdx =
-                                        idx + 1
-                                in
-                                case getQuestion model.questions nextIdx of
-                                    Just _ ->
-                                        ( { model | screen = CheckingAnswerScreen (BlankScreen nextIdx) }
-                                            |> clearPending
-                                            |> schedule 1000 (PlaySong nextIdx)
-                                        , sendWs model (quizAdvancedEnvelope idx)
-                                        )
-
-                                    Nothing ->
-                                        -- Empty text for now; the server fills it in at win
-                                        -- time via the winText message (see ServerWinText),
-                                        -- once it independently confirms quizAdvancedEnvelope
-                                        -- reached the real last question (see Server.elm's
-                                        -- acceptQuizAdvance/quizJustCompleted).
-                                        ( clearPending { model | screen = CheckingAnswerScreen (WinScreen "") }
-                                        , sendWs model (quizAdvancedEnvelope idx)
-                                        )
-
-                            else
-                                ( { model | screen = CheckingAnswerScreen (WrongAnswerScreen idx) }, Cmd.none )
-
-                        Nothing ->
+                    case decideAnswer model.questions idx answer of
+                        NoQuestion ->
                             ( model, Cmd.none )
+
+                        IncorrectAnswer ->
+                            ( { model | screen = CheckingAnswerScreen (WrongAnswerScreen idx) }, Cmd.none )
+
+                        CorrectContinue nextIdx ->
+                            ( { model | screen = CheckingAnswerScreen (BlankScreen nextIdx) }
+                                |> clearPending
+                                |> schedule 1000 (PlaySong nextIdx)
+                            , sendWs model (quizAdvancedEnvelope idx)
+                            )
+
+                        CorrectWin ->
+                            -- Empty text for now; the server fills it in at win
+                            -- time via the winText message (see ServerWinText),
+                            -- once it independently confirms quizAdvancedEnvelope
+                            -- reached the real last question (see Server.elm's
+                            -- acceptQuizAdvance/quizJustCompleted).
+                            ( clearPending { model | screen = CheckingAnswerScreen (WinScreen "") }
+                            , sendWs model (quizAdvancedEnvelope idx)
+                            )
 
                 _ ->
                     ( model, Cmd.none )
@@ -437,53 +501,23 @@ update msg model =
         SpaceBarPressed ->
             case model.screen of
                 IQTestActiveScreen state ->
-                    if state.fakeFlashActive then
-                        if state.fakeIsTrap then
-                            -- Caught by the one-time trap: play the penalty cutscene
-                            -- locally and report the catch; the server doubles its count.
-                            ( clearPending
-                                { model
-                                    | screen =
-                                        FakeFlashCaughtScreen
-                                            { questionIdx = state.questionIdx
-                                            , originalTotal = state.totalDings
-                                            , displayNumerator = state.dingCount
-                                            , displayDenominator = state.totalDings
-                                            , phase = FfDelay
-                                            }
-                                }
+                    -- The server is authoritative and its next ServerIqDing/
+                    -- ServerIqTestComplete overwrites whatever decideSpaceBar
+                    -- guesses here; this just makes the UI responsive.
+                    case decideSpaceBar state of
+                        CaughtTrap caughtState ->
+                            ( clearPending { model | screen = FakeFlashCaughtScreen caughtState }
                                 |> schedule 1000 FakeFlashNextPhase
                             , sendWs model iqCaughtEnvelope
                             )
 
-                        else
-                            -- Pressed a 50%-phase fake: that's a miss.
+                        SpaceBarFailed ->
                             iqFail model state
 
-                    else if state.dingActive then
-                        -- Cleared a real ding: update the displayed counter right away
-                        -- for responsive rendering, then report it -- the server is
-                        -- still authoritative and its next ServerIqDing/
-                        -- ServerIqTestComplete overwrites whatever we guess here.
-                        -- Mirror the server's own advanceOnClear rule so the guess is
-                        -- actually right, not just eventually corrected: while still
-                        -- in the doubled-punishment range (totalDings > iqQuestionCount),
-                        -- a clear grinds the denominator down; only once it's back to
-                        -- iqQuestionCount does the numerator start counting up.
-                        let
-                            optimisticState =
-                                if state.totalDings > iqQuestionCount then
-                                    { state | dingActive = False, totalDings = state.totalDings - 1 }
-
-                                else
-                                    { state | dingActive = False, dingCount = state.dingCount + 1 }
-                        in
-                        ( { model | screen = IQTestActiveScreen optimisticState }
-                        , sendWs model iqReadyForDingEnvelope
-                        )
-
-                    else
-                        iqFail model state
+                        OptimisticClear newState ->
+                            ( { model | screen = IQTestActiveScreen newState }
+                            , sendWs model iqReadyForDingEnvelope
+                            )
 
                 _ ->
                     ( model, Cmd.none )
@@ -501,63 +535,34 @@ update msg model =
         FakeFlashNextPhase ->
             case model.screen of
                 FakeFlashCaughtScreen state ->
-                    let
-                        advance newPhase delay =
+                    case nextFfPhase state.phase of
+                        Just ( newPhase, delay ) ->
                             ( { model | screen = FakeFlashCaughtScreen { state | phase = newPhase } }
                                 |> schedule delay FakeFlashNextPhase
                             , Cmd.none
                             )
-                    in
-                    case state.phase of
-                        FfDelay ->
-                            advance FfText1In 1000
 
-                        FfText1In ->
-                            advance FfText1Hold 2500
+                        Nothing ->
+                            case state.phase of
+                                FfCounterIn ->
+                                    ( { model | screen = FakeFlashCaughtScreen { state | phase = FfTickNumerator } }
+                                        |> schedule counterTickMs FakeFlashCounterTick
+                                    , Cmd.none
+                                    )
 
-                        FfText1Hold ->
-                            advance FfText1Out 1000
+                                FfTickDelay ->
+                                    ( { model | screen = FakeFlashCaughtScreen { state | phase = FfTickDenominator } }
+                                        |> schedule counterTickMs FakeFlashCounterTick
+                                    , Cmd.none
+                                    )
 
-                        FfText1Out ->
-                            advance FfText2In 800
+                                FfCounterOut ->
+                                    ( clearPending { model | screen = IQTestScreen (exitFakeFlash state) }
+                                    , Cmd.none
+                                    )
 
-                        FfText2In ->
-                            advance FfText2Hold 2500
-
-                        FfText2Hold ->
-                            advance FfText2Out 1000
-
-                        FfText2Out ->
-                            advance FfCounterIn 700
-
-                        FfCounterIn ->
-                            ( { model | screen = FakeFlashCaughtScreen { state | phase = FfTickNumerator } }
-                                |> schedule counterTickMs FakeFlashCounterTick
-                            , Cmd.none
-                            )
-
-                        FfTickDelay ->
-                            ( { model | screen = FakeFlashCaughtScreen { state | phase = FfTickDenominator } }
-                                |> schedule counterTickMs FakeFlashCounterTick
-                            , Cmd.none
-                            )
-
-                        FfCounterOut ->
-                            -- Back to the IQ Begin screen with the doubled display
-                            -- count (capped to agree with the server's own doubling).
-                            ( clearPending
-                                { model
-                                    | screen =
-                                        IQTestScreen
-                                            { questionIdx = state.questionIdx
-                                            , totalDings = Basics.min (state.originalTotal * 2) maxTotalDings
-                                            }
-                                }
-                            , Cmd.none
-                            )
-
-                        _ ->
-                            ( model, Cmd.none )
+                                _ ->
+                                    ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
@@ -772,26 +777,12 @@ update msg model =
                 ( Just wsId, _ ) ->
                     let
                         newModel =
-                            case model.screen of
-                                CheckingAnswerScreen nextScreen ->
-                                    { model | screen = ConfirmingAnswerScreen nextScreen }
-
-                                _ ->
-                                    model
+                            { model | screen = promoteChecking model.screen }
                     in
                     ( newModel, sendToWs { wsId = wsId, data = Encode.encode 0 (clientStateEnvelope newModel) } )
 
                 ( Nothing, _ ) ->
-                    let
-                        newModel =
-                            case model.screen of
-                                CheckingAnswerScreen nextScreen ->
-                                    { model | screen = nextScreen }
-
-                                _ ->
-                                    model
-                    in
-                    ( newModel, Cmd.none )
+                    ( { model | screen = resolveChecking model.screen }, Cmd.none )
 
         UuidLoaded maybeUuid ->
             case maybeUuid of
@@ -884,6 +875,34 @@ update msg model =
 
 
 
+-- Decides what Msg a readFile port response becomes: the quiz-questions file
+-- decodes straight to a question list, while anything else (app-uuid.json) is
+-- read for its "uuid" field.
+decodeReadFileResult : { path : String, contents : Maybe String, error : Maybe String } -> Msg
+decodeReadFileResult { path, contents } =
+    case path of
+        "config/quiz-questions.json" ->
+            QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
+
+        _ ->
+            case contents of
+                Just raw ->
+                    case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
+                        Ok uuid ->
+                            UuidLoaded (Just uuid)
+
+                        Err _ ->
+                            UuidLoaded Nothing
+
+                Nothing ->
+                    UuidLoaded Nothing
+
+
+everySecond : Time.Posix -> Msg
+everySecond _ =
+    WsSyncTick
+
+
 subscriptions : Model -> Sub Msg
 subscriptions model =
     let
@@ -900,33 +919,14 @@ subscriptions model =
         [ wsClientReady WsClientReady
         , receiveFromWs WsDataReceived
         , wsClientFailed WsDisconnected
-        , Time.every 1000 (\_ -> WsSyncTick)
+        , Time.every 1000 everySecond
         , keyboardSub
-        , Browser.Events.onAnimationFrame (\posix -> Tick (toFloat (Time.posixToMillis posix)))
+        , Browser.Events.onAnimationFrame tickFromPosix
         , receiveDomProperty DomPropertyReceived
         , domPropertyError DomPropertyError
-        , readFileResult
-            (\{ path, contents } ->
-                case path of
-                    "config/quiz-questions.json" ->
-                        QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
-
-                    _ ->
-                        case contents of
-                            Just raw ->
-                                case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
-                                    Ok uuid ->
-                                        UuidLoaded (Just uuid)
-
-                                    Err _ ->
-                                        UuidLoaded Nothing
-
-                            Nothing ->
-                                UuidLoaded Nothing
-            )
+        , readFileResult decodeReadFileResult
         ]
 
--- TODO extract logic from TrackEnded and WsPong messages
 main : Program String Model Msg
 main =
     Browser.element
