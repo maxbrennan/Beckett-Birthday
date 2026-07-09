@@ -107,17 +107,6 @@ counterTickMs =
     80
 
 
--- Total time allowed to complete the quiz.
--- Debug: 10 minutes  |  Production: 7 days
-timeLimitMs : Float
-timeLimitMs =
-    if debug then
-        600000
-
-    else
-        7 * 24 * 60 * 60 * 1000
-
-
 -- ── Types ─────────────────────────────────────────────────────────────────────
 
 

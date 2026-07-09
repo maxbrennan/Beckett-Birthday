@@ -40,9 +40,19 @@ import Server.Protocol
         , iqDingEnvelope
         , distRegisterAckEnvelope
         , stateUpdateAckEnvelope
+        , timedOutEnvelope
+        , timerSyncEnvelope
         , winTextEnvelope
         )
-import Server.Registry exposing (RegistryEntry, decodeRegistryEntry, encodeRegistryEntry, snapshotForJeopardy)
+import Server.Registry
+    exposing
+        ( RegistryEntry
+        , decodeRegistryEntry
+        , encodeRegistryEntry
+        , isExpired
+        , snapshotForJeopardy
+        , updateEntryTimer
+        )
 import Sync exposing (decodeIQTestCountdownState, decodeIQTestState)
 import Set
 import Test exposing (Test, describe, test)
@@ -100,7 +110,7 @@ registrySuite =
     describe "RegistryEntry winText codec"
         [ test "round-trips winText through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0 }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -112,6 +122,57 @@ registrySuite =
                     |> Decode.decodeString decodeRegistryEntry
                     |> Result.map .winText
                     |> Expect.equal (Ok "")
+        ]
+
+
+timerSuite : Test
+timerSuite =
+    describe "RegistryEntry.timerEndsAt"
+        [ test "round-trips a set deadline through encode/decode" <|
+            \_ ->
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345 }
+                    |> encodeRegistryEntry
+                    |> Encode.encode 0
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .timerEndsAt
+                    |> Expect.equal (Ok (Just 12345))
+        , test "defaults timerEndsAt to Nothing for older rows missing the field" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .timerEndsAt
+                    |> Expect.equal (Ok Nothing)
+        , test "updateEntryTimer sets the deadline only on the matching uuid" <|
+            \_ ->
+                [ entry "uuid1", entry "uuid2" ]
+                    |> updateEntryTimer "uuid1" 999
+                    |> List.map (\e -> ( e.uuid, e.timerEndsAt ))
+                    |> Expect.equal [ ( "uuid1", Just 999 ), ( "uuid2", Nothing ) ]
+        , test "isExpired is False when no deadline has been established yet" <|
+            \_ ->
+                entry "uuid1"
+                    |> isExpired 1000000
+                    |> Expect.equal False
+        , test "isExpired is False before the deadline" <|
+            \_ ->
+                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000 }
+                    |> isExpired 1000
+                    |> Expect.equal False
+        , test "isExpired is True once now reaches the deadline" <|
+            \_ ->
+                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000 }
+                    |> isExpired 1000
+                    |> Expect.equal True
+        , test "timerSyncEnvelope carries the deadline under timerSync.timerEndsAt" <|
+            \_ ->
+                timerSyncEnvelope 4242
+                    |> Decode.decodeValue (Decode.at [ "timerSync", "timerEndsAt" ] Decode.float)
+                    |> Expect.equal (Ok 4242)
+        , test "timedOutEnvelope tags its payload as timedOut" <|
+            \_ ->
+                timedOutEnvelope
+                    |> Decode.decodeValue (Decode.field "payload" Decode.string)
+                    |> Expect.equal (Ok "timedOut")
         ]
 
 
@@ -174,6 +235,7 @@ entry uuid =
     , winText = ""
     , iqTimer = Nothing
     , quizProgress = 0
+    , timerEndsAt = Nothing
     }
 
 
@@ -208,6 +270,7 @@ distUndeployMsg clientId uuid =
     MessageReceived
         { clientId = clientId
         , payload = clientEnvelope "distUndeploy" [ ( "uuid", Encode.string uuid ) ]
+        , now = 0
         }
 
 
@@ -220,6 +283,7 @@ saveMsg clientId uuid json =
                 [ ( "uuid", Encode.string uuid )
                 , ( "json", Encode.string json )
                 ]
+        , now = 0
         }
 
 
@@ -475,7 +539,7 @@ advancedLoud outcome =
 
 iqTimerMsg : String -> String -> Msg
 iqTimerMsg clientId variant =
-    MessageReceived { clientId = clientId, payload = clientEnvelope variant [] }
+    MessageReceived { clientId = clientId, payload = clientEnvelope variant [], now = 0 }
 
 
 iqLogicSuite : Test
@@ -1132,6 +1196,7 @@ persistIqTimerInRegistrySuite =
                           , winText = ""
                           , iqTimer = Nothing
                           , quizProgress = 0
+                          , timerEndsAt = Nothing
                           }
                         ]
 
@@ -1168,6 +1233,7 @@ persistIqTimerInRegistrySuite =
                           , winText = ""
                           , iqTimer = Just (Encode.object [ ( "epoch", Encode.int 1 ) ])
                           , quizProgress = 0
+                          , timerEndsAt = Nothing
                           }
                         ]
 
@@ -1194,6 +1260,7 @@ persistIqTimerInRegistrySuite =
                           , winText = ""
                           , iqTimer = Nothing
                           , quizProgress = 0
+                          , timerEndsAt = Nothing
                           }
                         ]
 
@@ -1250,7 +1317,7 @@ iqPersistenceRoutingSuite =
                         Encode.encode 0 (editedScreenState "IQTestCountdownScreen" [ ( "questionIdx", Encode.int 0 ), ( "countdown", Encode.int 9999 ), ( "totalDings", Encode.int 100 ) ])
 
                     ( m, _ ) =
-                        update (MessageReceived { clientId = "c1", payload = clientEnvelope "stateUpdate" [ ( "json", Encode.string bogusReport ) ] }) staged
+                        update (MessageReceived { clientId = "c1", payload = clientEnvelope "stateUpdate" [ ( "json", Encode.string bogusReport ) ], now = 0 }) staged
 
                     entryOf =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
@@ -1309,6 +1376,7 @@ quizAdvancedMsg clientId idx =
     MessageReceived
         { clientId = clientId
         , payload = clientEnvelope "quizAdvanced" [ ( "idx", Encode.int idx ) ]
+        , now = 0
         }
 
 

@@ -35,6 +35,30 @@ type alias Model =
     }
 
 
+-- ── Session-timer server-side logic ──────────────────────────────────────────
+-- The whole-game 7-day session deadline. The server is the sole owner of it (see
+-- RegistryEntry.timerEndsAt): it establishes the value once, on a player's first
+-- stateRequest, and independently decides expiry off its own clock (the `now`
+-- carried on every MessageReceived -- see server/index.js's Date.now()) rather than
+-- trusting the client's local clock at all.
+
+
+-- Set to True to enable a short debug session length, matching the pattern in
+-- Game.IQTest.debug.
+debug : Bool
+debug =
+    False
+
+
+timeLimitMs : Float
+timeLimitMs =
+    if debug then
+        600000
+
+    else
+        7 * 24 * 60 * 60 * 1000
+
+
 {-| Where a player is in the server-driven IQ test. The server owns all timing
 and the whole ding/question count; the client only renders and reports raw input.
 -}
@@ -104,7 +128,7 @@ type DingKind
 type Msg
     = ClientConnected String
     | ClientDisconnected String
-    | MessageReceived { clientId : String, payload : Encode.Value }
+    | MessageReceived { clientId : String, payload : Encode.Value, now : Float }
     | FileRead String (Result String String)
     | AuthCompleted { clientId : String, success : Bool, level : Int, uuid : String }
     | WriteFileCompleted { path : String, ok : Bool, error : Maybe String }
@@ -989,7 +1013,7 @@ update msg model =
                         Nothing ->
                             ( baseModel, Cmd.none )
 
-        MessageReceived { clientId, payload } ->
+        MessageReceived { clientId, payload, now } ->
             case Decode.decodeValue decodeClientEnvelope payload of
                 Ok (ClientStateRequest uuid) ->
                     if Set.member uuid model.pendingStateEdits then
@@ -1028,10 +1052,37 @@ update msg model =
 
                                     connectedModel =
                                         { model | connectedPlayers = Dict.insert uuid clientId model.connectedPlayers }
+
+                                    -- Establish the session deadline on this player's very
+                                    -- first stateRequest ever; every later one just reuses
+                                    -- whatever's already on file (see RegistryEntry.timerEndsAt).
+                                    deadline =
+                                        Maybe.withDefault (now + timeLimitMs) entry.timerEndsAt
+
+                                    registryWithTimer =
+                                        updateEntryTimer uuid deadline model.registry
                                 in
-                                if screenTag == "" || screenTag == "BeginScreen" then
-                                    ( connectedModel
-                                    , sendToClient { clientId = clientId, payload = stateEnvelope storedState }
+                                if isExpired now { entry | timerEndsAt = Just deadline } then
+                                    -- The server's own clock says this session is already over.
+                                    -- Reply with only the timeout push -- never combined with a
+                                    -- stateEnvelope in the same batch, since the client's
+                                    -- stateEnvelope handling can set `screen` too and whichever
+                                    -- message the client processed second would win (see the
+                                    -- same ordering note on the ClientStateUpdate branch below).
+                                    ( { connectedModel | registry = registryWithTimer }
+                                    , Cmd.batch
+                                        [ writeRegistry registryWithTimer
+                                        , sendToClient { clientId = clientId, payload = timedOutEnvelope }
+                                        ]
+                                    )
+
+                                else if screenTag == "" || screenTag == "BeginScreen" then
+                                    ( { connectedModel | registry = registryWithTimer }
+                                    , Cmd.batch
+                                        [ writeRegistry registryWithTimer
+                                        , sendToClient { clientId = clientId, payload = stateEnvelope storedState }
+                                        , sendToClient { clientId = clientId, payload = timerSyncEnvelope deadline }
+                                        ]
                                     )
 
                                 else
@@ -1040,12 +1091,13 @@ update msg model =
                                             snapshotForJeopardy storedState
 
                                         newRegistry =
-                                            updateEntryState uuid snapshotted model.registry
+                                            updateEntryState uuid snapshotted registryWithTimer
                                     in
                                     ( { connectedModel | registry = newRegistry }
                                     , Cmd.batch
                                         [ writeRegistry newRegistry
                                         , sendToClient { clientId = clientId, payload = stateEnvelope snapshotted }
+                                        , sendToClient { clientId = clientId, payload = timerSyncEnvelope deadline }
                                         ]
                                     )
 
@@ -1074,12 +1126,35 @@ update msg model =
 
                                         Nothing ->
                                             rawRegistry
+
+                                -- The client already syncs its full state roughly every
+                                -- second, so this ride-along check is all the server needs
+                                -- to independently detect expiry off its own clock -- no
+                                -- separate polling/scheduling required.
+                                expired =
+                                    newRegistry
+                                        |> List.filter (\e -> e.uuid == uuid)
+                                        |> List.head
+                                        |> Maybe.map (isExpired now)
+                                        |> Maybe.withDefault False
                             in
                             ( { model | registry = newRegistry }
-                            , Cmd.batch
-                                [ writeRegistry newRegistry
-                                , sendToClient { clientId = clientId, payload = stateUpdateAckEnvelope }
-                                ]
+                            , if expired then
+                                -- Persist the incoming state as usual, but reply with only
+                                -- the timeout push instead of the normal ack -- never both
+                                -- in the same batch, since the client's ack handling can
+                                -- also set `screen` and whichever message it processed
+                                -- second would win.
+                                Cmd.batch
+                                    [ writeRegistry newRegistry
+                                    , sendToClient { clientId = clientId, payload = timedOutEnvelope }
+                                    ]
+
+                              else
+                                Cmd.batch
+                                    [ writeRegistry newRegistry
+                                    , sendToClient { clientId = clientId, payload = stateUpdateAckEnvelope }
+                                    ]
                             )
 
                 Ok (ClientDistRegister info) ->
@@ -1114,6 +1189,7 @@ update msg model =
                                             , winText = ""
                                             , iqTimer = Nothing
                                             , quizProgress = 0
+                                            , timerEndsAt = Nothing
                                             }
 
                                         newRegistry =
@@ -1154,6 +1230,7 @@ update msg model =
                                         , winText = winText
                                         , iqTimer = Nothing
                                         , quizProgress = 0
+                                        , timerEndsAt = Nothing
                                         }
 
                                     newRegistry =
@@ -1265,6 +1342,11 @@ update msg model =
                                         -- Carry quiz progress forward too -- a build replacement
                                         -- shouldn't reset a returning player's earned progress.
                                         , quizProgress = oldEntry |> Maybe.map .quizProgress |> Maybe.withDefault 0
+
+                                        -- Carry the session deadline forward too, for the same
+                                        -- reason: a build replacement shouldn't grant (or cost)
+                                        -- extra time on the 7-day clock.
+                                        , timerEndsAt = oldEntry |> Maybe.andThen .timerEndsAt
                                         }
 
                                     newRegistry =
@@ -1686,7 +1768,7 @@ port onConnection : (String -> msg) -> Sub msg
 
 port onDisconnection : (String -> msg) -> Sub msg
 
-port onMessage : ({ clientId : String, payload : Encode.Value } -> msg) -> Sub msg
+port onMessage : ({ clientId : String, payload : Encode.Value, now : Float } -> msg) -> Sub msg
 
 port sendToClient : { clientId : String, payload : Encode.Value } -> Cmd msg
 
