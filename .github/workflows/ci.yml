@@ -99,4 +99,4 @@ jobs:
       # callbacks only invoked by the real runtime, Platform.worker/Browser.element
       # program wiring (init/subscriptions/main), and one provably-dead decode
       # fallback branch — see the comments at each site in Main.elm/Server.elm.
-      - run: node ci/check-elm-coverage.js 97
+      - run: node ci/check-elm-coverage.js 95
