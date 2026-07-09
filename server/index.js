@@ -133,8 +133,11 @@ if (require.main === module) {
 
             // Every other message (including distUndeploy / distList / distStateEdit /
             // distStateEditSave / distRegister) forwards straight to the Elm worker, which
-            // gates admin ops behind the requestAuth/authResult ports.
-            app.ports.onMessage.send({ clientId, payload: msg });
+            // gates admin ops behind the requestAuth/authResult ports. `now` gives the Elm
+            // worker (a Platform.worker with no wall clock of its own otherwise) its own
+            // server-side timestamp for e.g. the 7-day session-timer deadline, rather than
+            // trusting anything the client itself reports.
+            app.ports.onMessage.send({ clientId, payload: msg, now: Date.now() });
         });
 
         ws.on('close', () => {

@@ -23,7 +23,16 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event.pull_request.merged == true
     steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BYPASS_APP_ID }}
+          private-key: ${{ secrets.BYPASS_APP_PRIVATE_KEY }}
+          
       - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
 
       - uses: actions/setup-node@v4
         with:
@@ -37,8 +46,8 @@ jobs:
 
       - name: Commit and push
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "maxbrennan[bot]"
+          git config user.email "maxbrennan[bot]@users.noreply.github.com"
           NEW_VERSION=$(node -p "require('./package.json').version")
           git add package.json package-lock.json
           git commit -m "Bump version to $NEW_VERSION [skip ci]"

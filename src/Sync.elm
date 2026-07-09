@@ -21,6 +21,8 @@ type ServerEnvelope
     | ServerIqStartLoud
     | ServerIqTestComplete
     | ServerQuizAnswerResult { idx : Int, correct : Bool, revealAnswer : String }
+    | ServerTimerSync Float
+    | ServerTimedOut
     | ServerUnknown
 
 
@@ -82,6 +84,18 @@ decodeServerEnvelope =
                             -- correct may be absent; treat a missing flag as false.
                             (Decode.oneOf [ Decode.at [ "quizAnswerResult", "correct" ] Decode.bool, Decode.succeed False ])
                             (Decode.oneOf [ Decode.at [ "quizAnswerResult", "revealAnswer" ] Decode.string, Decode.succeed "" ])
+
+                    "timerSync" ->
+                        -- protobufjs omits a scalar field left at its zero value, but
+                        -- timerEndsAt is always a large epoch-ms deadline in practice.
+                        Decode.oneOf
+                            [ Decode.at [ "timerSync", "timerEndsAt" ] Decode.float
+                            , Decode.succeed 0
+                            ]
+                            |> Decode.map ServerTimerSync
+
+                    "timedOut" ->
+                        Decode.succeed ServerTimedOut
 
                     _ ->
                         Decode.succeed ServerUnknown
@@ -367,7 +381,6 @@ encodeModel model =
         , ( "dingKey", Encode.int model.dingKey )
         , ( "pendingStartTime", encodeMaybeFloat model.pendingStartTime )
         , ( "wsClientId", encodeMaybeString model.wsClientId )
-        , ( "timerEndsAt", Encode.float model.timerEndsAt )
         ]
 
 
@@ -579,23 +592,27 @@ decodePausedState =
 
 decodeModel : Decoder Model
 decodeModel =
-    Decode.map7
-        (\scr jp n pend ss dk pst ->
-            \wci tea ->
-                { screen = scr
-                , jeopardyPlaying = jp
-                , now = n
-                , pending = pend
-                , savedState = ss
-                , dingKey = dk
-                , pendingStartTime = pst
-                , wsClientId = wci
-                , timerEndsAt = tea
-                , myUuid = Nothing
-                , wsUrl = ""
-                , questions = []
-                , awaitingAnswerResult = False
-                }
+    -- timerEndsAt is deliberately not decoded here: the session deadline is now
+    -- server-owned (see RegistryEntry.timerEndsAt / timerSyncEnvelope) and delivered
+    -- only via the dedicated ServerTimerSync message, never round-tripped through the
+    -- client's own persisted state. The caller preserves the model's live timerEndsAt
+    -- across this decode (see Main.elm's ServerStateUpdate handler).
+    Decode.map8
+        (\scr jp n pend ss dk pst wci ->
+            { screen = scr
+            , jeopardyPlaying = jp
+            , now = n
+            , pending = pend
+            , savedState = ss
+            , dingKey = dk
+            , pendingStartTime = pst
+            , wsClientId = wci
+            , timerEndsAt = 0
+            , myUuid = Nothing
+            , wsUrl = ""
+            , questions = []
+            , awaitingAnswerResult = False
+            }
         )
         (Decode.field "screen" decodeScreen)
         (Decode.field "jeopardyPlaying" Decode.bool)
@@ -604,9 +621,4 @@ decodeModel =
         (Decode.field "savedState" (Decode.nullable decodePausedState))
         (Decode.field "dingKey" Decode.int)
         (Decode.field "pendingStartTime" (Decode.nullable Decode.float))
-        |> Decode.andThen
-            (\partial ->
-                Decode.map2 partial
-                    (Decode.field "wsClientId" (Decode.nullable Decode.string))
-                    (Decode.field "timerEndsAt" Decode.float)
-            )
+        (Decode.field "wsClientId" (Decode.nullable Decode.string))

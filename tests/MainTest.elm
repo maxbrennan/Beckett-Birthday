@@ -112,21 +112,7 @@ suite =
 tickSuite : Test
 tickSuite =
     describe "Tick"
-        [ test "times a screen out once past timerEndsAt" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update (Tick 5000) { baseModel | screen = BeginScreen, timerEndsAt = 4000 }
-                in
-                result.screen |> Expect.equal TimedOutScreen
-        , test "does not time out a connection-status screen" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update (Tick 5000) { baseModel | screen = WsConnectingScreen, timerEndsAt = 4000 }
-                in
-                result.screen |> Expect.equal WsConnectingScreen
-        , test "fires a due pending event and drops it from pending" <|
+        [ test "fires a due pending event and drops it from pending" <|
             \_ ->
                 let
                     model =
@@ -1212,6 +1198,27 @@ wsDataReceivedSuite =
                         update (WsDataReceived (stateUpdateEnvelope modelJsonWithVideoResume)) { baseModel | screen = WsLoadingScreen }
                 in
                 cmd |> Expect.notEqual Cmd.none
+        , test "stateUpdate restore preserves the live timerEndsAt rather than the decoded placeholder" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (stateUpdateEnvelope validModelJson)) { baseModel | screen = WsLoadingScreen, timerEndsAt = 99999 }
+                in
+                result.timerEndsAt |> Expect.equal 99999
+        , test "timerSync sets the server-delivered deadline for display" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"timerSync","timerSync":{"timerEndsAt":123456}}""") baseModel
+                in
+                result.timerEndsAt |> Expect.equal 123456
+        , test "timedOut forces the timed-out screen regardless of the current screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"timedOut","timedOut":{}}""") { baseModel | screen = BlankScreen 2 }
+                in
+                result.screen |> Expect.equal TimedOutScreen
         ]
 
 
@@ -1229,27 +1236,6 @@ remainingEdgeCasesSuite =
                     , \m -> m.screen |> Expect.equal BeginScreen
                     ]
                     result
-        , test "Tick does not time out WsErrorScreen" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update (Tick 5000) { baseModel | screen = WsErrorScreen, timerEndsAt = 4000 }
-                in
-                result.screen |> Expect.equal WsErrorScreen
-        , test "Tick does not time out WsLoadingScreen" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update (Tick 5000) { baseModel | screen = WsLoadingScreen, timerEndsAt = 4000 }
-                in
-                result.screen |> Expect.equal WsLoadingScreen
-        , test "Tick does not re-time-out an already-timed-out screen" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update (Tick 5000) { baseModel | screen = TimedOutScreen, timerEndsAt = 4000 }
-                in
-                result.screen |> Expect.equal TimedOutScreen
         , test "a WsDisconnected burst dedupes an already-queued reconnect" <|
             \_ ->
                 let

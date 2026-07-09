@@ -150,28 +150,6 @@ iqFail model state =
     )
 
 
--- Whether a Tick landing past timerEndsAt should actually time the game out --
--- false on the connection-status screens, since the clock hasn't meaningfully
--- started for the player yet.
-screenAllowsTimeout : Screen -> Bool
-screenAllowsTimeout screen =
-    case screen of
-        WsConnectingScreen ->
-            False
-
-        WsErrorScreen ->
-            False
-
-        WsLoadingScreen ->
-            False
-
-        TimedOutScreen ->
-            False
-
-        _ ->
-            True
-
-
 -- Unwraps a BlankScreen index through the CheckingAnswerScreen/ConfirmingAnswerScreen
 -- wrappers a screen may be paused/synced under.
 innerBlankIdx : Screen -> Maybe Int
@@ -271,7 +249,7 @@ update msg model =
         -- The first Tick (model.now == 0) just initialises the clock without firing.
         Tick t ->
             if model.now == 0 then
-                ( { model | now = t, timerEndsAt = t + timeLimitMs }, Cmd.none )
+                ( { model | now = t }, Cmd.none )
 
             else
                 let
@@ -280,26 +258,20 @@ update msg model =
 
                     baseModel =
                         { model | now = t, pending = stillPending }
-
-                    ( finalModel, finalCmd ) =
-                        List.foldl
-                            (\event ( m, cmd ) ->
-                                let
-                                    ( m2, cmd2 ) =
-                                        update event.msg m
-                                in
-                                ( m2, Cmd.batch [ cmd, cmd2 ] )
-                            )
-                            ( baseModel, Cmd.none )
-                            due
-
-                    timedOut =
-                        finalModel.timerEndsAt > 0 && t >= finalModel.timerEndsAt && screenAllowsTimeout finalModel.screen
                 in
-                if timedOut then
-                    ( { finalModel | screen = TimedOutScreen }, finalCmd )
-                else
-                    ( finalModel, finalCmd )
+                -- Whether the session has timed out is a server decision (see
+                -- Server.elm's ClientStateUpdate handling / the ServerTimedOut case
+                -- below), not something the client computes from its own clock.
+                List.foldl
+                    (\event ( m, cmd ) ->
+                        let
+                            ( m2, cmd2 ) =
+                                update event.msg m
+                        in
+                        ( m2, Cmd.batch [ cmd, cmd2 ] )
+                    )
+                    ( baseModel, Cmd.none )
+                    due
 
         
         BeginPressed ->
@@ -596,6 +568,7 @@ update msg model =
                                             , myUuid = model.myUuid
                                             , wsUrl = model.wsUrl
                                             , questions = model.questions
+                                            , timerEndsAt = model.timerEndsAt
                                           }
                                         , videoCmd
                                         )
@@ -772,6 +745,16 @@ update msg model =
 
                         _ ->
                             ( model, Cmd.none )
+
+                Ok (ServerTimerSync deadline) ->
+                    -- Delivered once per stateRequest (see Server.elm's
+                    -- ClientStateRequest handling): the server-established 7-day
+                    -- deadline, for display only -- the client never computes it.
+                    ( { model | timerEndsAt = deadline }, Cmd.none )
+
+                Ok ServerTimedOut ->
+                    -- The server's own clock decided the session is over.
+                    ( { model | screen = TimedOutScreen }, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )

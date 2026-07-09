@@ -230,6 +230,29 @@ winTextEnvelope text =
         ]
 
 
+-- Delivers the server-established 7-day-session deadline (epoch ms). Sent once per
+-- stateRequest, alongside the normal stateUpdate, so the client can render the
+-- countdown without ever computing or reporting the deadline itself (see
+-- RegistryEntry.timerEndsAt in Server.Registry).
+timerSyncEnvelope : Float -> Encode.Value
+timerSyncEnvelope timerEndsAt =
+    Encode.object
+        [ ( "payload", Encode.string "timerSync" )
+        , ( "timerSync", Encode.object [ ( "timerEndsAt", Encode.float timerEndsAt ) ] )
+        ]
+
+
+-- Pushed in place of the normal ack/state response once the server's own clock (see
+-- Registry.isExpired) confirms this player's deadline has passed -- the server decides
+-- the timeout, never the client's own clock.
+timedOutEnvelope : Encode.Value
+timedOutEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "timedOut" )
+        , ( "timedOut", Encode.object [] )
+        ]
+
+
 rejectEnvelope : String -> Encode.Value
 rejectEnvelope reason =
     Encode.object
