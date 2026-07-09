@@ -19,10 +19,16 @@ type alias RegistryEntry =
     -- exists so a server restart can rehydrate the in-memory iqTimers Dict
     -- (see Server.elm's init) instead of silently losing a player's progress.
     -- Every other screen still round-trips through `state` alone, written
-    -- verbatim from the client's own stateUpdate. A future PR generalizing
-    -- server-side ownership beyond the IQ test would likely replace this
-    -- field with something less IQ-specific.
+    -- verbatim from the client's own stateUpdate. quizProgress below is the
+    -- generalization of this idea to the quiz phase specifically.
     , iqTimer : Maybe Encode.Value
+
+    -- The furthest quiz question index (see Server.elm's quizProgress Dict)
+    -- the server has independently confirmed this player has passed, via
+    -- explicit quizAdvanced events rather than the client-reported `state`
+    -- blob. Lets a server restart rehydrate quizProgress without trusting
+    -- (or losing) anything the client itself claims about its screen.
+    , quizProgress : Int
     }
 
 
@@ -44,6 +50,7 @@ encodeRegistryEntry entry =
         , ( "pendingStateEdit", Encode.bool entry.pendingStateEdit )
         , ( "winText", Encode.string entry.winText )
         , ( "iqTimer", Maybe.withDefault Encode.null entry.iqTimer )
+        , ( "quizProgress", Encode.int entry.quizProgress )
         ]
 
 
@@ -80,7 +87,7 @@ decodeOptionalValue name =
 
 decodeRegistryEntry : Decode.Decoder RegistryEntry
 decodeRegistryEntry =
-    Decode.map7 RegistryEntry
+    Decode.map8 RegistryEntry
         (Decode.field "uuid" Decode.string)
         (Decode.field "filename" Decode.string)
         (Decode.field "platform" Decode.string)
@@ -95,6 +102,10 @@ decodeRegistryEntry =
         )
         -- older rows predate the IQ timer snapshot; treat missing as Nothing.
         (decodeOptionalValue "iqTimer")
+        -- older rows predate quiz progress tracking; treat missing as 0.
+        (Decode.maybe (Decode.field "quizProgress" Decode.int)
+            |> Decode.map (Maybe.withDefault 0)
+        )
 
 
 parseRegistryJsonl : String -> List RegistryEntry
@@ -181,6 +192,19 @@ updateEntryIqTimer uuid newIqTimer =
         (\e ->
             if e.uuid == uuid then
                 { e | iqTimer = newIqTimer }
+
+            else
+                e
+        )
+
+
+-- Mirrors updateEntryIqTimer but for the plain integer quiz-progress counter.
+updateEntryQuizProgress : String -> Int -> List RegistryEntry -> List RegistryEntry
+updateEntryQuizProgress uuid newQuizProgress =
+    List.map
+        (\e ->
+            if e.uuid == uuid then
+                { e | quizProgress = newQuizProgress }
 
             else
                 e

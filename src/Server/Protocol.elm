@@ -21,6 +21,7 @@ type ClientEnvelope
     | ClientIqReadyForDing
     | ClientIqCaught
     | ClientIqResume
+    | ClientQuizAdvanced Int
     | ClientUnknown
 
 
@@ -109,6 +110,10 @@ decodeClientEnvelope =
 
                     "iqResume" ->
                         Decode.succeed ClientIqResume
+
+                    "quizAdvanced" ->
+                        Decode.map ClientQuizAdvanced
+                            (Decode.at [ "quizAdvanced", "idx" ] Decode.int)
 
                     _ ->
                         Decode.succeed ClientUnknown
@@ -206,39 +211,17 @@ distListResultEnvelope entries =
         ]
 
 
--- Dedicated message carrying the player's win text. Sent only when the incoming state
--- sync shows the player is winning (see stateIsWin), so the text reaches the client at
--- win time without ever living in the client bundle.
+-- Dedicated message carrying the player's win text. Sent only when the server's own
+-- tracked quiz progress (see Server.elm's quizProgress/acceptQuizAdvance/
+-- quizJustCompleted) independently confirms the player has passed every question, so
+-- the text reaches the client at win time without ever living in the client bundle
+-- or being grantable by a self-reported client claim.
 winTextEnvelope : String -> Encode.Value
 winTextEnvelope text =
     Encode.object
         [ ( "payload", Encode.string "winText" )
         , ( "winText", Encode.object [ ( "text", Encode.string text ) ] )
         ]
-
-
--- True when an opaque player-state value represents (or is transitioning into) the
--- win screen. The client reveals the win screen only on the winText message, so we look
--- at the top-level screen tag and, when it is a CheckingAnswerScreen/ConfirmingAnswerScreen
--- wrapper, the nested nextScreen tag, to spot the pending WinScreen.
-stateIsWin : Encode.Value -> Bool
-stateIsWin state =
-    let
-        tagAt path =
-            Decode.decodeValue (Decode.at path Decode.string) state
-                |> Result.withDefault ""
-
-        topTag =
-            tagAt [ "screen", "tag" ]
-    in
-    if topTag == "WinScreen" then
-        True
-
-    else if topTag == "CheckingAnswerScreen" || topTag == "ConfirmingAnswerScreen" then
-        tagAt [ "screen", "nextScreen", "tag" ] == "WinScreen"
-
-    else
-        False
 
 
 rejectEnvelope : String -> Encode.Value
