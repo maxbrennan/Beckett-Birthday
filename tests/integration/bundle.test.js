@@ -29,3 +29,22 @@ describe('client bundle does not contain the win text', () => {
         expect(bundle.includes('claim your reward')).toBe(false);
     });
 });
+
+// Guards issue #54: quiz answers must live only on the server (in
+// config/quiz-questions.json, read server-side and never bundled). Unlike the
+// win text above, answers were never compiled into Elm source as literals —
+// they're loaded from config at runtime — so scanning elm-client.js for
+// answer substrings isn't meaningful (and is prone to false positives: e.g.
+// the real answer "Style" collides with Elm's compiled CSS-`style` runtime
+// code). The actual leak vector is the bundled *config file*, guarded here
+// and in tests/unit/quiz-manifest.test.js's package.json build.files check.
+describe('client bundle config does not contain quiz answers', () => {
+    test('config/quiz-manifest.json (the only quiz config the client bundles) carries no answers field', () => {
+        const manifest = JSON.parse(
+            fs.readFileSync(path.join(PROJECT_ROOT, 'config', 'quiz-manifest.json'), 'utf8')
+        );
+        manifest.forEach((entry) => {
+            expect(entry).not.toHaveProperty('answers');
+        });
+    });
+});

@@ -9,9 +9,12 @@ import Json.Decode as Decode
 -- Each entry: song file in assets/songs/ and the list of accepted answer strings.
 -- Answers are compared case-insensitively after normalization (see `normalize`).
 --
--- The question list itself lives in `config/quiz-questions.json` so it can
--- be edited per-version without touching Elm source. It is loaded at startup via
--- the `readFile` port and decoded with `decodeQuestions` below.
+-- The question list itself lives in `config/quiz-questions.json` so it can be
+-- edited per-version without touching Elm source. Only Server.elm reads it (via
+-- the `readFile` port and `decodeQuestions`) -- it is never bundled into the
+-- client. The client instead loads `config/quiz-manifest.json` (song filenames
+-- only, decoded with `decodeSongManifest` into `SongEntry`s), so answers never
+-- leave the server (see #54).
 
 
 type alias Question =
@@ -33,10 +36,29 @@ decodeQuestions raw =
         |> Result.withDefault []
 
 
+-- The client-safe counterpart to Question: just the filename, no answers (see
+-- #54). Loaded from config/quiz-manifest.json -- the only quiz config the
+-- client ever reads. config/quiz-questions.json (song + answers) is read only
+-- by the server.
+type alias SongEntry =
+    { song : String }
+
+
+songEntryDecoder : Decode.Decoder SongEntry
+songEntryDecoder =
+    Decode.map SongEntry (Decode.field "song" Decode.string)
+
+
+decodeSongManifest : String -> List SongEntry
+decodeSongManifest raw =
+    Decode.decodeString (Decode.list songEntryDecoder) raw
+        |> Result.withDefault []
+
+
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-getQuestion : List Question -> Int -> Maybe Question
+getQuestion : List a -> Int -> Maybe a
 getQuestion questions idx =
     List.head (List.drop idx questions)
 

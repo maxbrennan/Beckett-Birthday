@@ -23,6 +23,8 @@ import Sync
         , iqReadyForDingEnvelope
         , iqResumeEnvelope
         , iqStartCountdownEnvelope
+        , quizAdvancedEnvelope
+        , quizAnswerSubmittedEnvelope
         , stateRequestEnvelope
         )
 import Test exposing (Test, describe, test)
@@ -59,8 +61,8 @@ screenRoundTripTests =
             \_ -> Expect.equal WsErrorScreen (roundTripScreen WsErrorScreen)
         , test "WsLoadingScreen" <|
             \_ -> Expect.equal WsLoadingScreen (roundTripScreen WsLoadingScreen)
-        , test "WrongAnswerScreen carries its index" <|
-            \_ -> Expect.equal (WrongAnswerScreen 5) (roundTripScreen (WrongAnswerScreen 5))
+        , test "WrongAnswerScreen carries its index but deliberately drops the reveal text on encode (never persisted)" <|
+            \_ -> Expect.equal (WrongAnswerScreen 5 "") (roundTripScreen (WrongAnswerScreen 5 "top secret answer"))
         , test "IQTestScreen carries its state" <|
             \_ -> Expect.equal (IQTestScreen { questionIdx = 1, totalDings = 100 }) (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100 }))
         , test "IQTestCountdownScreen carries its state" <|
@@ -195,6 +197,7 @@ modelWithSavedStateRoundTripTests =
             , myUuid = Nothing
             , wsUrl = ""
             , questions = []
+            , awaitingAnswerResult = False
             }
     in
     describe "encodeModel / decodeModel round-trip with a saved state"
@@ -221,6 +224,18 @@ iqEnvelopeBuilderTests =
         ]
 
 
+quizEnvelopeBuilderTests : Test
+quizEnvelopeBuilderTests =
+    describe "quiz client->server envelope builders"
+        [ test "quizAdvancedEnvelope carries the idx" <|
+            \_ -> Encode.encode 0 (quizAdvancedEnvelope 3) |> Expect.equal """{"payload":"quizAdvanced","quizAdvanced":{"idx":3}}"""
+        , test "quizAnswerSubmittedEnvelope carries the idx and answer" <|
+            \_ ->
+                Encode.encode 0 (quizAnswerSubmittedEnvelope { idx = 2, answer = "Alpha" })
+                    |> Expect.equal """{"payload":"quizAnswerSubmitted","quizAnswerSubmitted":{"idx":2,"answer":"Alpha"}}"""
+        ]
+
+
 modelRoundTripTests : Test
 modelRoundTripTests =
     let
@@ -238,6 +253,7 @@ modelRoundTripTests =
             , myUuid = Just "should-not-round-trip"
             , wsUrl = "wss://example.com"
             , questions = []
+            , awaitingAnswerResult = True
             }
 
         decoded =
@@ -255,11 +271,13 @@ modelRoundTripTests =
 
                     Err err ->
                         Expect.fail (Decode.errorToString err)
-        , test "myUuid/wsUrl/questions are NOT persisted — decodeModel always resets them" <|
+        , test "myUuid/wsUrl/questions/awaitingAnswerResult are NOT persisted — decodeModel always resets them" <|
             \_ ->
                 case decoded of
                     Ok m ->
-                        Expect.equal ( Nothing, "", [] ) ( m.myUuid, m.wsUrl, m.questions )
+                        Expect.equal
+                            { myUuid = Nothing, wsUrl = "", questions = [], awaitingAnswerResult = False }
+                            { myUuid = m.myUuid, wsUrl = m.wsUrl, questions = m.questions, awaitingAnswerResult = m.awaitingAnswerResult }
 
                     Err err ->
                         Expect.fail (Decode.errorToString err)
@@ -321,6 +339,14 @@ serverEnvelopeTests =
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"iqTestComplete"}"""
                     |> Expect.equal (Ok ServerIqTestComplete)
+        , test "quizAnswerResult with all fields present" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"quizAnswerResult","quizAnswerResult":{"idx":2,"correct":false,"revealAnswer":"Alpha"}}"""
+                    |> Expect.equal (Ok (ServerQuizAnswerResult { idx = 2, correct = False, revealAnswer = "Alpha" }))
+        , test "quizAnswerResult defaults correct/revealAnswer to false/\"\" when protobufjs omits them" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"quizAnswerResult","quizAnswerResult":{"idx":0}}"""
+                    |> Expect.equal (Ok (ServerQuizAnswerResult { idx = 0, correct = False, revealAnswer = "" }))
         ]
 
 
@@ -349,6 +375,7 @@ envelopeBuilderTests =
                         , myUuid = Nothing
                         , wsUrl = ""
                         , questions = []
+                        , awaitingAnswerResult = False
                         }
                 in
                 clientStateEnvelope model

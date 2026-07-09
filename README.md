@@ -88,7 +88,9 @@ cp localhost+2-key.pem certs/key.pem
 ### 1c. Quiz questions
 
 Copy the example and edit it. `config/quiz-questions.json` is git‑ignored — it holds
-the real trivia answers, which are spoilers for the birthday recipient (see §4).
+the real trivia answers, which are spoilers for the birthday recipient (see §4). It is
+read only by the **server**, never bundled into a client build (see §2) — the client
+only ever sees `config/quiz-manifest.json`, which lists song filenames with no answers.
 
 ```bash
 cp config/quiz-questions.example.json config/quiz-questions.json
@@ -100,8 +102,9 @@ cp config/quiz-questions.example.json config/quiz-questions.json
 
 ```
 config/
-  quiz-questions.json           ← trivia questions & answers, git‑ignored   (§1c, §4)
+  quiz-questions.json           ← trivia questions & answers, git‑ignored, server‑only (§1c, §4)
   quiz-questions.example.json   ← template for the above, tracked in git
+  quiz-manifest.json            ← song filenames only (no answers), tracked, client‑bundled (§4)
   win-screen.json       ← reward / win‑screen text      (§5)
 assets/
   songs/                ← all quiz songs (§6)
@@ -109,11 +112,12 @@ assets/
 .env                    ← ports, prod host, cert paths   (§1a)
 ```
 
-`config/quiz-questions.json`, `config/win-screen.json`, and everything under `assets/`
+`config/quiz-manifest.json`, `config/win-screen.json`, and everything under `assets/`
 are loaded at client **startup** and bundled into distributed builds. Editing them
 changes the game **without touching Elm source** — but already‑distributed builds must
-be rebuilt/redeployed to pick up changes. `config/quiz-questions.example.json` is a
-dev‑only template (§1c); it is neither loaded at runtime nor bundled into builds.
+be rebuilt/redeployed to pick up changes. `config/quiz-questions.json` is read only by
+the **server** (never bundled into a client build — see #54); `config/quiz-questions.example.json`
+is a dev‑only template (§1c), neither loaded at runtime nor bundled into builds.
 
 ---
 
@@ -149,8 +153,24 @@ order.
 
 ```jsonc
 [
-  { "song": "baby-shark.mp3", "answers": ["Baby Shark Hip Hop", "Baby Shark (Hip Hop Version)"] },
-  { "song": "revenge.mp4",    "answers": ["Revenge", "Revenge a Minecraft Parody"] }
+  { "song": "0.mp3", "answers": ["Baby Shark Hip Hop", "Baby Shark (Hip Hop Version)"] },
+  { "song": "3.mp4", "answers": ["Revenge", "Revenge a Minecraft Parody"] }
+]
+```
+
+`song` should be a generic, spoiler‑free filename (numeric is easiest, as above) — it
+gets bundled into the client via `config/quiz-manifest.json` (see below), so anything
+that hints at the answer defeats the point of keeping `answers` server‑only.
+
+After editing `config/quiz-questions.json`, keep **`config/quiz-manifest.json`** in
+sync: same `song` values, same order, `answers` omitted entirely. This is the file the
+client actually loads — it's what lets the client know which file to play next without
+ever seeing an answer.
+
+```jsonc
+[
+  { "song": "0.mp3" },
+  { "song": "3.mp4" }
 ]
 ```
 

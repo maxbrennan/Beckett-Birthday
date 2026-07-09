@@ -1,7 +1,7 @@
 module QuizTest exposing (..)
 
 import Expect
-import Game.Quiz exposing (AnswerOutcome(..), Question, capitalize, decideAnswer, decodeQuestions, getQuestion, isVideo, normalize)
+import Game.Quiz exposing (AnswerOutcome(..), Question, SongEntry, capitalize, decideAnswer, decodeQuestions, decodeSongManifest, getQuestion, isVideo, normalize)
 import Test exposing (Test, describe, test)
 
 
@@ -89,4 +89,42 @@ decodeQuestionsTests =
             \_ -> Expect.equal [] (decodeQuestions "not json")
         , test "returns an empty list for valid JSON that doesn't match the shape" <|
             \_ -> Expect.equal [] (decodeQuestions """[{"wrong": "shape"}]""")
+        ]
+
+
+-- The client-safe manifest (see #54): song filenames only, no answers. This
+-- is the only quiz config the client ever loads.
+decodeSongManifestTests : Test
+decodeSongManifestTests =
+    describe "decodeSongManifest"
+        [ test "decodes a well-formed JSON array of song entries" <|
+            \_ ->
+                Expect.equal
+                    [ SongEntry "0.mp3", SongEntry "1.mp4" ]
+                    (decodeSongManifest """[{"song":"0.mp3"},{"song":"1.mp4"}]""")
+        , test "ignores an answers field if one is present (defense in depth -- the manifest shouldn't have one)" <|
+            \_ ->
+                Expect.equal
+                    [ SongEntry "0.mp3" ]
+                    (decodeSongManifest """[{"song":"0.mp3","answers":["leaked"]}]""")
+        , test "returns an empty list for malformed JSON" <|
+            \_ -> Expect.equal [] (decodeSongManifest "not json")
+        , test "returns an empty list for valid JSON that doesn't match the shape" <|
+            \_ -> Expect.equal [] (decodeSongManifest """[{"wrong": "shape"}]""")
+        ]
+
+
+-- getQuestion is generic over any record with a `song` field (SongEntry or
+-- Question) -- see #54. Confirms it still works for the client-safe shape.
+getQuestionOnSongEntryTests : Test
+getQuestionOnSongEntryTests =
+    let
+        songs =
+            [ SongEntry "a.mp3", SongEntry "b.mp3" ]
+    in
+    describe "getQuestion on SongEntry"
+        [ test "returns the entry at the given index" <|
+            \_ -> Expect.equal (Just (SongEntry "b.mp3")) (getQuestion songs 1)
+        , test "returns Nothing when the index is out of range" <|
+            \_ -> Expect.equal Nothing (getQuestion songs 10)
         ]

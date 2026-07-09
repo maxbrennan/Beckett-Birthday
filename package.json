@@ -34,7 +34,7 @@
     "add-admin": "node scripts/add-admin.js"
   },
   "build": {
-    "//": "WARNING: the win text must NEVER be given to the client. config/win-screen.json is deliberately excluded from `files` below (the '!config/win-screen.json' negation) — it exists only as the deploy-time source read by scripts/deploy.js and stored server-side in builds.jsonl. Do not remove that negation or otherwise bundle the win text.",
+    "//": "WARNING: the win text must NEVER be given to the client. config/win-screen.json is deliberately excluded from `files` below (the '!config/win-screen.json' negation) — it exists only as the deploy-time source read by scripts/deploy.js and stored server-side in builds.jsonl. Do not remove that negation or otherwise bundle the win text. Same for quiz answers: config/quiz-questions.json holds them and is excluded below (see #54) — the client only ever gets config/quiz-manifest.json (song filenames, no answers).",
     "files": [
       ".env",
       "client/bridge.js",
@@ -47,7 +47,8 @@
       "app-uuid.json",
       "config/**/*",
       "!config/win-screen.json",
-      "!config/quiz-questions.example.json"
+      "!config/quiz-questions.example.json",
+      "!config/quiz-questions.json"
     ],
     "mac": {
       "icon": "assets/icon.icns",

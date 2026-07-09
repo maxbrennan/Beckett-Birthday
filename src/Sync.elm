@@ -20,6 +20,7 @@ type ServerEnvelope
     | ServerIqDing { fake : Bool, trap : Bool, dingCount : Int, totalDings : Int }
     | ServerIqStartLoud
     | ServerIqTestComplete
+    | ServerQuizAnswerResult { idx : Int, correct : Bool, revealAnswer : String }
     | ServerUnknown
 
 
@@ -72,6 +73,15 @@ decodeServerEnvelope =
 
                     "iqTestComplete" ->
                         Decode.succeed ServerIqTestComplete
+
+                    "quizAnswerResult" ->
+                        Decode.map3
+                            (\idx correct revealAnswer -> ServerQuizAnswerResult { idx = idx, correct = correct, revealAnswer = revealAnswer })
+                            (Decode.at [ "quizAnswerResult", "idx" ] Decode.int)
+                            -- protobufjs omits default (false) scalar fields, so
+                            -- correct may be absent; treat a missing flag as false.
+                            (Decode.oneOf [ Decode.at [ "quizAnswerResult", "correct" ] Decode.bool, Decode.succeed False ])
+                            (Decode.oneOf [ Decode.at [ "quizAnswerResult", "revealAnswer" ] Decode.string, Decode.succeed "" ])
 
                     _ ->
                         Decode.succeed ServerUnknown
@@ -133,6 +143,17 @@ quizAdvancedEnvelope idx =
     Encode.object
         [ ( "payload", Encode.string "quizAdvanced" )
         , ( "quizAdvanced", Encode.object [ ( "idx", Encode.int idx ) ] )
+        ]
+
+
+-- "I typed this answer for question idx" -- the server validates it against
+-- config/quiz-questions.json (never sent to the client) and replies with a
+-- quizAnswerResult message (see ServerQuizAnswerResult above).
+quizAnswerSubmittedEnvelope : { idx : Int, answer : String } -> Encode.Value
+quizAnswerSubmittedEnvelope { idx, answer } =
+    Encode.object
+        [ ( "payload", Encode.string "quizAnswerSubmitted" )
+        , ( "quizAnswerSubmitted", Encode.object [ ( "idx", Encode.int idx ), ( "answer", Encode.string answer ) ] )
         ]
 
 
@@ -234,7 +255,11 @@ encodeScreen scr =
         QuestionScreen idx s ->
             Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int idx ), ( "s", Encode.string s ) ]
 
-        WrongAnswerScreen idx ->
+        WrongAnswerScreen idx _ ->
+            -- Deliberately drop the reveal text: it must never be written into
+            -- persisted state (builds.jsonl), same as WinScreen's text. A
+            -- disconnect on this screen resets to BeginScreen anyway (see
+            -- CLAUDE.md), so the text was never going to survive a resume.
             Encode.object [ ( "tag", Encode.string "WrongAnswerScreen" ), ( "idx", Encode.int idx ) ]
 
         IQTestScreen state ->
@@ -451,7 +476,9 @@ decodeScreen =
                             (Decode.field "s" Decode.string)
 
                     "WrongAnswerScreen" ->
-                        Decode.map WrongAnswerScreen (Decode.field "idx" Decode.int)
+                        -- Text is not persisted (see encodeScreen); a disconnect
+                        -- here resets to BeginScreen before it could ever matter.
+                        Decode.map (\idx -> WrongAnswerScreen idx "") (Decode.field "idx" Decode.int)
 
                     "IQTestScreen" ->
                         Decode.map IQTestScreen (Decode.field "state" decodeIQTestScreenState)
@@ -567,6 +594,7 @@ decodeModel =
                 , myUuid = Nothing
                 , wsUrl = ""
                 , questions = []
+                , awaitingAnswerResult = False
                 }
         )
         (Decode.field "screen" decodeScreen)

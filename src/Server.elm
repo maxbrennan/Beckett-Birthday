@@ -2,7 +2,7 @@ port module Server exposing (..)
 
 import Dict exposing (Dict)
 import Game.IQTest as IQTest
-import Game.Quiz exposing (decodeQuestions)
+import Game.Quiz exposing (AnswerOutcome(..), Question, capitalize, decideAnswer, decodeQuestions, getQuestion)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Platform
@@ -32,6 +32,11 @@ type alias Model =
     -- client's own self-reported state.
     , quizProgress : Dict String Int
     , totalQuestions : Int
+
+    -- The full song+answers list read from config/quiz-questions.json (see
+    -- quizQuestionsFilePath), used to validate ClientQuizAnswerSubmitted via
+    -- Game.Quiz.decideAnswer. Never sent to the client -- see #54.
+    , quizQuestions : List Question
     }
 
 
@@ -927,6 +932,7 @@ init () =
       , seed = Random.initialSeed 0
       , quizProgress = Dict.empty
       , totalQuestions = 0
+      , quizQuestions = []
       }
     , Cmd.batch
         [ readFile registryFilePath
@@ -1445,6 +1451,81 @@ update msg model =
                                     in
                                     ( newModel, Cmd.batch [ writeRegistry newRegistry, winCmd ] )
 
+                Ok (ClientQuizAnswerSubmitted { idx, answer }) ->
+                    -- The server, not the client, holds the answers (see
+                    -- quizQuestions/quizQuestionsFilePath) and decides correctness
+                    -- via decideAnswer -- mirroring Game.Quiz's old client-side
+                    -- check, just moved here (see #54/#32). idx must still be
+                    -- exactly the player's next expected question (same
+                    -- acceptQuizAdvance gate as ClientQuizAdvanced above), so a
+                    -- correct answer for a later idx can't be used to skip ahead.
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just uuid ->
+                            let
+                                current =
+                                    Dict.get uuid model.quizProgress |> Maybe.withDefault 0
+                            in
+                            case acceptQuizAdvance { current = current, idx = idx } of
+                                Nothing ->
+                                    ( model, Cmd.none )
+
+                                Just next ->
+                                    case decideAnswer model.quizQuestions idx answer of
+                                        NoQuestion ->
+                                            ( model, Cmd.none )
+
+                                        IncorrectAnswer ->
+                                            let
+                                                revealAnswer =
+                                                    getQuestion model.quizQuestions idx
+                                                        |> Maybe.andThen (.answers >> List.head)
+                                                        |> Maybe.map capitalize
+                                                        |> Maybe.withDefault "Unknown"
+                                            in
+                                            ( model
+                                            , sendToClient
+                                                { clientId = clientId
+                                                , payload = quizAnswerResultEnvelope { idx = idx, correct = False, revealAnswer = revealAnswer }
+                                                }
+                                            )
+
+                                        _ ->
+                                            -- CorrectContinue or CorrectWin: either way the
+                                            -- answer for idx was right, so progress advances --
+                                            -- exactly the ClientQuizAdvanced branch above, plus
+                                            -- the result reply.
+                                            let
+                                                newRegistry =
+                                                    updateEntryQuizProgress uuid next model.registry
+
+                                                newModel =
+                                                    { model
+                                                        | quizProgress = Dict.insert uuid next model.quizProgress
+                                                        , registry = newRegistry
+                                                    }
+
+                                                resultCmd =
+                                                    sendToClient
+                                                        { clientId = clientId
+                                                        , payload = quizAnswerResultEnvelope { idx = idx, correct = True, revealAnswer = "" }
+                                                        }
+
+                                                winCmd =
+                                                    if quizJustCompleted { next = next, total = model.totalQuestions } then
+                                                        newRegistry
+                                                            |> List.filter (\e -> e.uuid == uuid)
+                                                            |> List.head
+                                                            |> Maybe.map (\e -> sendToClient { clientId = clientId, payload = winTextEnvelope e.winText })
+                                                            |> Maybe.withDefault Cmd.none
+
+                                                    else
+                                                        Cmd.none
+                                            in
+                                            ( newModel, Cmd.batch [ writeRegistry newRegistry, resultCmd, winCmd ] )
+
                 _ ->
                     ( model, Cmd.none )
 
@@ -1561,7 +1642,11 @@ update msg model =
                         -- decodeQuestions swallows decode errors internally (returns []),
                         -- so an unreadable/malformed config naturally yields totalQuestions
                         -- = 0, the same fail-safe default as the Err branch below.
-                        ( { model | totalQuestions = decodeQuestions contents |> List.length }, Cmd.none )
+                        let
+                            questions =
+                                decodeQuestions contents
+                        in
+                        ( { model | totalQuestions = List.length questions, quizQuestions = questions }, Cmd.none )
 
                     Err _ ->
                         ( model, Cmd.none )
