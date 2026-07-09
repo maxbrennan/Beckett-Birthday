@@ -16,6 +16,8 @@ message DistStateEditSaveAck {}
 message DistReplaceCompleteAck {}
 message DistUndeployAck      {}
 message WinText              { string text = 1; }
+message TimerSync            { double timer_ends_at = 1; }
+message TimedOut             {}
 message AuthChallenge        { bytes challenge = 1; AuthLevel level = 2; }
 message StateRequest         { string uuid = 1; }
 message StateRequestRejected { string reason = 1; }
@@ -128,6 +130,8 @@ message ServerMessage {
     DistStateEditSaveAck    dist_state_edit_save_ack   = 18;
     DistReplaceCompleteAck  dist_replace_complete_ack  = 19;
     DistUndeployAck         dist_undeploy_ack          = 20;
+    TimerSync               timer_sync                 = 21;
+    TimedOut                timed_out                  = 22;
   }
 }
 

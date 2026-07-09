@@ -46,6 +46,8 @@ import Server.Protocol
         , distRegisterAckEnvelope
         , stateEnvelope
         , stateUpdateAckEnvelope
+        , timedOutEnvelope
+        , timerSyncEnvelope
         , winTextEnvelope
         )
 import Server.Registry
@@ -55,9 +57,11 @@ import Server.Registry
         , encodeRegistry
         , encodeRegistryEntry
         , findUuidByClient
+        , isExpired
         , parseRegistryJsonl
         , registryFilePath
         , snapshotForJeopardy
+        , updateEntryTimer
         )
 import Sync exposing (decodeIQTestCountdownState, decodeIQTestState)
 import Set
@@ -116,7 +120,7 @@ registrySuite =
     describe "RegistryEntry winText codec"
         [ test "round-trips winText through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0 }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -144,7 +148,7 @@ encodeRegistryTests =
             \_ -> encodeRegistry [] |> Expect.equal ""
         , test "a non-empty registry encodes one JSON line per entry, newline-terminated" <|
             \_ ->
-                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0 } ]
+                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing } ]
                     |> String.endsWith "\n"
                     |> Expect.equal True
         ]
@@ -180,6 +184,57 @@ findUuidByClientTests =
             \_ ->
                 findUuidByClient "unknown" (Dict.fromList [ ( "uuid1", "c1" ) ])
                     |> Expect.equal Nothing
+        ]
+
+
+timerSuite : Test
+timerSuite =
+    describe "RegistryEntry.timerEndsAt"
+        [ test "round-trips a set deadline through encode/decode" <|
+            \_ ->
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345 }
+                    |> encodeRegistryEntry
+                    |> Encode.encode 0
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .timerEndsAt
+                    |> Expect.equal (Ok (Just 12345))
+        , test "defaults timerEndsAt to Nothing for older rows missing the field" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .timerEndsAt
+                    |> Expect.equal (Ok Nothing)
+        , test "updateEntryTimer sets the deadline only on the matching uuid" <|
+            \_ ->
+                [ entry "uuid1", entry "uuid2" ]
+                    |> updateEntryTimer "uuid1" 999
+                    |> List.map (\e -> ( e.uuid, e.timerEndsAt ))
+                    |> Expect.equal [ ( "uuid1", Just 999 ), ( "uuid2", Nothing ) ]
+        , test "isExpired is False when no deadline has been established yet" <|
+            \_ ->
+                entry "uuid1"
+                    |> isExpired 1000000
+                    |> Expect.equal False
+        , test "isExpired is False before the deadline" <|
+            \_ ->
+                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000 }
+                    |> isExpired 1000
+                    |> Expect.equal False
+        , test "isExpired is True once now reaches the deadline" <|
+            \_ ->
+                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000 }
+                    |> isExpired 1000
+                    |> Expect.equal True
+        , test "timerSyncEnvelope carries the deadline under timerSync.timerEndsAt" <|
+            \_ ->
+                timerSyncEnvelope 4242
+                    |> Decode.decodeValue (Decode.at [ "timerSync", "timerEndsAt" ] Decode.float)
+                    |> Expect.equal (Ok 4242)
+        , test "timedOutEnvelope tags its payload as timedOut" <|
+            \_ ->
+                timedOutEnvelope
+                    |> Decode.decodeValue (Decode.field "payload" Decode.string)
+                    |> Expect.equal (Ok "timedOut")
         ]
 
 
@@ -304,6 +359,7 @@ entry uuid =
     , winText = ""
     , iqTimer = Nothing
     , quizProgress = 0
+    , timerEndsAt = Nothing
     }
 
 
@@ -338,6 +394,7 @@ distUndeployMsg clientId uuid =
     MessageReceived
         { clientId = clientId
         , payload = clientEnvelope "distUndeploy" [ ( "uuid", Encode.string uuid ) ]
+        , now = 0
         }
 
 
@@ -350,6 +407,7 @@ saveMsg clientId uuid json =
                 [ ( "uuid", Encode.string uuid )
                 , ( "json", Encode.string json )
                 ]
+        , now = 0
         }
 
 
@@ -605,7 +663,7 @@ advancedLoud outcome =
 
 iqTimerMsg : String -> String -> Msg
 iqTimerMsg clientId variant =
-    MessageReceived { clientId = clientId, payload = clientEnvelope variant [] }
+    MessageReceived { clientId = clientId, payload = clientEnvelope variant [], now = 0 }
 
 
 iqLogicSuite : Test
@@ -1262,6 +1320,7 @@ persistIqTimerInRegistrySuite =
                           , winText = ""
                           , iqTimer = Nothing
                           , quizProgress = 0
+                          , timerEndsAt = Nothing
                           }
                         ]
 
@@ -1298,6 +1357,7 @@ persistIqTimerInRegistrySuite =
                           , winText = ""
                           , iqTimer = Just (Encode.object [ ( "epoch", Encode.int 1 ) ])
                           , quizProgress = 0
+                          , timerEndsAt = Nothing
                           }
                         ]
 
@@ -1324,6 +1384,7 @@ persistIqTimerInRegistrySuite =
                           , winText = ""
                           , iqTimer = Nothing
                           , quizProgress = 0
+                          , timerEndsAt = Nothing
                           }
                         ]
 
@@ -1380,7 +1441,7 @@ iqPersistenceRoutingSuite =
                         Encode.encode 0 (editedScreenState "IQTestCountdownScreen" [ ( "questionIdx", Encode.int 0 ), ( "countdown", Encode.int 9999 ), ( "totalDings", Encode.int 100 ) ])
 
                     ( m, _ ) =
-                        update (MessageReceived { clientId = "c1", payload = clientEnvelope "stateUpdate" [ ( "json", Encode.string bogusReport ) ] }) staged
+                        update (MessageReceived { clientId = "c1", payload = clientEnvelope "stateUpdate" [ ( "json", Encode.string bogusReport ) ], now = 0 }) staged
 
                     entryOf =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
@@ -1485,7 +1546,7 @@ trivialMsgSuite =
 
 stateRequestMsg : String -> String -> Msg
 stateRequestMsg clientId uuid =
-    MessageReceived { clientId = clientId, payload = clientEnvelope "stateRequest" [ ( "uuid", Encode.string uuid ) ] }
+    MessageReceived { clientId = clientId, payload = clientEnvelope "stateRequest" [ ( "uuid", Encode.string uuid ) ], now = 0 }
 
 
 stateRequestSuite : Test
@@ -1522,7 +1583,7 @@ stateRequestSuite =
             \_ ->
                 let
                     staged =
-                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0 } ] }
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing } ] }
 
                     ( m, _ ) =
                         update (stateRequestMsg "c1" "uuid1") staged
@@ -1539,7 +1600,7 @@ stateRequestSuite =
                         Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "BeginScreen" ) ] ) ]
 
                     staged =
-                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just beginState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0 } ] }
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just beginState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing } ] }
 
                     ( m, _ ) =
                         update (stateRequestMsg "c1" "uuid1") staged
@@ -1556,7 +1617,7 @@ stateRequestSuite =
                             ]
 
                     staged =
-                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just midGameState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0 } ] }
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just midGameState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing } ] }
 
                     ( m, _ ) =
                         update (stateRequestMsg "c1" "uuid1") staged
@@ -1577,7 +1638,7 @@ stateRequestSuite =
 
 stateUpdateMsg : String -> Encode.Value -> Msg
 stateUpdateMsg clientId innerState =
-    MessageReceived { clientId = clientId, payload = clientEnvelope "stateUpdate" [ ( "json", Encode.string (Encode.encode 0 innerState) ) ] }
+    MessageReceived { clientId = clientId, payload = clientEnvelope "stateUpdate" [ ( "json", Encode.string (Encode.encode 0 innerState) ) ], now = 0 }
 
 
 stateUpdateSuite : Test
@@ -1639,6 +1700,7 @@ distUploadMsg clientId uuid filename chunkIndex isLast =
                 , ( "chunkIndex", Encode.int chunkIndex )
                 , ( "isLast", Encode.bool isLast )
                 ]
+        , now = 0
         }
 
 
@@ -1700,6 +1762,7 @@ distCompleteMsg clientId uuid filename =
         , payload =
             clientEnvelope "distComplete"
                 [ ( "uuid", Encode.string uuid ), ( "filename", Encode.string filename ), ( "winText", Encode.string "gg" ) ]
+        , now = 0
         }
 
 
@@ -1750,6 +1813,7 @@ distReplaceCompleteMsg clientId newUuid oldUuid filename =
         , payload =
             clientEnvelope "distReplaceComplete"
                 [ ( "newUuid", Encode.string newUuid ), ( "oldUuid", Encode.string oldUuid ), ( "filename", Encode.string filename ) ]
+        , now = 0
         }
 
 
@@ -2110,17 +2174,18 @@ distRegisterMsg clientId uuid platform =
     MessageReceived
         { clientId = clientId
         , payload = clientEnvelope "distRegister" [ ( "uuid", Encode.string uuid ), ( "platform", Encode.string platform ) ]
+        , now = 0
         }
 
 
 distStateEditMsg : String -> String -> Msg
 distStateEditMsg clientId uuid =
-    MessageReceived { clientId = clientId, payload = clientEnvelope "distStateEdit" [ ( "uuid", Encode.string uuid ) ] }
+    MessageReceived { clientId = clientId, payload = clientEnvelope "distStateEdit" [ ( "uuid", Encode.string uuid ) ], now = 0 }
 
 
 distListMsg : String -> Msg
 distListMsg clientId =
-    MessageReceived { clientId = clientId, payload = clientEnvelope "distList" [] }
+    MessageReceived { clientId = clientId, payload = clientEnvelope "distList" [], now = 0 }
 
 
 remainingRoutingSuite : Test
@@ -2263,7 +2328,7 @@ remainingRoutingSuite =
             \_ ->
                 let
                     ( m, _ ) =
-                        update (MessageReceived { clientId = "c1", payload = clientEnvelope "somethingElse" [] }) baseModel
+                        update (MessageReceived { clientId = "c1", payload = clientEnvelope "somethingElse" [], now = 0 }) baseModel
                 in
                 m |> Expect.equal baseModel
         ]
@@ -2299,6 +2364,7 @@ quizAdvancedMsg clientId idx =
     MessageReceived
         { clientId = clientId
         , payload = clientEnvelope "quizAdvanced" [ ( "idx", Encode.int idx ) ]
+        , now = 0
         }
 
 

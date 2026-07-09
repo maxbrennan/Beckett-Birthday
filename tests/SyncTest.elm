@@ -250,16 +250,22 @@ modelRoundTripTests =
                 case decoded of
                     Ok m ->
                         Expect.equal
-                            { screen = model.screen, jeopardyPlaying = model.jeopardyPlaying, now = model.now, dingKey = model.dingKey, pendingStartTime = model.pendingStartTime, wsClientId = model.wsClientId, timerEndsAt = model.timerEndsAt }
-                            { screen = m.screen, jeopardyPlaying = m.jeopardyPlaying, now = m.now, dingKey = m.dingKey, pendingStartTime = m.pendingStartTime, wsClientId = m.wsClientId, timerEndsAt = m.timerEndsAt }
+                            { screen = model.screen, jeopardyPlaying = model.jeopardyPlaying, now = model.now, dingKey = model.dingKey, pendingStartTime = model.pendingStartTime, wsClientId = model.wsClientId }
+                            { screen = m.screen, jeopardyPlaying = m.jeopardyPlaying, now = m.now, dingKey = m.dingKey, pendingStartTime = m.pendingStartTime, wsClientId = m.wsClientId }
 
                     Err err ->
                         Expect.fail (Decode.errorToString err)
-        , test "myUuid/wsUrl/questions are NOT persisted — decodeModel always resets them" <|
+        , test "myUuid/wsUrl/questions/timerEndsAt are NOT persisted — decodeModel always resets them" <|
             \_ ->
+                -- timerEndsAt is server-owned now (see RegistryEntry.timerEndsAt /
+                -- ServerTimerSync): the client never reports or round-trips its own
+                -- copy, so decodeModel always hands back 0 for it, same as the other
+                -- fields a fresh connection is expected to supply itself.
                 case decoded of
                     Ok m ->
-                        Expect.equal ( Nothing, "", [] ) ( m.myUuid, m.wsUrl, m.questions )
+                        Expect.equal
+                            { myUuid = Nothing, wsUrl = "", questions = [], timerEndsAt = 0 }
+                            { myUuid = m.myUuid, wsUrl = m.wsUrl, questions = m.questions, timerEndsAt = m.timerEndsAt }
 
                     Err err ->
                         Expect.fail (Decode.errorToString err)

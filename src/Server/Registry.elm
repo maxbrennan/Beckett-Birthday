@@ -29,6 +29,13 @@ type alias RegistryEntry =
     -- blob. Lets a server restart rehydrate quizProgress without trusting
     -- (or losing) anything the client itself claims about its screen.
     , quizProgress : Int
+
+    -- The server-computed epoch-ms deadline for this player's 7-day session
+    -- timer. Nothing until their first stateRequest, at which point the server
+    -- establishes it once (see Server.elm's ClientStateRequest handling) and it
+    -- never changes again for that uuid -- the client only ever receives it
+    -- (via timerSyncEnvelope) and renders it, never invents or reports its own.
+    , timerEndsAt : Maybe Float
     }
 
 
@@ -51,6 +58,7 @@ encodeRegistryEntry entry =
         , ( "winText", Encode.string entry.winText )
         , ( "iqTimer", Maybe.withDefault Encode.null entry.iqTimer )
         , ( "quizProgress", Encode.int entry.quizProgress )
+        , ( "timerEndsAt", entry.timerEndsAt |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
         ]
 
 
@@ -87,7 +95,10 @@ decodeOptionalValue name =
 
 decodeRegistryEntry : Decode.Decoder RegistryEntry
 decodeRegistryEntry =
-    Decode.map8 RegistryEntry
+    Decode.map8
+        (\uuid filename platform state pendingStateEdit winText iqTimer quizProgress ->
+            RegistryEntry uuid filename platform state pendingStateEdit winText iqTimer quizProgress
+        )
         (Decode.field "uuid" Decode.string)
         (Decode.field "filename" Decode.string)
         (Decode.field "platform" Decode.string)
@@ -106,6 +117,13 @@ decodeRegistryEntry =
         (Decode.maybe (Decode.field "quizProgress" Decode.int)
             |> Decode.map (Maybe.withDefault 0)
         )
+        |> Decode.andThen
+            (\partial ->
+                -- older rows predate the server-owned timer; treat missing as Nothing
+                -- (established fresh on this player's next stateRequest).
+                Decode.map partial
+                    (Decode.maybe (Decode.field "timerEndsAt" Decode.float))
+            )
 
 
 parseRegistryJsonl : String -> List RegistryEntry
@@ -209,6 +227,32 @@ updateEntryQuizProgress uuid newQuizProgress =
             else
                 e
         )
+
+
+-- Mirrors updateEntryQuizProgress but for the server-owned session-timer deadline.
+updateEntryTimer : String -> Float -> List RegistryEntry -> List RegistryEntry
+updateEntryTimer uuid newTimerEndsAt =
+    List.map
+        (\e ->
+            if e.uuid == uuid then
+                { e | timerEndsAt = Just newTimerEndsAt }
+
+            else
+                e
+        )
+
+
+-- True once `now` has reached or passed this entry's established deadline. An entry
+-- with no deadline yet (a brand new player who hasn't sent their first stateRequest)
+-- can never be expired.
+isExpired : Float -> RegistryEntry -> Bool
+isExpired now entry =
+    case entry.timerEndsAt of
+        Just deadline ->
+            now >= deadline
+
+        Nothing ->
+            False
 
 
 -- Replace a single top-level key of a JSON object, leaving every other key
