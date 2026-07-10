@@ -85,16 +85,17 @@ cp localhost+2-key.pem certs/key.pem
 > accepts the cert regardless. mkcert here is just a fast way to generate a valid
 > cert/key pair; a plain `openssl` self‑signed pair works too.
 
-### 1c. Quiz questions
+### 1c. App config
 
-Copy the example and edit it. `config/quiz-questions.json` is git‑ignored — it holds
-the real trivia answers, which are spoilers for the birthday recipient (see §4). It is
-read only by the **server**; nothing under `config/` is ever bundled into a client
-build (see §2) — the client instead discovers songs by listing `assets/songs/`
-directly, in numeric filename order (see §4/§6).
+Copy the example and edit it. `config/app-config.json` is git‑ignored — it holds
+the real trivia answers and win‑screen text, both spoilers for the birthday recipient
+(see §4/§5), plus the app's display name. It is read only by the **server** and by
+build‑time scripts; nothing under `config/` is ever bundled into a client build (see
+§2) — the client instead discovers songs by listing `assets/songs/` directly, in
+numeric filename order (see §4/§6).
 
 ```bash
-cp config/quiz-questions.example.json config/quiz-questions.json
+cp config/app-config.example.json config/app-config.json
 ```
 
 ---
@@ -103,9 +104,8 @@ cp config/quiz-questions.example.json config/quiz-questions.json
 
 ```
 config/
-  quiz-questions.json           ← trivia questions & answers, git‑ignored, server‑only (§1c, §4)
-  quiz-questions.example.json   ← template for the above, tracked in git
-  win-screen.json       ← reward / win‑screen text, server‑only (§5)
+  app-config.json           ← app name, trivia questions & answers, win‑screen text — git‑ignored, server‑only (§1c, §4, §5)
+  app-config.example.json   ← template for the above, tracked in git
 assets/
   songs/                ← all quiz songs, numbered 0.ext, 1.ext, ... (§4, §6)
   jeopardy-theme.mp3  airpods.png  ding.mp3  loud.mp4  icon.icns  icon.ico   ← other media (stay at root)
@@ -113,12 +113,12 @@ assets/
 ```
 
 Nothing under `config/` is ever bundled into a client build or read by the client —
-it's all server‑side (`config/quiz-questions.json`'s answers, `config/win-screen.json`'s
-reward text). Everything under `assets/` (§6) is loaded at client **startup** and
-bundled into distributed builds; editing it changes the game **without touching Elm
-source** — but already‑distributed builds must be rebuilt/redeployed to pick up
-changes. `config/quiz-questions.example.json` is a dev‑only template (§1c), neither
-loaded at runtime nor bundled into builds.
+it's all server‑side (`config/app-config.json`'s `quizQuestions` answers and
+`winScreen` reward text). Everything under `assets/` (§6) is loaded at client
+**startup** and bundled into distributed builds; editing it changes the game
+**without touching Elm source** — but already‑distributed builds must be
+rebuilt/redeployed to pick up changes. `config/app-config.example.json` is a
+dev‑only template (§1c), neither loaded at runtime nor bundled into builds.
 
 ---
 
@@ -143,20 +143,20 @@ Production equivalent (port 443, `DEV=false`): `npm run start:server`.
 
 ## 4. Add / edit trivia questions & answers
 
-`config/quiz-questions.json` is git‑ignored (see §1c). If you don't have it yet:
+`config/app-config.json` is git‑ignored (see §1c). If you don't have it yet:
 
 ```bash
-cp config/quiz-questions.example.json config/quiz-questions.json
+cp config/app-config.example.json config/app-config.json
 ```
 
-Then edit **`config/quiz-questions.json`**. It is a JSON array of `{ "answers": [...] }`
-objects — no `song` field. Questions are asked in order, and a question's position in
-this array **is** its song's index: the 1st entry (index 0) is answered by whichever
-file in `assets/songs/` starts with `0.` (see §6), the 2nd entry (index 1) by `1.`, and
-so on. The client never reads this file at all — it discovers songs purely by listing
-`assets/songs/` and sorting by that leading number (`songOrder` in
-`src/Game/Quiz.elm`), so keeping the array order and the filename numbers in sync is
-what ties a question to its song.
+Then edit **`config/app-config.json`**'s `quizQuestions` field. It is a JSON array of
+`{ "answers": [...] }` objects — no `song` field. Questions are asked in order, and a
+question's position in this array **is** its song's index: the 1st entry (index 0) is
+answered by whichever file in `assets/songs/` starts with `0.` (see §6), the 2nd entry
+(index 1) by `1.`, and so on. The client never reads this file at all — it discovers
+songs purely by listing `assets/songs/` and sorting by that leading number
+(`songOrder` in `src/Game/Quiz.elm`), so keeping the array order and the filename
+numbers in sync is what ties a question to its song.
 
 ```jsonc
 [
@@ -178,8 +178,9 @@ Write answers in their natural form; you don't need to add punctuation variants.
 1. Put the media file in `assets/songs/`, named with the next number in sequence and
    a generic (spoiler‑free) extension — e.g. if `assets/songs/` currently goes up to
    `9.mp3`, add `assets/songs/10.mp3` (or `.mp4` for a video).
-2. Append the matching entry to the **end** of `config/quiz-questions.json`, so its
-   array position lines up with the new filename's number:
+2. Append the matching entry to the **end** of `config/app-config.json`'s
+   `quizQuestions` array, so its array position lines up with the new filename's
+   number:
 
 ```jsonc
   { "answers": ["My Song", "My Song (Live)"] }
@@ -189,17 +190,19 @@ Write answers in their natural form; you don't need to add punctuation variants.
 
 ## 5. Edit the winning‑screen text
 
-Edit **`config/win-screen.json`**:
+Edit **`config/app-config.json`**'s `winScreen` field:
 
 ```json
 {
-  "text": "Text \"creeper... awwww man\" to Max to claim your reward!"
+  "winScreen": "Text \"creeper... awwww man\" to Max to claim your reward!"
 }
 ```
 
-Whatever you put in `text` is shown on the win screen. If the file is missing or
-malformed, the app falls back to a built‑in default (`defaultWinText` in `src/Main.elm`),
-so it never breaks the game.
+Whatever you put in `winScreen` is read by `scripts/deploy.js` at deploy time (§7c)
+and sent to the server along with that build, which stores it per‑build in
+`app-builds/builds.jsonl` and delivers it to that player at win time. If
+`config/app-config.json` is missing or `winScreen` is empty, the deploy fails
+outright rather than shipping a build with no win text.
 
 ---
 
@@ -214,7 +217,7 @@ following stay at the `assets/` root and are **not** quiz songs: `jeopardy-theme
 
 The client lists `assets/songs/` itself at startup (`client/bridge.js`'s `readDir`
 port) and orders the results by each filename's leading number — it never reads
-`config/quiz-questions.json` or any other config file to know what to play (see §4).
+`config/app-config.json` or any other config file to know what to play (see §4).
 
 `assets/` is git‑ignored (large binaries are distributed separately), but the whole
 folder — including `assets/songs/` — is bundled into builds via `assets/**/*` in

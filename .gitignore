@@ -4,9 +4,9 @@
 # Environment config (local secrets)
 .env
 
-# Quiz questions (real trivia/answers are spoilers; never commit)
-# config/quiz-questions.example.json stays tracked as the template.
-config/quiz-questions.json
+# App config: real trivia answers and win-screen text are spoilers, never commit.
+# config/app-config.example.json stays tracked as the template.
+config/app-config.json
 
 # Elm
 elm-stuff/

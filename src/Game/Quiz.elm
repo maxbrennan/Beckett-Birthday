@@ -36,7 +36,7 @@ decodeQuestions raw =
 
 
 -- ── Client-side song ordering ────────────────────────────────────────────────
--- The client never sees quiz-questions.json. It lists assets/songs/ (readDir)
+-- The client never sees config/app-config.json. It lists assets/songs/ (readDir)
 -- and derives play order purely from each filename's leading number -- "0.mp3"
 -- is slide 0, "3.mp4" is slide 3, etc. Anything that doesn't start with a
 -- number (stray files like .DS_Store) is dropped rather than guessed at.

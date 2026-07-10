@@ -33,6 +33,15 @@ if (require.main === module) {
     const PACKAGE_JSON_PATH = path.join(ROOT, 'package.json');
     const INDEX_HTML_PATH = path.join(ROOT, 'index.html');
 
+    // config/app-config.json is git-ignored (it also holds quiz answers/win text --
+    // real spoilers, see config/app-config.example.json). A fresh clone won't have
+    // it yet, so leave package.json/index.html's already-committed values standing
+    // rather than erroring the build.
+    if (!fs.existsSync(CONFIG_PATH)) {
+        console.log(`[sync-config] ${CONFIG_PATH} not found, skipping naming sync`);
+        process.exit(0);
+    }
+
     const { appName } = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
     if (typeof appName !== 'string' || appName === '') {
         console.error(`[sync-config] ${CONFIG_PATH} must contain a non-empty "appName" string`);

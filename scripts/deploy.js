@@ -51,7 +51,7 @@ if (require.main === module) {
     const port = process.env.PROD_SERVER_PORT || '443';
     const SERVER_URL = port === '443' ? `wss://${host}` : `wss://${host}:${port}`;
     const UUID_FILE = path.join(__dirname, '..', 'app-uuid.json');
-    const WIN_SCREEN_FILE = path.join(__dirname, '..', 'config', 'win-screen.json');
+    const APP_CONFIG_FILE = path.join(__dirname, '..', 'config', 'app-config.json');
     const DIST_DIR = path.join(__dirname, '..', 'dist');
     const EXTENSION = PLATFORM === 'mac' ? '.dmg' : PLATFORM === 'win' ? '.exe' : '.AppImage';
 
@@ -62,22 +62,22 @@ if (require.main === module) {
 
     // The win text lives only on the server (stored per-build in builds.jsonl), so it is
     // read here at deploy time and sent with distComplete rather than bundled into the
-    // client. config/win-screen.json is excluded from the electron-builder files list.
+    // client. config/app-config.json is excluded from the electron-builder files list.
     function readWinText() {
         let raw;
         try {
-            raw = fs.readFileSync(WIN_SCREEN_FILE, 'utf8');
+            raw = fs.readFileSync(APP_CONFIG_FILE, 'utf8');
         } catch (err) {
-            fail(`could not read ${WIN_SCREEN_FILE}: ${err.message}`);
+            fail(`could not read ${APP_CONFIG_FILE}: ${err.message}`);
         }
         let text;
         try {
-            text = JSON.parse(raw).text;
+            text = JSON.parse(raw).winScreen;
         } catch (err) {
-            fail(`could not parse ${WIN_SCREEN_FILE}: ${err.message}`);
+            fail(`could not parse ${APP_CONFIG_FILE}: ${err.message}`);
         }
         if (typeof text !== 'string' || text === '') {
-            fail(`${WIN_SCREEN_FILE} must contain a non-empty "text" string`);
+            fail(`${APP_CONFIG_FILE} must contain a non-empty "winScreen" string`);
         }
         return text;
     }

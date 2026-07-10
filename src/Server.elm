@@ -28,13 +28,14 @@ type alias Model =
     -- Server-owned quiz completion tracking (see acceptQuizAdvance/
     -- quizJustCompleted below): the furthest question index each uuid has been
     -- independently confirmed to have passed, and the true question count
-    -- read from config/quiz-questions.json at startup -- never from the
+    -- read from config/app-config.json at startup -- never from the
     -- client's own self-reported state.
     , quizProgress : Dict String Int
     , totalQuestions : Int
 
-    -- The full song+answers list read from config/quiz-questions.json (see
-    -- quizQuestionsFilePath), used to validate ClientQuizAnswerSubmitted via
+    -- The full song+answers list read from the quizQuestions field of
+    -- config/app-config.json (see quizQuestionsFilePath), used to validate
+    -- ClientQuizAnswerSubmitted via
     -- Game.Quiz.decideAnswer. Never sent to the client -- see #54.
     , quizQuestions : List Question
     }
@@ -237,7 +238,7 @@ applyCatch s =
 
 quizQuestionsFilePath : String
 quizQuestionsFilePath =
-    "config/quiz-questions.json"
+    "config/app-config.json"
 
 
 {-| Accept an incoming quizAdvanced idx only if it's exactly the next one this
