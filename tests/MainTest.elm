@@ -3,7 +3,7 @@ module MainTest exposing (..)
 import Expect
 import Game.IQTest exposing (FakeFlashPhase(..), IQTestState, iqQuestionCount)
 import Json.Encode as Encode
-import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, subscriptions, tickFromPosix, update)
+import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, resumePlaySongTarget, subscriptions, tickFromPosix, update)
 import Test exposing (Test, describe, test)
 import Time
 import Types exposing (Model, Msg(..), PausedState, Screen(..))
@@ -1412,4 +1412,68 @@ remainingEdgeCasesSuite =
                         update WsSyncTick { baseModel | wsClientId = Nothing, screen = BeginScreen }
                 in
                 result.screen |> Expect.equal BeginScreen
+        ]
+
+
+-- ── Resuming onto a server-derived BlankScreen ────────────────────────────────
+-- The server-derived resume screen (Server.elm's deriveQuizScreen) is a bare
+-- BlankScreen with no pending PlaySong; a video slide needs the kick or it
+-- would never leave the blank screen. baseModel.questions: slide 0 is audio,
+-- slide 1 is video.
+
+
+resumePlaySongTargetSuite : Test
+resumePlaySongTargetSuite =
+    describe "resumePlaySongTarget"
+        [ test "a bare BlankScreen on a video slide needs the PlaySong kick" <|
+            \_ ->
+                resumePlaySongTarget baseModel.questions [] (BlankScreen 1)
+                    |> Expect.equal (Just 1)
+        , test "an audio slide self-starts (the rendered audio element plays), no kick" <|
+            \_ ->
+                resumePlaySongTarget baseModel.questions [] (BlankScreen 0)
+                    |> Expect.equal Nothing
+        , test "a video slide with its PlaySong already pending is left to that schedule" <|
+            \_ ->
+                resumePlaySongTarget baseModel.questions [ { fireAt = 0, msg = PlaySong 1 } ] (BlankScreen 1)
+                    |> Expect.equal Nothing
+        , test "an out-of-range slide has nothing to play" <|
+            \_ ->
+                resumePlaySongTarget baseModel.questions [] (BlankScreen 99)
+                    |> Expect.equal Nothing
+        , test "screens other than a bare BlankScreen never need the kick" <|
+            \_ ->
+                resumePlaySongTarget baseModel.questions [] (VideoScreen 1 "video1.mp4")
+                    |> Expect.equal Nothing
+        ]
+
+
+resumeVideoKickRoutingSuite : Test
+resumeVideoKickRoutingSuite =
+    describe "BeginPressed resume schedules PlaySong for a bare video-slide BlankScreen"
+        [ test "resuming a saved video-slide BlankScreen with empty pending schedules the PlaySong" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = BlankScreen 1, pending = [], savedAt = 0, songResumeTime = Nothing, videoResumeTime = Nothing }
+
+                    ( result, _ ) =
+                        update BeginPressed { baseModel | now = 6000, savedState = Just saved }
+                in
+                result.pending
+                    |> List.filter (\e -> e.msg == PlaySong 1)
+                    |> List.map .fireAt
+                    |> Expect.equal [ 7000 ]
+        , test "resuming a saved audio-slide BlankScreen schedules nothing extra" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = BlankScreen 0, pending = [], savedAt = 0, songResumeTime = Nothing, videoResumeTime = Nothing }
+
+                    ( result, _ ) =
+                        update BeginPressed { baseModel | now = 6000, savedState = Just saved }
+                in
+                result.pending |> Expect.equal []
         ]

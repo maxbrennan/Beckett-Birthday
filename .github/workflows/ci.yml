@@ -71,9 +71,10 @@ jobs:
           name: js-coverage-data
           path: coverage/js
       # Interim floor, not the 95% target from issue #26 — raised from 5% after #48's
-      # testability refactor of bridge.js/server/index.js/scripts; see the follow-up
-      # issue tracking Main.elm's update-logic extraction for the remaining gap.
-      - run: node ci/check-js-coverage.js 15
+      # testability refactor of bridge.js/server/index.js/scripts, and from 15% after
+      # #74 added auth.js/codec.js unit coverage. The remaining gap is mostly
+      # server/index.js's live-server block and the interactive scripts.
+      - run: node ci/check-js-coverage.js 20
 
   elm-coverage:
     name: Elm Coverage

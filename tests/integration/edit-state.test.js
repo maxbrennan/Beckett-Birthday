@@ -5,6 +5,7 @@ const path = require('path');
 const { startTestServer } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
+const { connectAsPlayer } = require('../helpers/playerClient');
 const { waitUntil } = require('../helpers/waitUntil');
 
 const TEST_PORT = 19449;
@@ -100,4 +101,37 @@ describe('edit state', () => {
         const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === invalidJsonBuild.uuid));
         expect(entry.state).toEqual(goodState); // unchanged — no write happened
     });
+
+    // Issue #74: an edit onto a quiz-slide screen must also move the server's own
+    // quizProgress (Server.elm's reconcileQuizProgressAfterEdit), or acceptQuizAdvance
+    // keeps expecting the pre-edit question and silently rejects every answer the
+    // edited-onto screen produces, stranding the player.
+    test('an edit onto a quiz-slide screen reconciles quizProgress so the player can answer that question', async () => {
+        const quizEditBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'Ryan Birthday-3.0.2-universal.dmg',
+        });
+
+        const editedState = { screen: { tag: 'QuestionScreen', idx: 1, s: '' } };
+        {
+            const { conn } = await distClient.requestStateEdit(TEST_PORT, admin, quizEditBuild.uuid);
+            const saveResult = await distClient.saveStateEdit(conn, quizEditBuild.uuid, JSON.stringify(editedState));
+            expect(saveResult.payload).toBe('distStateEditSaveAck');
+            await conn.close();
+        }
+
+        // The edited idx is now the authoritative progress: question 1's answer (see
+        // testServer.js's TEST_QUIZ_QUESTIONS) must be accepted, not silently dropped.
+        const { conn } = await connectAsPlayer(TEST_PORT, quizEditBuild.uuid);
+        conn.send({ quizAnswerSubmitted: { idx: 1, answer: 'answer one' } });
+        const result = await conn.waitFor((m) => m.payload === 'quizAnswerResult');
+        expect(result.quizAnswerResult.correct).toBe(true);
+        await conn.close();
+
+        const entry = await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === quizEditBuild.uuid);
+            return e && e.quizProgress === 2 ? e : undefined;
+        });
+        expect(entry.quizProgress).toBe(2);
+    }, 10000);
 });

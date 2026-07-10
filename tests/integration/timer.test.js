@@ -46,6 +46,32 @@ async function reconnectAsPlayer(port, uuid, { timeoutMs = 2000 } = {}) {
     }
 }
 
+// A freshly restarted server rehydrates its registry from builds.jsonl asynchronously
+// (Server.elm's init issues a readFile port request); a stateRequest that lands before
+// that read completes is rejected as "unknown uuid" and the socket closed. Retry until
+// the server answers with a real state response, mirroring reconnectAsPlayer above.
+async function requestStateAfterRestart(port, uuid, { timeoutMs = 5000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const conn = await connect(port);
+        conn.send({ stateRequest: { uuid } });
+        let msg = null;
+        try {
+            msg = await conn.waitFor(
+                (m) => m.payload === 'timedOut' || m.payload === 'stateUpdate' || m.payload === 'stateRequestRejected'
+            );
+        } catch (err) {
+            // rejectAndClose can close the socket before the rejection is observed.
+        }
+        if (msg && msg.payload !== 'stateRequestRejected') return { conn, result: msg };
+        await conn.close();
+        if (Date.now() > deadline) {
+            throw new Error('requestStateAfterRestart: timed out — server still rejecting the uuid');
+        }
+        await new Promise((r) => setTimeout(r, 20));
+    }
+}
+
 describe('server-side 7-day session timer (issue #50)', () => {
     beforeAll(async () => {
         server = await startTestServer({
@@ -114,9 +140,7 @@ describe('server-side 7-day session timer (issue #50)', () => {
         writeRegistry(rewritten);
         server = await startTestServer({ port: TEST_PORT, existingTempDir: server.tempDir });
 
-        const conn = await connect(TEST_PORT);
-        conn.send({ stateRequest: { uuid: build.uuid } });
-        const connectMsg = await conn.waitFor((m) => m.payload === 'timedOut' || m.payload === 'stateUpdate');
+        const { conn, result: connectMsg } = await requestStateAfterRestart(TEST_PORT, build.uuid);
         expect(connectMsg.payload).toBe('timedOut');
 
         // The periodic sync loop (ClientStateUpdate) independently re-checks expiry too.

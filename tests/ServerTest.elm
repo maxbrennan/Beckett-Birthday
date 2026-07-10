@@ -28,11 +28,15 @@ import Server
         , decodeIqPhase
         , decodeIqTimerStateFull
         , deriveIqScreen
+        , deriveQuizScreen
         , encodeIqTimerStateFull
         , extractQuestionIdx
+        , innermostScreenTag
         , persistIqTimerInRegistry
+        , persistQuizScreenInRegistry
         , quizJustCompleted
         , reconcileIqTimerAfterEdit
+        , reconcileQuizProgressAfterEdit
         , resumeIqTimer
         , setIqTimer
         , update
@@ -65,9 +69,10 @@ import Server.Registry
         , snapshotForJeopardy
         , updateEntryTimer
         )
-import Sync exposing (decodeIQTestCountdownState, decodeIQTestState)
+import Sync exposing (decodeIQTestCountdownState, decodeIQTestState, decodeScreen)
 import Set
 import Test exposing (Test, describe, test)
+import Types exposing (Screen(..))
 
 
 screenTag : Encode.Value -> Maybe String
@@ -1659,11 +1664,12 @@ stateUpdateSuite =
                         update (stateUpdateMsg "c1" (Encode.object [])) baseModel
                 in
                 m |> Expect.equal baseModel
-        , test "persists the client's raw reported state when there's no server-owned IQ timer" <|
+        , test "persists the client's raw reported state when no server-derived screen applies" <|
             \_ ->
                 let
+                    -- A non-IQ, non-quiz-slide screen: neither override family claims it.
                     reported =
-                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 2 ) ] ) ]
+                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "FakeFlashCaughtScreen" ), ( "idx", Encode.int 2 ) ] ) ]
 
                     staged =
                         { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
@@ -1675,7 +1681,7 @@ stateUpdateSuite =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head |> Maybe.andThen .state
                             |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
                 in
-                tagOf |> Expect.equal (Just "BlankScreen")
+                tagOf |> Expect.equal (Just "FakeFlashCaughtScreen")
         , test "a state transitioning into the win screen still updates the registry (winText is sent separately)" <|
             \_ ->
                 let
@@ -2604,4 +2610,364 @@ quizAnswerRoutingSuite =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
                 in
                 entryOf |> Maybe.map .quizProgress |> Expect.equal (Just 1)
+        ]
+
+
+
+-- ── Quiz-slide screen derivation (the quiz analogue of deriveIqScreen) ────────
+
+
+quizSlideReport : String -> Int -> Encode.Value
+quizSlideReport tag idx =
+    Encode.object
+        [ ( "screen", Encode.object [ ( "tag", Encode.string tag ), ( "idx", Encode.int idx ) ] )
+        , ( "now", Encode.float 42 )
+        ]
+
+
+persistedScreenField : String -> Decode.Decoder a -> Model -> Maybe a
+persistedScreenField field decoder m =
+    m.registry
+        |> List.filter (\e -> e.uuid == "uuid1")
+        |> List.head
+        |> Maybe.andThen .state
+        |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", field ] decoder) >> Result.toMaybe)
+
+
+deriveQuizScreenSuite : Test
+deriveQuizScreenSuite =
+    describe "deriveQuizScreen"
+        [ test "derives the earned slide's BlankScreen, decodable by Sync's real decoder" <|
+            \_ ->
+                deriveQuizScreen { progress = 1, total = 3 }
+                    |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
+                    |> Expect.equal (Just (BlankScreen 1))
+        , test "progress at total (quiz complete) is not derivable -- the client's WinScreen report stays authoritative" <|
+            \_ -> deriveQuizScreen { progress = 3, total = 3 } |> Expect.equal Nothing
+        , test "progress past total is not derivable" <|
+            \_ -> deriveQuizScreen { progress = 9, total = 3 } |> Expect.equal Nothing
+        , test "a negative progress (hand-mangled registry) is not derivable" <|
+            \_ -> deriveQuizScreen { progress = -1, total = 3 } |> Expect.equal Nothing
+        , test "total 0 (config unread) is never derivable, even at progress 0" <|
+            \_ -> deriveQuizScreen { progress = 0, total = 0 } |> Expect.equal Nothing
+        ]
+
+
+innermostScreenTagSuite : Test
+innermostScreenTagSuite =
+    describe "innermostScreenTag"
+        [ test "reads a plain screen's tag" <|
+            \_ -> innermostScreenTag (quizSlideReport "QuestionScreen" 2) |> Expect.equal "QuestionScreen"
+        , test "unwraps CheckingAnswerScreen/ConfirmingAnswerScreen nesting to the innermost tag" <|
+            \_ ->
+                Encode.object
+                    [ ( "screen"
+                      , Encode.object
+                            [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
+                            , ( "nextScreen"
+                              , Encode.object
+                                    [ ( "tag", Encode.string "CheckingAnswerScreen" )
+                                    , ( "nextScreen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 1 ) ] )
+                                    ]
+                              )
+                            ]
+                      )
+                    ]
+                    |> innermostScreenTag
+                    |> Expect.equal "BlankScreen"
+        , test "a wrapper with no nextScreen yields \"\" (matches no family)" <|
+            \_ ->
+                Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "CheckingAnswerScreen" ) ] ) ]
+                    |> innermostScreenTag
+                    |> Expect.equal ""
+        , test "a state with no decodable screen tag yields \"\"" <|
+            \_ -> innermostScreenTag (Encode.object []) |> Expect.equal ""
+        ]
+
+
+persistQuizScreenInRegistrySuite : Test
+persistQuizScreenInRegistrySuite =
+    describe "persistQuizScreenInRegistry"
+        [ test "writes the progress counter and overwrites only the screen key, preserving the rest of state" <|
+            \_ ->
+                let
+                    existing =
+                        [ { uuid = "uuid1"
+                          , filename = "f.dmg"
+                          , platform = "mac"
+                          , state =
+                                Just
+                                    (Encode.object
+                                        [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 0 ), ( "s", Encode.string "typed" ) ] )
+                                        , ( "now", Encode.float 42 )
+                                        ]
+                                    )
+                          , pendingStateEdit = False
+                          , winText = ""
+                          , iqTimer = Nothing
+                          , quizProgress = 0
+                          , timerEndsAt = Nothing
+                          }
+                        ]
+
+                    updated =
+                        persistQuizScreenInRegistry "uuid1" { next = 1, total = 3 } existing |> List.head
+
+                    stateField at decoder =
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at at decoder) >> Result.toMaybe)
+                in
+                Expect.all
+                    [ \_ -> updated |> Maybe.map .quizProgress |> Expect.equal (Just 1)
+                    , \_ -> stateField [ "screen", "tag" ] Decode.string |> Expect.equal (Just "BlankScreen")
+                    , \_ -> stateField [ "screen", "idx" ] Decode.int |> Expect.equal (Just 1)
+                    , \_ -> stateField [ "screen", "s" ] Decode.string |> Expect.equal Nothing
+                    , \_ -> stateField [ "now" ] Decode.float |> Expect.equal (Just 42)
+                    ]
+                    ()
+        , test "the final advance (next == total) writes the counter but leaves the screen to the client's own report" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    existing =
+                        [ { base | state = Just (Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] ) ]) } ]
+
+                    updated =
+                        persistQuizScreenInRegistry "uuid1" { next = 3, total = 3 } existing |> List.head
+                in
+                Expect.all
+                    [ \_ -> updated |> Maybe.map .quizProgress |> Expect.equal (Just 3)
+                    , \_ ->
+                        updated
+                            |> Maybe.andThen .state
+                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                            |> Expect.equal (Just "WinScreen")
+                    ]
+                    ()
+        , test "other entries pass through unaffected" <|
+            \_ ->
+                persistQuizScreenInRegistry "uuid1" { next = 1, total = 3 } [ entry "uuid1", entry "uuid2" ]
+                    |> List.filter (\e -> e.uuid == "uuid2")
+                    |> Expect.equal [ entry "uuid2" ]
+        ]
+
+
+quizScreenOverrideRoutingSuite : Test
+quizScreenOverrideRoutingSuite =
+    describe "quiz-slide screen override wired into Server.update"
+        [ test "a crafted quiz-slide stateUpdate can't park itself on an unearned question (or keep its typed text)" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizProgress = Dict.singleton "uuid1" 1
+                        }
+
+                    crafted =
+                        Encode.object
+                            [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 9 ), ( "s", Encode.string "peeked" ) ] )
+                            , ( "now", Encode.float 42 )
+                            ]
+
+                    ( m, _ ) =
+                        update (stateUpdateMsg "c1" crafted) staged
+                in
+                Expect.all
+                    [ \_ -> persistedScreenField "tag" Decode.string m |> Expect.equal (Just "BlankScreen")
+                    , \_ -> persistedScreenField "idx" Decode.int m |> Expect.equal (Just 1)
+                    , \_ -> persistedScreenField "s" Decode.string m |> Expect.equal Nothing
+                    ]
+                    ()
+        , test "a quiz slide hiding inside ConfirmingAnswerScreen is corrected too" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizProgress = Dict.singleton "uuid1" 1
+                        }
+
+                    wrapped =
+                        Encode.object
+                            [ ( "screen"
+                              , Encode.object
+                                    [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
+                                    , ( "nextScreen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 9 ), ( "s", Encode.string "" ) ] )
+                                    ]
+                              )
+                            ]
+
+                    ( m, _ ) =
+                        update (stateUpdateMsg "c1" wrapped) staged
+                in
+                Expect.all
+                    [ \_ -> persistedScreenField "tag" Decode.string m |> Expect.equal (Just "BlankScreen")
+                    , \_ -> persistedScreenField "idx" Decode.int m |> Expect.equal (Just 1)
+                    ]
+                    ()
+        , test "a ConfirmingAnswerScreen wrapping the win screen (the #33 exploit shape) passes through untouched" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    wrappedWin =
+                        Encode.object
+                            [ ( "screen"
+                              , Encode.object
+                                    [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
+                                    , ( "nextScreen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] )
+                                    ]
+                              )
+                            ]
+
+                    ( m, _ ) =
+                        update (stateUpdateMsg "c1" wrappedWin) staged
+                in
+                persistedScreenField "tag" Decode.string m |> Expect.equal (Just "ConfirmingAnswerScreen")
+        , test "before the question config is read (totalQuestions 0) a quiz-slide report is left alone" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , totalQuestions = 0
+                        }
+
+                    ( m, _ ) =
+                        update (stateUpdateMsg "c1" (quizSlideReport "BlankScreen" 2)) staged
+                in
+                persistedScreenField "idx" Decode.int m |> Expect.equal (Just 2)
+        , test "a live derivable IQ timer wins over the quiz correction" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizProgress = Dict.singleton "uuid1" 1
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqCounting, countdownRemaining = 5, totalDings = 100 }
+                        }
+
+                    ( m, _ ) =
+                        update (stateUpdateMsg "c1" (quizSlideReport "BlankScreen" 9)) staged
+                in
+                persistedScreenField "tag" Decode.string m |> Expect.equal (Just "IQTestCountdownScreen")
+        , test "a live-but-idle IQ timer falls back to the quiz-derived screen, not the raw report" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizProgress = Dict.singleton "uuid1" 1
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdle }
+                        }
+
+                    ( m, _ ) =
+                        update (stateUpdateMsg "c1" (quizSlideReport "QuestionScreen" 9)) staged
+                in
+                Expect.all
+                    [ \_ -> persistedScreenField "tag" Decode.string m |> Expect.equal (Just "BlankScreen")
+                    , \_ -> persistedScreenField "idx" Decode.int m |> Expect.equal (Just 1)
+                    ]
+                    ()
+        , test "a quizAdvanced accept persists the freshly-earned BlankScreen alongside the counter" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAdvancedMsg "c1" 0) connected
+                in
+                Expect.all
+                    [ \_ -> persistedScreenField "tag" Decode.string m |> Expect.equal (Just "BlankScreen")
+                    , \_ -> persistedScreenField "idx" Decode.int m |> Expect.equal (Just 1)
+                    ]
+                    ()
+        , test "a correct quizAnswerSubmitted persists the freshly-earned BlankScreen too" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected
+                in
+                Expect.all
+                    [ \_ -> persistedScreenField "tag" Decode.string m |> Expect.equal (Just "BlankScreen")
+                    , \_ -> persistedScreenField "idx" Decode.int m |> Expect.equal (Just 1)
+                    ]
+                    ()
+        , test "the final advance completes the quiz without touching the persisted screen" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizProgress = Dict.singleton "uuid1" 2
+                        }
+
+                    ( m, _ ) =
+                        update (quizAdvancedMsg "c1" 2) staged
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+                in
+                Expect.all
+                    [ \_ -> entryOf |> Maybe.map .quizProgress |> Expect.equal (Just 3)
+
+                    -- baseModel's entry has no screen at all; completion must not invent one.
+                    , \_ -> persistedScreenField "tag" Decode.string m |> Expect.equal Nothing
+                    ]
+                    ()
+        ]
+
+
+quizEditSuite : Test
+quizEditSuite =
+    describe "reconcileQuizProgressAfterEdit"
+        [ test "an edit onto a quiz slide makes its idx the authoritative progress, in memory and in the registry" <|
+            \_ ->
+                let
+                    reconciled =
+                        reconcileQuizProgressAfterEdit "uuid1" (quizSlideReport "QuestionScreen" 2) baseModel
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" reconciled.quizProgress |> Expect.equal (Just 2)
+                    , \_ ->
+                        reconciled.registry
+                            |> List.filter (\e -> e.uuid == "uuid1")
+                            |> List.head
+                            |> Maybe.map .quizProgress
+                            |> Expect.equal (Just 2)
+                    ]
+                    ()
+        , test "an out-of-range idx clamps to the last real slide (self-healing, not a soft-lock)" <|
+            \_ ->
+                reconcileQuizProgressAfterEdit "uuid1" (quizSlideReport "BlankScreen" 9) baseModel
+                    |> .quizProgress
+                    |> Dict.get "uuid1"
+                    |> Expect.equal (Just 2)
+        , test "a negative idx clamps to 0" <|
+            \_ ->
+                reconcileQuizProgressAfterEdit "uuid1" (quizSlideReport "WrongAnswerScreen" -5) baseModel
+                    |> .quizProgress
+                    |> Dict.get "uuid1"
+                    |> Expect.equal (Just 0)
+        , test "an edit onto a non-quiz screen reconciles nothing" <|
+            \_ ->
+                reconcileQuizProgressAfterEdit "uuid1" (Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] ) ]) baseModel
+                    |> Expect.equal baseModel
+        , test "a state-edit save routes through the reconciliation (wired into Server.update)" <|
+            \_ ->
+                let
+                    editing =
+                        { baseModel | distClients = Dict.singleton "c1" (EditingState "uuid1") }
+
+                    ( m, _ ) =
+                        update (saveMsg "c1" "uuid1" (Encode.encode 0 (quizSlideReport "QuestionScreen" 1))) editing
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal (Just 1)
         ]
