@@ -10,15 +10,15 @@ currentQuizSong model =
         BlankScreen idx ->
             getQuestion model.questions idx
                 |> Maybe.andThen
-                    (\q ->
-                        if isVideo q.song then
+                    (\song ->
+                        if isVideo song then
                             Nothing
 
                         else if hasPendingPlaySong idx model.pending then
                             Nothing
 
                         else
-                            Just q.song
+                            Just song
                     )
 
         _ ->

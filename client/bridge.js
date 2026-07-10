@@ -22,7 +22,17 @@ function handleReadFileResult(err, data, filePath) {
     : { path: filePath, contents: data, error: null }
 }
 
-module.exports = { computeWsUrl, resolveReadFilePath, decodeIncomingWsMessage, handleReadFileResult }
+// The client no longer reads any config/ JSON for the quiz (see #54, #70's review) --
+// it discovers songs by listing assets/songs/ directly and orders them by the numeric
+// filename convention (see Game.Quiz.elm's songOrder), so nothing under config/ needs
+// to be bundled or read client-side at all.
+function handleReadDirResult(err, files, dirPath) {
+  return err
+    ? { path: dirPath, files: [], error: err.message }
+    : { path: dirPath, files: files || [], error: null }
+}
+
+module.exports = { computeWsUrl, resolveReadFilePath, decodeIncomingWsMessage, handleReadFileResult, handleReadDirResult }
 
 // Loaded via a plain <script src="client/bridge.js"> tag in index.html (nodeIntegration
 // on, contextIsolation off) rather than as a required CommonJS module — Electron resolves
@@ -116,6 +126,13 @@ if (typeof document !== 'undefined') {
     const fullPath = resolveReadFilePath(filePath, __dirname)
     fs.readFile(fullPath, 'utf8', (err, data) => {
       app.ports.readFileResult.send(handleReadFileResult(err, data, filePath))
+    })
+  })
+
+  app.ports.readDir.subscribe((dirPath) => {
+    const fullPath = resolveReadFilePath(dirPath, __dirname)
+    fs.readdir(fullPath, (err, files) => {
+      app.ports.readDirResult.send(handleReadDirResult(err, files, dirPath))
     })
   })
 }

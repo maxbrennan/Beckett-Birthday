@@ -45,6 +45,13 @@ port readFile : String -> Cmd msg
 
 port readFileResult : ({ path : String, contents : Maybe String, error : Maybe String } -> msg) -> Sub msg
 
+-- Lists assets/songs/ directly -- the client no longer reads any config/ JSON for
+-- the quiz (see #54, #70's review); song order comes from the numeric filename
+-- convention alone (see Game.Quiz.songOrder).
+port readDir : String -> Cmd msg
+
+port readDirResult : ({ path : String, files : List String, error : Maybe String } -> msg) -> Sub msg
+
 
 init : String -> ( Model, Cmd Msg )
 init wsUrl =
@@ -64,7 +71,7 @@ init wsUrl =
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
-        , readFile "config/quiz-manifest.json"
+        , readDir "assets/songs"
         , Task.perform tickFromPosix Time.now
         ]
     )
@@ -196,13 +203,13 @@ videoSeekTime saved =
 -- VideoScreen always advances (its own end already gates on the right video);
 -- BlankScreen only advances if the reported track matches the song scheduled
 -- for that question, rejecting a stale TrackEnded left over from a transition.
-trackEndedTarget : List SongEntry -> Screen -> String -> Maybe Int
+trackEndedTarget : List String -> Screen -> String -> Maybe Int
 trackEndedTarget questions screen name =
     case screen of
         BlankScreen idx ->
             case getQuestion questions idx of
-                Just q ->
-                    if q.song == name then
+                Just song ->
+                    if song == name then
                         Just idx
 
                     else
@@ -311,9 +318,9 @@ update msg model =
                 Just blankIdx ->
                     if blankIdx == idx then
                         case getQuestion model.questions idx of
-                            Just q ->
-                                if isVideo q.song then
-                                    ( { model | screen = VideoScreen idx q.song }, Cmd.none )
+                            Just song ->
+                                if isVideo song then
+                                    ( { model | screen = VideoScreen idx song }, Cmd.none )
 
                                 else
                                     ( model, Cmd.none )
@@ -893,27 +900,31 @@ update msg model =
 
 
 
--- Decides what Msg a readFile port response becomes: the quiz-manifest file
--- (song filenames only, no answers -- see #54) decodes straight to a song
--- list, while anything else (app-uuid.json) is read for its "uuid" field.
+-- Decides what Msg a readFile port response becomes: app-uuid.json is read for
+-- its "uuid" field (it's the only file this port is still used for -- the quiz
+-- no longer reads any config/ JSON client-side, see #54/#70's review).
 decodeReadFileResult : { path : String, contents : Maybe String, error : Maybe String } -> Msg
-decodeReadFileResult { path, contents } =
-    case path of
-        "config/quiz-manifest.json" ->
-            QuestionsLoaded (Maybe.map decodeSongManifest contents |> Maybe.withDefault [])
+decodeReadFileResult { contents } =
+    case contents of
+        Just raw ->
+            case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
+                Ok uuid ->
+                    UuidLoaded (Just uuid)
 
-        _ ->
-            case contents of
-                Just raw ->
-                    case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
-                        Ok uuid ->
-                            UuidLoaded (Just uuid)
-
-                        Err _ ->
-                            UuidLoaded Nothing
-
-                Nothing ->
+                Err _ ->
                     UuidLoaded Nothing
+
+        Nothing ->
+            UuidLoaded Nothing
+
+
+-- Decides what Msg a readDir port response becomes: assets/songs/'s listing,
+-- ordered by each filename's leading number (see Game.Quiz.songOrder) -- an
+-- unreadable directory naturally yields no questions, the same fail-safe
+-- default as a malformed quiz-manifest.json used to.
+decodeReadDirResult : { path : String, files : List String, error : Maybe String } -> Msg
+decodeReadDirResult { files } =
+    QuestionsLoaded (songOrder files)
 
 
 everySecond : Time.Posix -> Msg
@@ -943,6 +954,7 @@ subscriptions model =
         , receiveDomProperty DomPropertyReceived
         , domPropertyError DomPropertyError
         , readFileResult decodeReadFileResult
+        , readDirResult decodeReadDirResult
         ]
 
 main : Program String Model Msg

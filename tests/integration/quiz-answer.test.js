@@ -8,7 +8,7 @@ const distClient = require('../helpers/distClient');
 const { connectAsPlayer } = require('../helpers/playerClient');
 const { waitUntil } = require('../helpers/waitUntil');
 
-const TEST_PORT = 19454;
+const TEST_PORT = 19455;
 const USERNAME = 'testadmin';
 const PASSWORD = 'correct-horse-battery-staple';
 const WIN_TEXT = 'Text "creeper... awwww man" to Max to claim your reward!';

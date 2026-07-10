@@ -367,7 +367,7 @@ entry uuid =
 
 baseQuizQuestions : List Question
 baseQuizQuestions =
-    [ Question "0.mp3" [ "Alpha" ], Question "1.mp3" [ "Beta" ], Question "2.mp3" [ "Gamma" ] ]
+    [ Question [ "Alpha" ], Question [ "Beta" ], Question [ "Gamma" ] ]
 
 
 baseModel : Model
@@ -2489,6 +2489,7 @@ quizAnswerSubmittedMsg clientId { idx, answer } =
     MessageReceived
         { clientId = clientId
         , payload = clientEnvelope "quizAnswerSubmitted" [ ( "idx", Encode.int idx ), ( "answer", Encode.string answer ) ]
+        , now = 0
         }
 
 

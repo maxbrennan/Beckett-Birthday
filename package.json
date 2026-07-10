@@ -34,7 +34,7 @@
     "add-admin": "node scripts/add-admin.js"
   },
   "build": {
-    "//": "WARNING: the win text must NEVER be given to the client. config/win-screen.json is deliberately excluded from `files` below (the '!config/win-screen.json' negation) — it exists only as the deploy-time source read by scripts/deploy.js and stored server-side in builds.jsonl. Do not remove that negation or otherwise bundle the win text. Same for quiz answers: config/quiz-questions.json holds them and is excluded below (see #54) — the client only ever gets config/quiz-manifest.json (song filenames, no answers).",
+    "//": "WARNING: nothing under config/ may ever be bundled into the client -- it's all server-side-only now (win-screen.json's reward text, quiz-questions.json's answers -- see #54/#70's review). Do not add config/**/* back to `files` below. The client gets song order by listing assets/songs/ directly (client/bridge.js's readDir port + Game.Quiz.songOrder), not from any config file.",
     "files": [
       ".env",
       "client/bridge.js",
@@ -44,11 +44,7 @@
       "server/codec.js",
       "proto/**/*",
       "assets/**/*",
-      "app-uuid.json",
-      "config/**/*",
-      "!config/win-screen.json",
-      "!config/quiz-questions.example.json",
-      "!config/quiz-questions.json"
+      "app-uuid.json"
     ],
     "mac": {
       "icon": "assets/icon.icns",

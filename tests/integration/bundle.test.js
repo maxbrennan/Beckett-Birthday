@@ -36,15 +36,6 @@ describe('client bundle does not contain the win text', () => {
 // they're loaded from config at runtime — so scanning elm-client.js for
 // answer substrings isn't meaningful (and is prone to false positives: e.g.
 // the real answer "Style" collides with Elm's compiled CSS-`style` runtime
-// code). The actual leak vector is the bundled *config file*, guarded here
-// and in tests/unit/quiz-manifest.test.js's package.json build.files check.
-describe('client bundle config does not contain quiz answers', () => {
-    test('config/quiz-manifest.json (the only quiz config the client bundles) carries no answers field', () => {
-        const manifest = JSON.parse(
-            fs.readFileSync(path.join(PROJECT_ROOT, 'config', 'quiz-manifest.json'), 'utf8')
-        );
-        manifest.forEach((entry) => {
-            expect(entry).not.toHaveProperty('answers');
-        });
-    });
-});
+// code). Since #70's review, nothing under config/ is bundled into the client
+// at all (the client lists assets/songs/ directly instead) -- see
+// tests/unit/quiz-config-bundling.test.js's package.json build.files check.

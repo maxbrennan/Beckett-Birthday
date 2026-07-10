@@ -2,9 +2,8 @@ module MainTest exposing (..)
 
 import Expect
 import Game.IQTest exposing (FakeFlashPhase(..), IQTestState, iqQuestionCount)
-import Game.Quiz exposing (SongEntry)
 import Json.Encode as Encode
-import Main exposing (decodeReadFileResult, everySecond, init, subscriptions, tickFromPosix, update)
+import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, subscriptions, tickFromPosix, update)
 import Test exposing (Test, describe, test)
 import Time
 import Types exposing (Model, Msg(..), PausedState, Screen(..))
@@ -43,7 +42,7 @@ baseModel =
     , timerEndsAt = 0
     , myUuid = Just "uuid1"
     , wsUrl = "wss://example.test"
-    , questions = [ SongEntry "song0.mp3", SongEntry "video1.mp4" ]
+    , questions = [ "song0.mp3", "video1.mp4" ]
     , awaitingAnswerResult = False
     }
 
@@ -496,31 +495,40 @@ everySecondSuite =
 
 decodeReadFileResultSuite : Test
 decodeReadFileResultSuite =
+    -- app-uuid.json is the only file left on this port -- the quiz no longer reads
+    -- any config/ JSON client-side at all (see #54/#70's review); song discovery
+    -- moved to decodeReadDirResult below.
     describe "decodeReadFileResult"
-        [ test "decodes the quiz-manifest file into QuestionsLoaded" <|
-            \_ ->
-                decodeReadFileResult
-                    { path = "config/quiz-manifest.json"
-                    , contents = Just """[{"song":"a.mp3"}]"""
-                    , error = Nothing
-                    }
-                    |> Expect.equal (QuestionsLoaded [ SongEntry "a.mp3" ])
-        , test "an empty/unparseable quiz-manifest file yields no questions" <|
-            \_ ->
-                decodeReadFileResult { path = "config/quiz-manifest.json", contents = Nothing, error = Just "boom" }
-                    |> Expect.equal (QuestionsLoaded [])
-        , test "any other file with a valid uuid field yields UuidLoaded (Just uuid)" <|
+        [ test "a valid uuid field yields UuidLoaded (Just uuid)" <|
             \_ ->
                 decodeReadFileResult { path = "app-uuid.json", contents = Just """{"uuid":"abc-123"}""", error = Nothing }
                     |> Expect.equal (UuidLoaded (Just "abc-123"))
-        , test "any other file with malformed contents yields UuidLoaded Nothing" <|
+        , test "malformed contents yields UuidLoaded Nothing" <|
             \_ ->
                 decodeReadFileResult { path = "app-uuid.json", contents = Just "not json", error = Nothing }
                     |> Expect.equal (UuidLoaded Nothing)
-        , test "any other file with no contents yields UuidLoaded Nothing" <|
+        , test "no contents yields UuidLoaded Nothing" <|
             \_ ->
                 decodeReadFileResult { path = "app-uuid.json", contents = Nothing, error = Just "not found" }
                     |> Expect.equal (UuidLoaded Nothing)
+        ]
+
+
+decodeReadDirResultSuite : Test
+decodeReadDirResultSuite =
+    describe "decodeReadDirResult"
+        [ test "orders assets/songs/ files numerically into QuestionsLoaded" <|
+            \_ ->
+                decodeReadDirResult { path = "assets/songs", files = [ "1.mp3", "0.mp3" ], error = Nothing }
+                    |> Expect.equal (QuestionsLoaded [ "0.mp3", "1.mp3" ])
+        , test "drops non-numeric entries (e.g. .DS_Store)" <|
+            \_ ->
+                decodeReadDirResult { path = "assets/songs", files = [ "0.mp3", ".DS_Store" ], error = Nothing }
+                    |> Expect.equal (QuestionsLoaded [ "0.mp3" ])
+        , test "an unreadable directory yields no questions" <|
+            \_ ->
+                decodeReadDirResult { path = "assets/songs", files = [], error = Just "boom" }
+                    |> Expect.equal (QuestionsLoaded [])
         ]
 
 
@@ -899,7 +907,7 @@ miscTrivialSuite =
             \_ ->
                 let
                     qs =
-                        [ SongEntry "x.mp3" ]
+                        [ "x.mp3" ]
 
                     ( result, _ ) =
                         update (QuestionsLoaded qs) baseModel

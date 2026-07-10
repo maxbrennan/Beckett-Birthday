@@ -59,7 +59,7 @@ type alias Model =
     , timerEndsAt : Float
     , myUuid : Maybe String
     , wsUrl : String
-    , questions : List SongEntry
+    , questions : List String
     , awaitingAnswerResult : Bool
     }
 
@@ -90,5 +90,5 @@ type Msg
     | WsDisconnected String
     | WsReconnect
     | UuidLoaded (Maybe String)
-    | QuestionsLoaded (List SongEntry)
+    | QuestionsLoaded (List String)
     | NoOp

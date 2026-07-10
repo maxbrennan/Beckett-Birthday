@@ -265,8 +265,8 @@ viewScreen model =
             let
                 bg =
                     case getQuestion model.questions idx of
-                        Just q ->
-                            if isVideo q.song then
+                        Just song ->
+                            if isVideo song then
                                 "#000000"
 
                             else

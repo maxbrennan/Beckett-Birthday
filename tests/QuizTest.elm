@@ -1,7 +1,7 @@
 module QuizTest exposing (..)
 
 import Expect
-import Game.Quiz exposing (AnswerOutcome(..), Question, SongEntry, capitalize, decideAnswer, decodeQuestions, decodeSongManifest, getQuestion, isVideo, normalize)
+import Game.Quiz exposing (AnswerOutcome(..), Question, capitalize, decideAnswer, decodeQuestions, getQuestion, isVideo, normalize, songNumericPrefix, songOrder)
 import Test exposing (Test, describe, test)
 
 
@@ -47,11 +47,11 @@ getQuestionTests : Test
 getQuestionTests =
     let
         questions =
-            [ Question "a.mp3" [ "a" ], Question "b.mp3" [ "b" ], Question "c.mp3" [ "c" ] ]
+            [ Question [ "a" ], Question [ "b" ], Question [ "c" ] ]
     in
     describe "getQuestion"
         [ test "returns the question at the given index" <|
-            \_ -> Expect.equal (Just (Question "b.mp3" [ "b" ])) (getQuestion questions 1)
+            \_ -> Expect.equal (Just (Question [ "b" ])) (getQuestion questions 1)
         , test "returns Nothing when the index is out of range" <|
             \_ -> Expect.equal Nothing (getQuestion questions 10)
         , test "returns Nothing for an empty list" <|
@@ -63,7 +63,7 @@ decideAnswerTests : Test
 decideAnswerTests =
     let
         questions =
-            [ Question "a.mp3" [ "Alpha" ], Question "b.mp3" [ "Beta" ] ]
+            [ Question [ "Alpha" ], Question [ "Beta" ] ]
     in
     describe "decideAnswer"
         [ test "correct answer with a following question continues to it" <|
@@ -83,8 +83,8 @@ decodeQuestionsTests =
         [ test "decodes a well-formed JSON array of questions" <|
             \_ ->
                 Expect.equal
-                    [ Question "one.mp3" [ "One", "Uno" ], Question "two.mp3" [ "Two" ] ]
-                    (decodeQuestions """[{"song":"one.mp3","answers":["One","Uno"]},{"song":"two.mp3","answers":["Two"]}]""")
+                    [ Question [ "One", "Uno" ], Question [ "Two" ] ]
+                    (decodeQuestions """[{"answers":["One","Uno"]},{"answers":["Two"]}]""")
         , test "returns an empty list for malformed JSON" <|
             \_ -> Expect.equal [] (decodeQuestions "not json")
         , test "returns an empty list for valid JSON that doesn't match the shape" <|
@@ -92,39 +92,50 @@ decodeQuestionsTests =
         ]
 
 
--- The client-safe manifest (see #54): song filenames only, no answers. This
--- is the only quiz config the client ever loads.
-decodeSongManifestTests : Test
-decodeSongManifestTests =
-    describe "decodeSongManifest"
-        [ test "decodes a well-formed JSON array of song entries" <|
+-- The client never sees quiz-questions.json at all (see #54/#70's review) -- it
+-- lists assets/songs/ directly and orders the results with songOrder, purely
+-- from each filename's leading number.
+songOrderTests : Test
+songOrderTests =
+    describe "songOrder"
+        [ test "sorts numerically, not lexicographically" <|
             \_ ->
                 Expect.equal
-                    [ SongEntry "0.mp3", SongEntry "1.mp4" ]
-                    (decodeSongManifest """[{"song":"0.mp3"},{"song":"1.mp4"}]""")
-        , test "ignores an answers field if one is present (defense in depth -- the manifest shouldn't have one)" <|
-            \_ ->
-                Expect.equal
-                    [ SongEntry "0.mp3" ]
-                    (decodeSongManifest """[{"song":"0.mp3","answers":["leaked"]}]""")
-        , test "returns an empty list for malformed JSON" <|
-            \_ -> Expect.equal [] (decodeSongManifest "not json")
-        , test "returns an empty list for valid JSON that doesn't match the shape" <|
-            \_ -> Expect.equal [] (decodeSongManifest """[{"wrong": "shape"}]""")
+                    [ "0.mp3", "1.mp3", "2.mp3", "10.mp3" ]
+                    (songOrder [ "10.mp3", "2.mp3", "0.mp3", "1.mp3" ])
+        , test "keeps each filename's extension (video vs audio) intact" <|
+            \_ -> Expect.equal [ "0.mp3", "1.mp4" ] (songOrder [ "1.mp4", "0.mp3" ])
+        , test "drops entries with no leading number (e.g. stray .DS_Store files)" <|
+            \_ -> Expect.equal [ "0.mp3", "1.mp3" ] (songOrder [ "0.mp3", ".DS_Store", "1.mp3" ])
+        , test "empty listing yields no questions" <|
+            \_ -> Expect.equal [] (songOrder [])
         ]
 
 
--- getQuestion is generic over any record with a `song` field (SongEntry or
--- Question) -- see #54. Confirms it still works for the client-safe shape.
-getQuestionOnSongEntryTests : Test
-getQuestionOnSongEntryTests =
+songNumericPrefixTests : Test
+songNumericPrefixTests =
+    describe "songNumericPrefix"
+        [ test "extracts the leading integer before the extension" <|
+            \_ -> Expect.equal (Just 3) (songNumericPrefix "3.mp4")
+        , test "Nothing for a filename with no leading number" <|
+            \_ -> Expect.equal Nothing (songNumericPrefix ".DS_Store")
+        , test "Nothing for a filename with no extension separator at all" <|
+            \_ -> Expect.equal Nothing (songNumericPrefix "song")
+        ]
+
+
+-- getQuestion is fully generic (List a -> Int -> Maybe a) -- confirms it still
+-- works positionally over the client's raw filename strings, same as it does
+-- over the server's List Question.
+getQuestionOnFilenamesTests : Test
+getQuestionOnFilenamesTests =
     let
         songs =
-            [ SongEntry "a.mp3", SongEntry "b.mp3" ]
+            [ "a.mp3", "b.mp3" ]
     in
-    describe "getQuestion on SongEntry"
+    describe "getQuestion on filenames"
         [ test "returns the entry at the given index" <|
-            \_ -> Expect.equal (Just (SongEntry "b.mp3")) (getQuestion songs 1)
+            \_ -> Expect.equal (Just "b.mp3") (getQuestion songs 1)
         , test "returns Nothing when the index is out of range" <|
             \_ -> Expect.equal Nothing (getQuestion songs 10)
         ]
