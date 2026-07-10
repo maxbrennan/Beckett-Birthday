@@ -37,6 +37,14 @@ type alias RegistryEntry =
     -- never changes again for that uuid -- the client only ever receives it
     -- (via timerSyncEnvelope) and renders it, never invents or reports its own.
     , timerEndsAt : Maybe Float
+
+    -- Opaque (Registry.elm never decodes into Game.Quiz.Question -- Server.elm does that)
+    -- per-build song/answer list, sent at deploy time on DistComplete/DistReplaceComplete
+    -- and used by Server.elm to validate ClientQuizAnswerSubmitted for the connecting
+    -- player only. Unlike winText/iqTimer/quizProgress/timerEndsAt above, this is resent
+    -- (not inherited from the old entry) on a build replacement -- see Server.elm's
+    -- ClientDistReplaceComplete handler.
+    , quizQuestions : Maybe Encode.Value
     }
 
 
@@ -60,6 +68,7 @@ encodeRegistryEntry entry =
         , ( "iqTimer", Maybe.withDefault Encode.null entry.iqTimer )
         , ( "quizProgress", Encode.int entry.quizProgress )
         , ( "timerEndsAt", entry.timerEndsAt |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
+        , ( "quizQuestions", Maybe.withDefault Encode.null entry.quizQuestions )
         ]
 
 
@@ -120,10 +129,14 @@ decodeRegistryEntry =
         )
         |> Decode.andThen
             (\partial ->
-                -- older rows predate the server-owned timer; treat missing as Nothing
-                -- (established fresh on this player's next stateRequest).
-                Decode.map partial
+                -- Decode.map8 above is already at elm/json's mapN ceiling, so timerEndsAt
+                -- and quizQuestions (the 9th/10th fields) are applied here instead.
+                Decode.map2 partial
+                    -- older rows predate the server-owned timer; treat missing as Nothing
+                    -- (established fresh on this player's next stateRequest).
                     (Decode.maybe (Decode.field "timerEndsAt" Decode.float))
+                    -- older rows predate per-build quiz questions; treat missing as Nothing.
+                    (decodeOptionalValue "quizQuestions")
             )
 
 

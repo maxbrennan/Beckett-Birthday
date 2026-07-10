@@ -11,10 +11,10 @@ type ClientEnvelope
     | ClientStateRequest String
     | ClientDistRegister DistInfo
     | ClientDistUpload { uuid : String, filename : String, contentsBase64 : String, chunkIndex : Int, isLast : Bool }
-    | ClientDistComplete { uuid : String, filename : String, winText : String }
+    | ClientDistComplete { uuid : String, filename : String, winText : String, quizQuestions : Encode.Value }
     | ClientDistStateEdit String
     | ClientDistStateEditSave { uuid : String, json : String }
-    | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String }
+    | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String, quizQuestions : Encode.Value, winText : String }
     | ClientDistUndeploy String
     | ClientDistList
     | ClientIqStartCountdown
@@ -71,11 +71,18 @@ decodeClientEnvelope =
                             (Decode.at [ "distUpload", "isLast" ] Decode.bool)
 
                     "distComplete" ->
-                        Decode.map3 (\u f w -> ClientDistComplete { uuid = u, filename = f, winText = w })
+                        Decode.map4
+                            (\u f w q -> ClientDistComplete { uuid = u, filename = f, winText = w, quizQuestions = q })
                             (Decode.at [ "distComplete", "uuid" ] Decode.string)
                             (Decode.at [ "distComplete", "filename" ] Decode.string)
                             -- older deploy clients omit winText; codec defaults it to "".
                             (Decode.oneOf [ Decode.at [ "distComplete", "winText" ] Decode.string, Decode.succeed "" ])
+                            -- older deploy clients omit quizQuestions; codec defaults it to [].
+                            (Decode.oneOf
+                                [ Decode.at [ "distComplete", "quizQuestions" ] Decode.value
+                                , Decode.succeed (Encode.list identity [])
+                                ]
+                            )
 
                     "distStateEdit" ->
                         Decode.map ClientDistStateEdit
@@ -87,11 +94,22 @@ decodeClientEnvelope =
                             (Decode.at [ "distStateEditSave", "json" ] Decode.string)
 
                     "distReplaceComplete" ->
-                        Decode.map3
-                            (\n o f -> ClientDistReplaceComplete { newUuid = n, oldUuid = o, filename = f })
+                        Decode.map5
+                            (\n o f q w ->
+                                ClientDistReplaceComplete
+                                    { newUuid = n, oldUuid = o, filename = f, quizQuestions = q, winText = w }
+                            )
                             (Decode.at [ "distReplaceComplete", "newUuid" ] Decode.string)
                             (Decode.at [ "distReplaceComplete", "oldUuid" ] Decode.string)
                             (Decode.at [ "distReplaceComplete", "filename" ] Decode.string)
+                            -- older deploy clients omit quizQuestions; codec defaults it to [].
+                            (Decode.oneOf
+                                [ Decode.at [ "distReplaceComplete", "quizQuestions" ] Decode.value
+                                , Decode.succeed (Encode.list identity [])
+                                ]
+                            )
+                            -- older deploy clients omit winText; codec defaults it to "".
+                            (Decode.oneOf [ Decode.at [ "distReplaceComplete", "winText" ] Decode.string, Decode.succeed "" ])
 
                     "distUndeploy" ->
                         Decode.map ClientDistUndeploy

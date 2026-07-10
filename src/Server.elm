@@ -2,7 +2,7 @@ port module Server exposing (..)
 
 import Dict exposing (Dict)
 import Game.IQTest as IQTest
-import Game.Quiz exposing (AnswerOutcome(..), Question, capitalize, decideAnswer, decodeQuestions, getQuestion)
+import Game.Quiz exposing (AnswerOutcome(..), Question, capitalize, decideAnswer, getQuestion, questionDecoder)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Platform
@@ -27,17 +27,11 @@ type alias Model =
 
     -- Server-owned quiz completion tracking (see acceptQuizAdvance/
     -- quizJustCompleted below): the furthest question index each uuid has been
-    -- independently confirmed to have passed, and the true question count
-    -- read from config/app-config.json at startup -- never from the
-    -- client's own self-reported state.
+    -- independently confirmed to have passed -- never from the client's own
+    -- self-reported state. The true per-build question list/count lives on
+    -- each uuid's own RegistryEntry.quizQuestions (see questionsForUuid), not
+    -- here -- see #77.
     , quizProgress : Dict String Int
-    , totalQuestions : Int
-
-    -- The full song+answers list read from the quizQuestions field of
-    -- config/app-config.json (see quizQuestionsFilePath), used to validate
-    -- ClientQuizAnswerSubmitted via
-    -- Game.Quiz.decideAnswer. Never sent to the client -- see #54.
-    , quizQuestions : List Question
     }
 
 
@@ -234,16 +228,25 @@ applyCatch s =
 -- Server-authoritative gate for the win screen: the server only trusts an
 -- explicit, monotonic sequence of quizAdvanced events -- never the freeform
 -- client-reported `state.screen` -- to decide when a player has passed every
--- question. See RegistryEntry.quizProgress and Model.quizProgress/totalQuestions.
+-- question. See RegistryEntry.quizProgress and Model.quizProgress.
 -- The same confirmed progress also drives the persisted quiz-slide screen
 -- (deriveQuizScreen/persistQuizScreenInRegistry below), mirroring the IQ
 -- test's deriveIqScreen pattern, so a self-reported quiz slide can't drift
 -- from what the player has actually earned.
 
 
-quizQuestionsFilePath : String
-quizQuestionsFilePath =
-    "config/app-config.json"
+{-| The connecting player's own build's quiz questions, resolved from their
+RegistryEntry.quizQuestions blob (sent at deploy time -- see #77). Never a
+global list: two different builds' answers can, and should, differ.
+-}
+questionsForUuid : String -> List RegistryEntry -> List Question
+questionsForUuid uuid registry =
+    registry
+        |> List.filter (\e -> e.uuid == uuid)
+        |> List.head
+        |> Maybe.andThen .quizQuestions
+        |> Maybe.andThen (Decode.decodeValue (Decode.list questionDecoder) >> Result.toMaybe)
+        |> Maybe.withDefault []
 
 
 {-| Accept an incoming quizAdvanced idx only if it's exactly the next one this
@@ -370,7 +373,7 @@ applyQuizScreenOverride uuid inner model registry =
             if List.member (innermostScreenTag inner) quizSlideTags then
                 deriveQuizScreen
                     { progress = Dict.get uuid model.quizProgress |> Maybe.withDefault 0
-                    , total = model.totalQuestions
+                    , total = List.length (questionsForUuid uuid registry)
                     }
 
             else
@@ -398,7 +401,7 @@ reconcileQuizProgressAfterEdit uuid parsedState model =
     if List.member (innermostScreenTag parsedState) quizSlideTags then
         let
             progress =
-                clamp 0 (model.totalQuestions - 1) (extractQuestionIdx parsedState)
+                clamp 0 (List.length (questionsForUuid uuid model.registry) - 1) (extractQuestionIdx parsedState)
         in
         { model
             | quizProgress = Dict.insert uuid progress model.quizProgress
@@ -1095,12 +1098,9 @@ init () =
       , iqTimers = Dict.empty
       , seed = Random.initialSeed 0
       , quizProgress = Dict.empty
-      , totalQuestions = 0
-      , quizQuestions = []
       }
     , Cmd.batch
         [ readFile registryFilePath
-        , readFile quizQuestionsFilePath
         , Task.perform GotTime Time.now
         ]
     )
@@ -1340,6 +1340,13 @@ update msg model =
                                             , iqTimer = Nothing
                                             , quizProgress = 0
                                             , timerEndsAt = Nothing
+
+                                            -- Placeholder: this entry is a provisional row created
+                                            -- right after the last upload chunk, immediately
+                                            -- superseded by ClientDistComplete's own entry (same
+                                            -- filename, filtered out below) once that message
+                                            -- arrives with the real winText/quizQuestions.
+                                            , quizQuestions = Nothing
                                             }
 
                                         newRegistry =
@@ -1366,7 +1373,7 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
-                Ok (ClientDistComplete { uuid, filename, winText }) ->
+                Ok (ClientDistComplete { uuid, filename, winText, quizQuestions }) ->
                     case Dict.get clientId model.distClients of
                         Just (AwaitingUpload info) ->
                             if info.uuid == uuid then
@@ -1381,6 +1388,7 @@ update msg model =
                                         , iqTimer = Nothing
                                         , quizProgress = 0
                                         , timerEndsAt = Nothing
+                                        , quizQuestions = Just quizQuestions
                                         }
 
                                     newRegistry =
@@ -1464,7 +1472,7 @@ update msg model =
                     , requestAuth { clientId = clientId, level = 2 }
                     )
 
-                Ok (ClientDistReplaceComplete { newUuid, oldUuid, filename }) ->
+                Ok (ClientDistReplaceComplete { newUuid, oldUuid, filename, quizQuestions, winText }) ->
                     case Dict.get clientId model.distClients of
                         Just (AwaitingUpload info) ->
                             if info.uuid == newUuid then
@@ -1483,9 +1491,17 @@ update msg model =
                                         , platform = info.platform
                                         , state = oldState
                                         , pendingStateEdit = True
-                                        , winText = oldEntry |> Maybe.map .winText |> Maybe.withDefault ""
 
-                                        -- Carry the IQ snapshot to the new uuid too, same as state/winText.
+                                        -- Unlike every field below, winText and quizQuestions are
+                                        -- resent fresh on every replace deploy (see
+                                        -- scripts/deploy-replacement.js) rather than inherited from
+                                        -- oldEntry -- a replacement build's songs/config may have
+                                        -- changed, and reusing the old uuid's answers/reward text
+                                        -- would silently mismatch the new build. See #77.
+                                        , winText = winText
+                                        , quizQuestions = Just quizQuestions
+
+                                        -- Carry the IQ snapshot to the new uuid too, same as state.
                                         -- (model.iqTimers itself stays keyed by oldUuid until a restart
                                         -- rehydrates it under newUuid from this registry row -- a pre-existing
                                         -- gap in replacement handling, not something this change introduces.)
@@ -1650,6 +1666,9 @@ update msg model =
                             let
                                 current =
                                     Dict.get uuid model.quizProgress |> Maybe.withDefault 0
+
+                                total =
+                                    List.length (questionsForUuid uuid model.registry)
                             in
                             case acceptQuizAdvance { current = current, idx = idx } of
                                 Nothing ->
@@ -1658,7 +1677,7 @@ update msg model =
                                 Just next ->
                                     let
                                         newRegistry =
-                                            persistQuizScreenInRegistry uuid { next = next, total = model.totalQuestions } model.registry
+                                            persistQuizScreenInRegistry uuid { next = next, total = total } model.registry
 
                                         newModel =
                                             { model
@@ -1667,7 +1686,7 @@ update msg model =
                                             }
 
                                         winCmd =
-                                            if quizJustCompleted { next = next, total = model.totalQuestions } then
+                                            if quizJustCompleted { next = next, total = total } then
                                                 newRegistry
                                                     |> List.filter (\e -> e.uuid == uuid)
                                                     |> List.head
@@ -1681,12 +1700,12 @@ update msg model =
 
                 Ok (ClientQuizAnswerSubmitted { idx, answer }) ->
                     -- The server, not the client, holds the answers (see
-                    -- quizQuestions/quizQuestionsFilePath) and decides correctness
-                    -- via decideAnswer -- mirroring Game.Quiz's old client-side
-                    -- check, just moved here (see #54/#32). idx must still be
-                    -- exactly the player's next expected question (same
-                    -- acceptQuizAdvance gate as ClientQuizAdvanced above), so a
-                    -- correct answer for a later idx can't be used to skip ahead.
+                    -- questionsForUuid) and decides correctness via decideAnswer --
+                    -- mirroring Game.Quiz's old client-side check, just moved here
+                    -- (see #54/#32). idx must still be exactly the player's next
+                    -- expected question (same acceptQuizAdvance gate as
+                    -- ClientQuizAdvanced above), so a correct answer for a later idx
+                    -- can't be used to skip ahead.
                     case findUuidByClient clientId model.connectedPlayers of
                         Nothing ->
                             ( model, Cmd.none )
@@ -1706,20 +1725,26 @@ update msg model =
                                 let
                                     current =
                                         Dict.get uuid model.quizProgress |> Maybe.withDefault 0
+
+                                    questions =
+                                        questionsForUuid uuid model.registry
+
+                                    total =
+                                        List.length questions
                                 in
                                 case acceptQuizAdvance { current = current, idx = idx } of
                                     Nothing ->
                                         ( model, Cmd.none )
 
                                     Just next ->
-                                        case decideAnswer model.quizQuestions idx answer of
+                                        case decideAnswer questions idx answer of
                                             NoQuestion ->
                                                 ( model, Cmd.none )
 
                                             IncorrectAnswer ->
                                                 let
                                                     revealAnswer =
-                                                        getQuestion model.quizQuestions idx
+                                                        getQuestion questions idx
                                                             |> Maybe.andThen (.answers >> List.head)
                                                             |> Maybe.map capitalize
                                                             |> Maybe.withDefault "Unknown"
@@ -1738,7 +1763,7 @@ update msg model =
                                                 -- the result reply.
                                                 let
                                                     newRegistry =
-                                                        persistQuizScreenInRegistry uuid { next = next, total = model.totalQuestions } model.registry
+                                                        persistQuizScreenInRegistry uuid { next = next, total = total } model.registry
 
                                                     newModel =
                                                         { model
@@ -1753,7 +1778,7 @@ update msg model =
                                                             }
 
                                                     winCmd =
-                                                        if quizJustCompleted { next = next, total = model.totalQuestions } then
+                                                        if quizJustCompleted { next = next, total = total } then
                                                             newRegistry
                                                                 |> List.filter (\e -> e.uuid == uuid)
                                                                 |> List.head
@@ -1871,21 +1896,6 @@ update msg model =
                           }
                         , Cmd.none
                         )
-
-                    Err _ ->
-                        ( model, Cmd.none )
-
-            else if path == quizQuestionsFilePath then
-                case result of
-                    Ok contents ->
-                        -- decodeQuestions swallows decode errors internally (returns []),
-                        -- so an unreadable/malformed config naturally yields totalQuestions
-                        -- = 0, the same fail-safe default as the Err branch below.
-                        let
-                            questions =
-                                decodeQuestions contents
-                        in
-                        ( { model | totalQuestions = List.length questions, quizQuestions = questions }, Cmd.none )
 
                     Err _ ->
                         ( model, Cmd.none )

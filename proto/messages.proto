@@ -68,11 +68,15 @@ message DistUpload {
 }
 message DistUndeploy        { string uuid = 1; }
 message DistList            {}
-message DistComplete         { string uuid = 1; string filename = 2; string win_text = 3; }
+message DistComplete         { string uuid = 1; string filename = 2; string win_text = 3; repeated Question quiz_questions = 4; }
 message DistStateEdit        { string uuid = 1; }
 message DistStateEditSave    { string uuid = 1; string json = 2; }
 message DistStateEditPayload { string uuid = 1; string json = 2; }
-message DistReplaceComplete  { string new_uuid = 1; string old_uuid = 2; string filename = 3; }
+// quiz_questions/win_text are resent fresh at replacement time, not inherited from the uuid
+// being replaced -- unlike every other per-build field (state/iqTimer/quizProgress/
+// timerEndsAt), which the server carries forward from the old entry. See Server.elm's
+// ClientDistReplaceComplete handler.
+message DistReplaceComplete  { string new_uuid = 1; string old_uuid = 2; string filename = 3; repeated Question quiz_questions = 4; string win_text = 5; }
 
 message DistListEntry {
   string uuid     = 1;
@@ -103,16 +107,22 @@ message IqDing              { bool fake = 1; bool trap = 2; uint32 ding_count = 
 message IqStartLoud         {}
 message IqTestComplete      {}
 
+// One quiz slide's accepted answers. Carried only on DistComplete/DistReplaceComplete (the
+// deploy-time, client->server ingress) -- never on any server->client message, since answers
+// must never reach the client (see #54/#70).
+message Question { repeated string answers = 1; }
+
 // "I just passed question idx" (correct answer, or an IQ-test penalty
 // clearing after a wrong one). The server, not this message, decides whether
 // this means the game is won -- see Server.elm's acceptQuizAdvance/
 // quizJustCompleted.
 message QuizAdvanced { uint32 idx = 1; }
 
-// "I typed this answer for question idx" -- the server validates it against
-// config/app-config.json's quizQuestions field (never sent to the client) and
-// replies with QuizAnswerResult. See Game.Quiz.decideAnswer / Server.elm's
-// handling of ClientQuizAnswerSubmitted.
+// "I typed this answer for question idx" -- the server validates it against the connecting
+// player's own build's quiz_questions (sent at deploy time on DistComplete/
+// DistReplaceComplete, stored on that build's RegistryEntry; never sent to the client) and
+// replies with QuizAnswerResult. See Game.Quiz.decideAnswer / Server.elm's handling of
+// ClientQuizAnswerSubmitted.
 message QuizAnswerSubmitted { uint32 idx = 1; string answer = 2; }
 
 // correct: whether the answer matched. reveal_answer: the correct answer's
