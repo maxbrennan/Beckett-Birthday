@@ -262,6 +262,21 @@ acceptQuizAdvance { current, idx } =
         Nothing
 
 
+{-| True when the player has a live IQ-timer entry (including `IqIdle`,
+"waiting to restart") -- i.e., mid-penalty. Both quiz-progression entry
+points (`ClientQuizAdvanced` and `ClientQuizAnswerSubmitted`) are unexpected
+while this holds: the honest client's quiz screens never render during the
+IQ test, so a live entry means a crafted client is trying to advance
+concurrently with (or instead of) serving the penalty. `clearIqTimer` already
+removes the entry before the legitimate `quizAdvanced`/`quizAnswerSubmitted`
+sent right after a genuine test completion, so this never blocks the honest
+flow (see #73/#75).
+-}
+quizBlockedByLiveIqTimer : String -> Model -> Bool
+quizBlockedByLiveIqTimer uuid model =
+    Dict.member uuid model.iqTimers
+
+
 {-| True once the player's confirmed progress has reached the real question
 count. `total <= 0` (config unread/unreadable) can never be "complete" -- a
 fail-safe default, not a trivially satisfiable edge case.
@@ -1563,13 +1578,27 @@ update msg model =
 
                 Ok ClientIqStartCountdown ->
                     -- "Player pressed Begin." The count is the server's own, never
-                    -- the client's -- see startCountdown.
+                    -- the client's -- see startCountdown. Only honored when there's
+                    -- no live entry yet, or the existing one is IqIdle (post-catch,
+                    -- waiting to restart) -- the honest client's Begin button only
+                    -- renders on IQTestScreen in those two states, so a countdown
+                    -- already ticking/dinging in any other phase is a stale/crafted
+                    -- request: ignore it rather than silently restarting the test.
                     case findUuidByClient clientId model.connectedPlayers of
-                        Just uuid ->
-                            startCountdown uuid model
-
                         Nothing ->
                             ( model, Cmd.none )
+
+                        Just uuid ->
+                            case Dict.get uuid model.iqTimers of
+                                Nothing ->
+                                    startCountdown uuid model
+
+                                Just state ->
+                                    if state.phase == IqIdle then
+                                        startCountdown uuid model
+
+                                    else
+                                        ( model, Cmd.none )
 
                 Ok ClientIqReadyForDing ->
                     case findUuidByClient clientId model.connectedPlayers of
@@ -1663,40 +1692,44 @@ update msg model =
                             ( model, Cmd.none )
 
                         Just uuid ->
-                            let
-                                current =
-                                    Dict.get uuid model.quizProgress |> Maybe.withDefault 0
+                            if quizBlockedByLiveIqTimer uuid model then
+                                ( model, Cmd.none )
 
-                                total =
-                                    List.length (questionsForUuid uuid model.registry)
-                            in
-                            case acceptQuizAdvance { current = current, idx = idx } of
-                                Nothing ->
-                                    ( model, Cmd.none )
+                            else
+                                let
+                                    current =
+                                        Dict.get uuid model.quizProgress |> Maybe.withDefault 0
 
-                                Just next ->
-                                    let
-                                        newRegistry =
-                                            persistQuizScreenInRegistry uuid { next = next, total = total } model.registry
+                                    total =
+                                        List.length (questionsForUuid uuid model.registry)
+                                in
+                                case acceptQuizAdvance { current = current, idx = idx } of
+                                    Nothing ->
+                                        ( model, Cmd.none )
 
-                                        newModel =
-                                            { model
-                                                | quizProgress = Dict.insert uuid next model.quizProgress
-                                                , registry = newRegistry
-                                            }
+                                    Just next ->
+                                        let
+                                            newRegistry =
+                                                persistQuizScreenInRegistry uuid { next = next, total = total } model.registry
 
-                                        winCmd =
-                                            if quizJustCompleted { next = next, total = total } then
-                                                newRegistry
-                                                    |> List.filter (\e -> e.uuid == uuid)
-                                                    |> List.head
-                                                    |> Maybe.map (\e -> sendToClient { clientId = clientId, payload = winTextEnvelope e.winText })
-                                                    |> Maybe.withDefault Cmd.none
+                                            newModel =
+                                                { model
+                                                    | quizProgress = Dict.insert uuid next model.quizProgress
+                                                    , registry = newRegistry
+                                                }
 
-                                            else
-                                                Cmd.none
-                                    in
-                                    ( newModel, Cmd.batch [ writeRegistry newRegistry, winCmd ] )
+                                            winCmd =
+                                                if quizJustCompleted { next = next, total = total } then
+                                                    newRegistry
+                                                        |> List.filter (\e -> e.uuid == uuid)
+                                                        |> List.head
+                                                        |> Maybe.map (\e -> sendToClient { clientId = clientId, payload = winTextEnvelope e.winText })
+                                                        |> Maybe.withDefault Cmd.none
+
+                                                else
+                                                    Cmd.none
+                                        in
+                                        ( newModel, Cmd.batch [ writeRegistry newRegistry, winCmd ] )
 
                 Ok (ClientQuizAnswerSubmitted { idx, answer }) ->
                     -- The server, not the client, holds the answers (see
@@ -1711,14 +1744,7 @@ update msg model =
                             ( model, Cmd.none )
 
                         Just uuid ->
-                            -- A live iqTimers entry (including IqIdle, "waiting to
-                            -- restart") means the player is mid-penalty; a crafted
-                            -- client submitting an answer concurrently shouldn't be
-                            -- able to skip the penalty by advancing anyway. The
-                            -- legitimate quizAnswerSubmitted sent right after the IQ
-                            -- test genuinely completes is unaffected -- clearIqTimer
-                            -- removes the entry before iqTestCompleteEnvelope is sent.
-                            if Dict.member uuid model.iqTimers then
+                            if quizBlockedByLiveIqTimer uuid model then
                                 ( model, Cmd.none )
 
                             else

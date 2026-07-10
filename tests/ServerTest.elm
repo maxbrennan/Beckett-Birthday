@@ -2093,6 +2093,85 @@ fileReadSuite =
         ]
 
 
+iqStartCountdownMsg : String -> Msg
+iqStartCountdownMsg clientId =
+    iqTimerMsg clientId "iqStartCountdown"
+
+
+iqStartCountdownSuite : Test
+iqStartCountdownSuite =
+    describe "ClientIqStartCountdown routing"
+        [ test "an unconnected clientId is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (iqStartCountdownMsg "c1") baseModel
+                in
+                m |> Expect.equal baseModel
+        , test "no existing iqTimer entry starts a fresh countdown" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (iqStartCountdownMsg "c1") staged
+                in
+                Dict.get "uuid1" m.iqTimers |> Maybe.map .phase |> Expect.equal (Just IqCounting)
+        , test "an IqIdle entry (post-catch, waiting to restart) starts a fresh countdown" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdle, totalDings = 200 }
+                        }
+
+                    ( m, _ ) =
+                        update (iqStartCountdownMsg "c1") staged
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.iqTimers |> Maybe.map .phase |> Expect.equal (Just IqCounting)
+                    , \_ -> Dict.get "uuid1" m.iqTimers |> Maybe.map .totalDings |> Expect.equal (Just 200)
+                    ]
+                    ()
+        , test "a live entry mid-test (e.g. IqCounting) is left untouched, not restarted" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqCounting, countdownRemaining = 5 }
+                        }
+
+                    ( m, cmd ) =
+                        update (iqStartCountdownMsg "c1") staged
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.iqTimers |> Expect.equal (Just { iqState | phase = IqCounting, countdownRemaining = 5 })
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
+        , test "a live entry mid-ding (IqDingShown) is left untouched, not restarted" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingShown }
+                        }
+
+                    ( m, cmd ) =
+                        update (iqStartCountdownMsg "c1") staged
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.iqTimers |> Expect.equal (Just { iqState | phase = IqDingShown })
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
+        ]
+
+
 iqReadyForDingMsg : String -> Msg
 iqReadyForDingMsg clientId =
     iqTimerMsg clientId "iqReadyForDing"
@@ -2651,6 +2730,40 @@ quizProgressRoutingSuite =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
                 in
                 entryOf |> Maybe.map .quizProgress |> Expect.equal (Just 1)
+        , test "quizAdvanced is ignored while the player has a live IQ-timer entry" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" iqState
+                        }
+
+                    ( m, cmd ) =
+                        update (quizAdvancedMsg "c1" 0) connected
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
+        , test "quizAdvanced is ignored while the player's IQ-timer entry is IqIdle" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdle }
+                        }
+
+                    ( m, cmd ) =
+                        update (quizAdvancedMsg "c1" 0) connected
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
         ]
 
 
