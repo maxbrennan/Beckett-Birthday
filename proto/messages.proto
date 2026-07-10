@@ -109,6 +109,16 @@ message IqTestComplete      {}
 // quizJustCompleted.
 message QuizAdvanced { uint32 idx = 1; }
 
+// "I typed this answer for question idx" -- the server validates it against
+// config/quiz-questions.json (never sent to the client) and replies with
+// QuizAnswerResult. See Game.Quiz.decideAnswer / Server.elm's handling of
+// ClientQuizAnswerSubmitted.
+message QuizAnswerSubmitted { uint32 idx = 1; string answer = 2; }
+
+// correct: whether the answer matched. reveal_answer: the correct answer's
+// display text, populated only when correct = false (see WrongAnswerScreen).
+message QuizAnswerResult { uint32 idx = 1; bool correct = 2; string reveal_answer = 3; }
+
 message ServerMessage {
   oneof payload {
     StateUpdate          state_update            = 1;
@@ -132,6 +142,7 @@ message ServerMessage {
     DistUndeployAck         dist_undeploy_ack          = 20;
     TimerSync               timer_sync                 = 21;
     TimedOut                timed_out                  = 22;
+    QuizAnswerResult        quiz_answer_result         = 23;
   }
 }
 
@@ -153,5 +164,6 @@ message ClientMessage {
     IqCaught             iq_caught             = 14;
     IqResume             iq_resume             = 15;
     QuizAdvanced         quiz_advanced         = 16;
+    QuizAnswerSubmitted  quiz_answer_submitted = 17;
   }
 }

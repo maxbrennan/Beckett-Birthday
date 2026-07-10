@@ -4,7 +4,7 @@
 // Elm.init/port-wiring block when `document` exists (see the require.main-style guard
 // in client/bridge.js) — under plain Jest/Node there's no DOM, so requiring it here
 // only exposes the pure helpers below.
-const { computeWsUrl, resolveReadFilePath, decodeIncomingWsMessage, handleReadFileResult } = require('../../client/bridge.js');
+const { computeWsUrl, resolveReadFilePath, decodeIncomingWsMessage, handleReadFileResult, handleReadDirResult } = require('../../client/bridge.js');
 
 describe('computeWsUrl', () => {
     test('dev mode always uses localhost regardless of PROD_SERVER_HOST', () => {
@@ -55,5 +55,22 @@ describe('handleReadFileResult', () => {
     test('maps successful data to a contents result', () => {
         expect(handleReadFileResult(null, 'hello', 'foo.json'))
             .toEqual({ path: 'foo.json', contents: 'hello', error: null });
+    });
+});
+
+describe('handleReadDirResult', () => {
+    test('maps a read error to an empty-files error result', () => {
+        expect(handleReadDirResult(new Error('ENOENT'), null, 'assets/songs'))
+            .toEqual({ path: 'assets/songs', files: [], error: 'ENOENT' });
+    });
+
+    test('maps a successful listing to a files result', () => {
+        expect(handleReadDirResult(null, ['0.mp3', '1.mp4'], 'assets/songs'))
+            .toEqual({ path: 'assets/songs', files: ['0.mp3', '1.mp4'], error: null });
+    });
+
+    test('a null file list from fs.readdir defaults to empty', () => {
+        expect(handleReadDirResult(null, null, 'assets/songs'))
+            .toEqual({ path: 'assets/songs', files: [], error: null });
     });
 });

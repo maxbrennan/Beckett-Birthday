@@ -2,7 +2,6 @@ module AudioViewTest exposing (..)
 
 import Audio exposing (currentQuizSong, hasPendingPlaySong)
 import Expect
-import Game.Quiz exposing (Question)
 import Test exposing (Test, describe, test)
 import Types exposing (Model, Msg(..), PendingEvent, Screen(..))
 import View exposing (formatTimer)
@@ -21,7 +20,8 @@ baseModel =
     , timerEndsAt = 0
     , myUuid = Nothing
     , wsUrl = ""
-    , questions = [ Question "song0.mp3" [ "a" ], Question "video1.mp4" [ "b" ], Question "song2.mp3" [ "c" ] ]
+    , questions = [ "song0.mp3", "video1.mp4", "song2.mp3" ]
+    , awaitingAnswerResult = False
     }
 
 

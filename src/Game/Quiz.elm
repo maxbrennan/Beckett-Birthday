@@ -6,25 +6,26 @@ import Json.Decode as Decode
 
 -- ── Music Quiz Questions ──────────────────────────────────────────────────────
 --
--- Each entry: song file in assets/songs/ and the list of accepted answer strings.
--- Answers are compared case-insensitively after normalization (see `normalize`).
+-- Each entry: the list of accepted answer strings for one quiz slide. There's no
+-- `song` field -- assets/songs/ files are named numerically (0.mp3, 1.mp3, ...,
+-- see songOrder below), and a question's position in this array *is* its song's
+-- index, so the array order is the single source of truth for both sides.
 --
--- The question list itself lives in `config/quiz-questions.json` so it can
--- be edited per-version without touching Elm source. It is loaded at startup via
--- the `readFile` port and decoded with `decodeQuestions` below.
+-- The question list itself lives in `config/quiz-questions.json` so it can be
+-- edited per-version without touching Elm source. Only Server.elm reads it (via
+-- the `readFile` port and `decodeQuestions`) -- nothing under config/ is bundled
+-- into the client at all (see #54, #70's review). The client instead lists
+-- assets/songs/ directly (via the readDir port) and orders the results with
+-- songOrder, so it never sees an answer.
 
 
 type alias Question =
-    { song : String
-    , answers : List String
-    }
+    { answers : List String }
 
 
 questionDecoder : Decode.Decoder Question
 questionDecoder =
-    Decode.map2 Question
-        (Decode.field "song" Decode.string)
-        (Decode.field "answers" (Decode.list Decode.string))
+    Decode.map Question (Decode.field "answers" (Decode.list Decode.string))
 
 
 decodeQuestions : String -> List Question
@@ -33,10 +34,33 @@ decodeQuestions raw =
         |> Result.withDefault []
 
 
+-- ── Client-side song ordering ────────────────────────────────────────────────
+-- The client never sees quiz-questions.json. It lists assets/songs/ (readDir)
+-- and derives play order purely from each filename's leading number -- "0.mp3"
+-- is slide 0, "3.mp4" is slide 3, etc. Anything that doesn't start with a
+-- number (stray files like .DS_Store) is dropped rather than guessed at.
+
+
+songNumericPrefix : String -> Maybe Int
+songNumericPrefix filename =
+    filename
+        |> String.split "."
+        |> List.head
+        |> Maybe.andThen String.toInt
+
+
+songOrder : List String -> List String
+songOrder filenames =
+    filenames
+        |> List.filterMap (\f -> songNumericPrefix f |> Maybe.map (\n -> ( n, f )))
+        |> List.sortBy Tuple.first
+        |> List.map Tuple.second
+
+
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-getQuestion : List Question -> Int -> Maybe Question
+getQuestion : List a -> Int -> Maybe a
 getQuestion questions idx =
     List.head (List.drop idx questions)
 

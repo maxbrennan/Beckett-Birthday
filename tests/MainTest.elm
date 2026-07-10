@@ -2,9 +2,8 @@ module MainTest exposing (..)
 
 import Expect
 import Game.IQTest exposing (FakeFlashPhase(..), IQTestState, iqQuestionCount)
-import Game.Quiz exposing (Question)
 import Json.Encode as Encode
-import Main exposing (decodeReadFileResult, everySecond, init, subscriptions, tickFromPosix, update)
+import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, subscriptions, tickFromPosix, update)
 import Test exposing (Test, describe, test)
 import Time
 import Types exposing (Model, Msg(..), PausedState, Screen(..))
@@ -43,7 +42,8 @@ baseModel =
     , timerEndsAt = 0
     , myUuid = Just "uuid1"
     , wsUrl = "wss://example.test"
-    , questions = [ Question "song0.mp3" [ "alpha" ], Question "video1.mp4" [ "beta" ] ]
+    , questions = [ "song0.mp3", "video1.mp4" ]
+    , awaitingAnswerResult = False
     }
 
 
@@ -239,31 +239,98 @@ trackEndedSuite =
 answerSubmittedSuite : Test
 answerSubmittedSuite =
     describe "AnswerSubmitted"
-        [ test "a correct answer with a following question moves on" <|
+        [ test "sends the answer to the server and marks the request as awaiting a result" <|
             \_ ->
                 let
                     ( result, _ ) =
                         update AnswerSubmitted { baseModel | screen = QuestionScreen 0 "Alpha" }
                 in
                 Expect.all
+                    [ \m -> m.screen |> Expect.equal (QuestionScreen 0 "Alpha")
+                    , \m -> m.awaitingAnswerResult |> Expect.equal True
+                    ]
+                    result
+        , test "a duplicate submit while already awaiting a result is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update AnswerSubmitted { baseModel | screen = QuestionScreen 0 "Alpha", awaitingAnswerResult = True }
+                in
+                result |> Expect.equal { baseModel | screen = QuestionScreen 0 "Alpha", awaitingAnswerResult = True }
+        ]
+
+
+serverQuizAnswerResultSuite : Test
+serverQuizAnswerResultSuite =
+    let
+        resultEnvelope : { idx : Int, correct : Bool, revealAnswer : String } -> String
+        resultEnvelope { idx, correct, revealAnswer } =
+            Encode.encode 0
+                (Encode.object
+                    [ ( "payload", Encode.string "quizAnswerResult" )
+                    , ( "quizAnswerResult"
+                      , Encode.object
+                            [ ( "idx", Encode.int idx )
+                            , ( "correct", Encode.bool correct )
+                            , ( "revealAnswer", Encode.string revealAnswer )
+                            ]
+                      )
+                    ]
+                )
+    in
+    describe "ServerQuizAnswerResult (via WsDataReceived)"
+        [ test "a correct answer with a following question moves on" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update
+                            (WsDataReceived (resultEnvelope { idx = 0, correct = True, revealAnswer = "" }))
+                            { baseModel | screen = QuestionScreen 0 "Alpha", awaitingAnswerResult = True }
+                in
+                Expect.all
                     [ \m -> m.screen |> Expect.equal (CheckingAnswerScreen (BlankScreen 1))
                     , \m -> m.pending |> List.map .msg |> Expect.equal [ PlaySong 1 ]
+                    , \m -> m.awaitingAnswerResult |> Expect.equal False
                     ]
                     result
         , test "a correct answer on the last question wins" <|
             \_ ->
                 let
                     ( result, _ ) =
-                        update AnswerSubmitted { baseModel | screen = QuestionScreen 1 "Beta" }
+                        update
+                            (WsDataReceived (resultEnvelope { idx = 1, correct = True, revealAnswer = "" }))
+                            { baseModel | screen = QuestionScreen 1 "Beta", awaitingAnswerResult = True }
                 in
                 result.screen |> Expect.equal (CheckingAnswerScreen (WinScreen ""))
-        , test "an incorrect answer shows the wrong-answer screen" <|
+        , test "an incorrect answer shows the wrong-answer screen with the server's reveal text" <|
             \_ ->
                 let
                     ( result, _ ) =
-                        update AnswerSubmitted { baseModel | screen = QuestionScreen 0 "nope" }
+                        update
+                            (WsDataReceived (resultEnvelope { idx = 0, correct = False, revealAnswer = "Alpha" }))
+                            { baseModel | screen = QuestionScreen 0 "nope", awaitingAnswerResult = True }
                 in
-                result.screen |> Expect.equal (CheckingAnswerScreen (WrongAnswerScreen 0))
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal (WrongAnswerScreen 0 "Alpha")
+                    , \m -> m.awaitingAnswerResult |> Expect.equal False
+                    ]
+                    result
+        , test "a result for a stale idx (already moved on) is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update
+                            (WsDataReceived (resultEnvelope { idx = 0, correct = True, revealAnswer = "" }))
+                            { baseModel | screen = QuestionScreen 1 "Beta", awaitingAnswerResult = True }
+                in
+                result.screen |> Expect.equal (QuestionScreen 1 "Beta")
+        , test "ignored off a question screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (resultEnvelope { idx = 0, correct = True, revealAnswer = "" })) { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
         ]
 
 
@@ -428,31 +495,40 @@ everySecondSuite =
 
 decodeReadFileResultSuite : Test
 decodeReadFileResultSuite =
+    -- app-uuid.json is the only file left on this port -- the quiz no longer reads
+    -- any config/ JSON client-side at all (see #54/#70's review); song discovery
+    -- moved to decodeReadDirResult below.
     describe "decodeReadFileResult"
-        [ test "decodes the quiz-questions file into QuestionsLoaded" <|
-            \_ ->
-                decodeReadFileResult
-                    { path = "config/quiz-questions.json"
-                    , contents = Just """[{"song":"a.mp3","answers":["a"]}]"""
-                    , error = Nothing
-                    }
-                    |> Expect.equal (QuestionsLoaded [ Question "a.mp3" [ "a" ] ])
-        , test "an empty/unparseable quiz-questions file yields no questions" <|
-            \_ ->
-                decodeReadFileResult { path = "config/quiz-questions.json", contents = Nothing, error = Just "boom" }
-                    |> Expect.equal (QuestionsLoaded [])
-        , test "any other file with a valid uuid field yields UuidLoaded (Just uuid)" <|
+        [ test "a valid uuid field yields UuidLoaded (Just uuid)" <|
             \_ ->
                 decodeReadFileResult { path = "app-uuid.json", contents = Just """{"uuid":"abc-123"}""", error = Nothing }
                     |> Expect.equal (UuidLoaded (Just "abc-123"))
-        , test "any other file with malformed contents yields UuidLoaded Nothing" <|
+        , test "malformed contents yields UuidLoaded Nothing" <|
             \_ ->
                 decodeReadFileResult { path = "app-uuid.json", contents = Just "not json", error = Nothing }
                     |> Expect.equal (UuidLoaded Nothing)
-        , test "any other file with no contents yields UuidLoaded Nothing" <|
+        , test "no contents yields UuidLoaded Nothing" <|
             \_ ->
                 decodeReadFileResult { path = "app-uuid.json", contents = Nothing, error = Just "not found" }
                     |> Expect.equal (UuidLoaded Nothing)
+        ]
+
+
+decodeReadDirResultSuite : Test
+decodeReadDirResultSuite =
+    describe "decodeReadDirResult"
+        [ test "orders assets/songs/ files numerically into QuestionsLoaded" <|
+            \_ ->
+                decodeReadDirResult { path = "assets/songs", files = [ "1.mp3", "0.mp3" ], error = Nothing }
+                    |> Expect.equal (QuestionsLoaded [ "0.mp3", "1.mp3" ])
+        , test "drops non-numeric entries (e.g. .DS_Store)" <|
+            \_ ->
+                decodeReadDirResult { path = "assets/songs", files = [ "0.mp3", ".DS_Store" ], error = Nothing }
+                    |> Expect.equal (QuestionsLoaded [ "0.mp3" ])
+        , test "an unreadable directory yields no questions" <|
+            \_ ->
+                decodeReadDirResult { path = "assets/songs", files = [], error = Just "boom" }
+                    |> Expect.equal (QuestionsLoaded [])
         ]
 
 
@@ -576,7 +652,7 @@ continuePressedSuite =
             \_ ->
                 let
                     ( result, _ ) =
-                        update ContinuePressed { baseModel | screen = WrongAnswerScreen 2 }
+                        update ContinuePressed { baseModel | screen = WrongAnswerScreen 2 "Alpha" }
                 in
                 result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = iqQuestionCount })
         , test "ignored off the wrong-answer screen" <|
@@ -831,7 +907,7 @@ miscTrivialSuite =
             \_ ->
                 let
                     qs =
-                        [ Question "x.mp3" [ "x" ] ]
+                        [ "x.mp3" ]
 
                     ( result, _ ) =
                         update (QuestionsLoaded qs) baseModel

@@ -29,3 +29,13 @@ describe('client bundle does not contain the win text', () => {
         expect(bundle.includes('claim your reward')).toBe(false);
     });
 });
+
+// Guards issue #54: quiz answers must live only on the server (in
+// config/quiz-questions.json, read server-side and never bundled). Unlike the
+// win text above, answers were never compiled into Elm source as literals —
+// they're loaded from config at runtime — so scanning elm-client.js for
+// answer substrings isn't meaningful (and is prone to false positives: e.g.
+// the real answer "Style" collides with Elm's compiled CSS-`style` runtime
+// code). Since #70's review, nothing under config/ is bundled into the client
+// at all (the client lists assets/songs/ directly instead) -- see
+// tests/unit/quiz-config-bundling.test.js's package.json build.files check.

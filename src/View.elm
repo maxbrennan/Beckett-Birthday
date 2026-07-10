@@ -13,7 +13,7 @@ import Audio exposing (currentQuizSong)
 import Game.IQTest exposing (..)
 import Game.Quiz exposing (..)
 import Html exposing (Html, audio, button, div, img, input, p, text, video)
-import Html.Attributes exposing (autoplay, id, loop, placeholder, property, src, style, type_, value)
+import Html.Attributes exposing (autoplay, disabled, id, loop, placeholder, property, src, style, type_, value)
 import Html.Events exposing (on, onClick, onInput)
 import Html.Keyed
 import Json.Decode as Decode exposing (Decoder)
@@ -265,8 +265,8 @@ viewScreen model =
             let
                 bg =
                     case getQuestion model.questions idx of
-                        Just q ->
-                            if isVideo q.song then
+                        Just song ->
+                            if isVideo song then
                                 "#000000"
 
                             else
@@ -351,6 +351,7 @@ viewScreen model =
                         [ id "answer-input"
                         , type_ "text"
                         , value answer
+                        , disabled model.awaitingAnswerResult
                         , onInput AnswerChanged
                         , on "keydown"
                             (Decode.field "key" Decode.string
@@ -375,6 +376,7 @@ viewScreen model =
                         []
                     , button
                         [ onClick AnswerSubmitted
+                        , disabled model.awaitingAnswerResult
                         , style "padding" "16px 48px"
                         , style "font-size" "22px"
                         , style "cursor" "pointer"
@@ -388,18 +390,7 @@ viewScreen model =
                     ]
                 ]
 
-        WrongAnswerScreen idx ->
-            let
-                correctAnswer =
-                    case getQuestion model.questions idx of
-                        Just q ->
-                            List.head q.answers
-                                |> Maybe.map capitalize
-                                |> Maybe.withDefault "Unknown"
-
-                        Nothing ->
-                            "Unknown"
-            in
+        WrongAnswerScreen _ revealAnswer ->
             screen
                 [ p
                     [ style "font-size" "26px"
@@ -409,7 +400,7 @@ viewScreen model =
                     , style "max-width" "560px"
                     , style "line-height" "1.5"
                     ]
-                    [ text ("The song was \"" ++ correctAnswer ++ "\".") ]
+                    [ text ("The song was \"" ++ revealAnswer ++ "\".") ]
                 , button
                     [ onClick ContinuePressed
                     , style "padding" "16px 48px"

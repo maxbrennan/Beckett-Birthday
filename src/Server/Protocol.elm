@@ -22,6 +22,7 @@ type ClientEnvelope
     | ClientIqCaught
     | ClientIqResume
     | ClientQuizAdvanced Int
+    | ClientQuizAnswerSubmitted { idx : Int, answer : String }
     | ClientUnknown
 
 
@@ -114,6 +115,11 @@ decodeClientEnvelope =
                     "quizAdvanced" ->
                         Decode.map ClientQuizAdvanced
                             (Decode.at [ "quizAdvanced", "idx" ] Decode.int)
+
+                    "quizAnswerSubmitted" ->
+                        Decode.map2 (\idx answer -> ClientQuizAnswerSubmitted { idx = idx, answer = answer })
+                            (Decode.at [ "quizAnswerSubmitted", "idx" ] Decode.int)
+                            (Decode.at [ "quizAnswerSubmitted", "answer" ] Decode.string)
 
                     _ ->
                         Decode.succeed ClientUnknown
@@ -304,4 +310,24 @@ iqTestCompleteEnvelope =
     Encode.object
         [ ( "payload", Encode.string "iqTestComplete" )
         , ( "iqTestComplete", Encode.object [] )
+        ]
+
+
+-- ── Quiz-answer server→client envelope ──────────────────────────────────────────
+-- The server owns answer validation (see Server.elm's ClientQuizAnswerSubmitted
+-- handling / Game.Quiz.decideAnswer). revealAnswer is only meaningful when
+-- correct = False; the client never learns any other question's answer.
+
+
+quizAnswerResultEnvelope : { idx : Int, correct : Bool, revealAnswer : String } -> Encode.Value
+quizAnswerResultEnvelope { idx, correct, revealAnswer } =
+    Encode.object
+        [ ( "payload", Encode.string "quizAnswerResult" )
+        , ( "quizAnswerResult"
+          , Encode.object
+                [ ( "idx", Encode.int idx )
+                , ( "correct", Encode.bool correct )
+                , ( "revealAnswer", Encode.string revealAnswer )
+                ]
+          )
         ]

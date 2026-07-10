@@ -45,6 +45,13 @@ port readFile : String -> Cmd msg
 
 port readFileResult : ({ path : String, contents : Maybe String, error : Maybe String } -> msg) -> Sub msg
 
+-- Lists assets/songs/ directly -- the client no longer reads any config/ JSON for
+-- the quiz (see #54, #70's review); song order comes from the numeric filename
+-- convention alone (see Game.Quiz.songOrder).
+port readDir : String -> Cmd msg
+
+port readDirResult : ({ path : String, files : List String, error : Maybe String } -> msg) -> Sub msg
+
 
 init : String -> ( Model, Cmd Msg )
 init wsUrl =
@@ -60,10 +67,11 @@ init wsUrl =
       , myUuid = Nothing
       , wsUrl = wsUrl
       , questions = []
+      , awaitingAnswerResult = False
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
-        , readFile "config/quiz-questions.json"
+        , readDir "assets/songs"
         , Task.perform tickFromPosix Time.now
         ]
     )
@@ -195,13 +203,13 @@ videoSeekTime saved =
 -- VideoScreen always advances (its own end already gates on the right video);
 -- BlankScreen only advances if the reported track matches the song scheduled
 -- for that question, rejecting a stale TrackEnded left over from a transition.
-trackEndedTarget : List Question -> Screen -> String -> Maybe Int
+trackEndedTarget : List String -> Screen -> String -> Maybe Int
 trackEndedTarget questions screen name =
     case screen of
         BlankScreen idx ->
             case getQuestion questions idx of
-                Just q ->
-                    if q.song == name then
+                Just song ->
+                    if song == name then
                         Just idx
 
                     else
@@ -310,9 +318,9 @@ update msg model =
                 Just blankIdx ->
                     if blankIdx == idx then
                         case getQuestion model.questions idx of
-                            Just q ->
-                                if isVideo q.song then
-                                    ( { model | screen = VideoScreen idx q.song }, Cmd.none )
+                            Just song ->
+                                if isVideo song then
+                                    ( { model | screen = VideoScreen idx song }, Cmd.none )
 
                                 else
                                     ( model, Cmd.none )
@@ -371,36 +379,26 @@ update msg model =
         AnswerSubmitted ->
             case model.screen of
                 QuestionScreen idx answer ->
-                    case decideAnswer model.questions idx answer of
-                        NoQuestion ->
-                            ( model, Cmd.none )
+                    -- The server, not this client, holds the answers (see #54)
+                    -- and decides correctness -- the result arrives as
+                    -- ServerQuizAnswerResult in WsDataReceived below, which is
+                    -- what actually transitions the screen. awaitingAnswerResult
+                    -- both disables the submit UI (see View.elm) and guards
+                    -- against a duplicate submit while the round trip is in flight.
+                    if model.awaitingAnswerResult then
+                        ( model, Cmd.none )
 
-                        IncorrectAnswer ->
-                            ( { model | screen = CheckingAnswerScreen (WrongAnswerScreen idx) }, Cmd.none )
-
-                        CorrectContinue nextIdx ->
-                            ( { model | screen = CheckingAnswerScreen (BlankScreen nextIdx) }
-                                |> clearPending
-                                |> schedule 1000 (PlaySong nextIdx)
-                            , sendWs model (quizAdvancedEnvelope idx)
-                            )
-
-                        CorrectWin ->
-                            -- Empty text for now; the server fills it in at win
-                            -- time via the winText message (see ServerWinText),
-                            -- once it independently confirms quizAdvancedEnvelope
-                            -- reached the real last question (see Server.elm's
-                            -- acceptQuizAdvance/quizJustCompleted).
-                            ( clearPending { model | screen = CheckingAnswerScreen (WinScreen "") }
-                            , sendWs model (quizAdvancedEnvelope idx)
-                            )
+                    else
+                        ( { model | awaitingAnswerResult = True }
+                        , sendWs model (quizAnswerSubmittedEnvelope { idx = idx, answer = answer })
+                        )
 
                 _ ->
                     ( model, Cmd.none )
 
         ContinuePressed ->
             case model.screen of
-                WrongAnswerScreen idx ->
+                WrongAnswerScreen idx _ ->
                     ( clearPending
                         { model
                             | screen =
@@ -711,6 +709,50 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
+                Ok (ServerQuizAnswerResult r) ->
+                    -- The server independently validated the answer (see #54);
+                    -- this is what actually transitions off QuestionScreen. The
+                    -- idx check guards against a stale result arriving after the
+                    -- screen has already moved on (e.g. a race with a reconnect).
+                    case model.screen of
+                        QuestionScreen idx _ ->
+                            if idx /= r.idx then
+                                ( model, Cmd.none )
+
+                            else
+                                let
+                                    cleared =
+                                        { model | awaitingAnswerResult = False }
+                                in
+                                if r.correct then
+                                    let
+                                        nextIdx =
+                                            idx + 1
+                                    in
+                                    case getQuestion model.questions nextIdx of
+                                        Just _ ->
+                                            ( { cleared | screen = CheckingAnswerScreen (BlankScreen nextIdx) }
+                                                |> clearPending
+                                                |> schedule 1000 (PlaySong nextIdx)
+                                            , Cmd.none
+                                            )
+
+                                        Nothing ->
+                                            -- Empty text for now; the server fills it in at win
+                                            -- time via the winText message (see ServerWinText),
+                                            -- once it independently confirms the server's own
+                                            -- quizProgress tally reached totalQuestions (see
+                                            -- Server.elm's acceptQuizAdvance/quizJustCompleted).
+                                            ( clearPending { cleared | screen = CheckingAnswerScreen (WinScreen "") }
+                                            , Cmd.none
+                                            )
+
+                                else
+                                    ( { cleared | screen = WrongAnswerScreen idx r.revealAnswer }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
                 Ok (ServerTimerSync deadline) ->
                     -- Delivered once per stateRequest (see Server.elm's
                     -- ClientStateRequest handling): the server-established 7-day
@@ -858,27 +900,31 @@ update msg model =
 
 
 
--- Decides what Msg a readFile port response becomes: the quiz-questions file
--- decodes straight to a question list, while anything else (app-uuid.json) is
--- read for its "uuid" field.
+-- Decides what Msg a readFile port response becomes: app-uuid.json is read for
+-- its "uuid" field (it's the only file this port is still used for -- the quiz
+-- no longer reads any config/ JSON client-side, see #54/#70's review).
 decodeReadFileResult : { path : String, contents : Maybe String, error : Maybe String } -> Msg
-decodeReadFileResult { path, contents } =
-    case path of
-        "config/quiz-questions.json" ->
-            QuestionsLoaded (Maybe.map decodeQuestions contents |> Maybe.withDefault [])
+decodeReadFileResult { contents } =
+    case contents of
+        Just raw ->
+            case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
+                Ok uuid ->
+                    UuidLoaded (Just uuid)
 
-        _ ->
-            case contents of
-                Just raw ->
-                    case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
-                        Ok uuid ->
-                            UuidLoaded (Just uuid)
-
-                        Err _ ->
-                            UuidLoaded Nothing
-
-                Nothing ->
+                Err _ ->
                     UuidLoaded Nothing
+
+        Nothing ->
+            UuidLoaded Nothing
+
+
+-- Decides what Msg a readDir port response becomes: assets/songs/'s listing,
+-- ordered by each filename's leading number (see Game.Quiz.songOrder) -- an
+-- unreadable directory naturally yields no questions, the same fail-safe
+-- default as a malformed quiz-manifest.json used to.
+decodeReadDirResult : { path : String, files : List String, error : Maybe String } -> Msg
+decodeReadDirResult { files } =
+    QuestionsLoaded (songOrder files)
 
 
 everySecond : Time.Posix -> Msg
@@ -908,6 +954,7 @@ subscriptions model =
         , receiveDomProperty DomPropertyReceived
         , domPropertyError DomPropertyError
         , readFileResult decodeReadFileResult
+        , readDirResult decodeReadDirResult
         ]
 
 main : Program String Model Msg

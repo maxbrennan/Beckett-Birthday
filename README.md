@@ -88,7 +88,10 @@ cp localhost+2-key.pem certs/key.pem
 ### 1c. Quiz questions
 
 Copy the example and edit it. `config/quiz-questions.json` is git‑ignored — it holds
-the real trivia answers, which are spoilers for the birthday recipient (see §4).
+the real trivia answers, which are spoilers for the birthday recipient (see §4). It is
+read only by the **server**; nothing under `config/` is ever bundled into a client
+build (see §2) — the client instead discovers songs by listing `assets/songs/`
+directly, in numeric filename order (see §4/§6).
 
 ```bash
 cp config/quiz-questions.example.json config/quiz-questions.json
@@ -100,20 +103,22 @@ cp config/quiz-questions.example.json config/quiz-questions.json
 
 ```
 config/
-  quiz-questions.json           ← trivia questions & answers, git‑ignored   (§1c, §4)
+  quiz-questions.json           ← trivia questions & answers, git‑ignored, server‑only (§1c, §4)
   quiz-questions.example.json   ← template for the above, tracked in git
-  win-screen.json       ← reward / win‑screen text      (§5)
+  win-screen.json       ← reward / win‑screen text, server‑only (§5)
 assets/
-  songs/                ← all quiz songs (§6)
+  songs/                ← all quiz songs, numbered 0.ext, 1.ext, ... (§4, §6)
   jeopardy-theme.mp3  airpods.png  ding.mp3  loud.mp4  icon.icns  icon.ico   ← other media (stay at root)
 .env                    ← ports, prod host, cert paths   (§1a)
 ```
 
-`config/quiz-questions.json`, `config/win-screen.json`, and everything under `assets/`
-are loaded at client **startup** and bundled into distributed builds. Editing them
-changes the game **without touching Elm source** — but already‑distributed builds must
-be rebuilt/redeployed to pick up changes. `config/quiz-questions.example.json` is a
-dev‑only template (§1c); it is neither loaded at runtime nor bundled into builds.
+Nothing under `config/` is ever bundled into a client build or read by the client —
+it's all server‑side (`config/quiz-questions.json`'s answers, `config/win-screen.json`'s
+reward text). Everything under `assets/` (§6) is loaded at client **startup** and
+bundled into distributed builds; editing it changes the game **without touching Elm
+source** — but already‑distributed builds must be rebuilt/redeployed to pick up
+changes. `config/quiz-questions.example.json` is a dev‑only template (§1c), neither
+loaded at runtime nor bundled into builds.
 
 ---
 
@@ -144,22 +149,24 @@ Production equivalent (port 443, `DEV=false`): `npm run start:server`.
 cp config/quiz-questions.example.json config/quiz-questions.json
 ```
 
-Then edit **`config/quiz-questions.json`**. It is a JSON array; questions are asked in
-order.
+Then edit **`config/quiz-questions.json`**. It is a JSON array of `{ "answers": [...] }`
+objects — no `song` field. Questions are asked in order, and a question's position in
+this array **is** its song's index: the 1st entry (index 0) is answered by whichever
+file in `assets/songs/` starts with `0.` (see §6), the 2nd entry (index 1) by `1.`, and
+so on. The client never reads this file at all — it discovers songs purely by listing
+`assets/songs/` and sorting by that leading number (`songOrder` in
+`src/Game/Quiz.elm`), so keeping the array order and the filename numbers in sync is
+what ties a question to its song.
 
 ```jsonc
 [
-  { "song": "baby-shark.mp3", "answers": ["Baby Shark Hip Hop", "Baby Shark (Hip Hop Version)"] },
-  { "song": "revenge.mp4",    "answers": ["Revenge", "Revenge a Minecraft Parody"] }
+  { "answers": ["Baby Shark Hip Hop", "Baby Shark (Hip Hop Version)"] },
+  { "answers": ["Manchild"] }
 ]
 ```
 
-Each entry:
-
-- **`song`** — a filename that must exist in **`assets/songs/`** (see §6). A `.mp4`
-  value is played as a fullscreen video; anything else plays as audio.
-- **`answers`** — a list of accepted answers. A player's guess is correct if it matches
-  **any** entry in the list.
+`answers` — a list of accepted answers for that position. A player's guess is correct
+if it matches **any** entry in the list.
 
 **Answer matching is fuzzy.** Guesses are normalized before comparison
 (`normalize` in `src/Game/Quiz.elm`): lower‑cased, hyphens → spaces, punctuation
@@ -168,11 +175,14 @@ Write answers in their natural form; you don't need to add punctuation variants.
 
 ### Adding a new question
 
-1. Put the media file in `assets/songs/` (e.g. `assets/songs/my-song.mp3`).
-2. Append an entry:
+1. Put the media file in `assets/songs/`, named with the next number in sequence and
+   a generic (spoiler‑free) extension — e.g. if `assets/songs/` currently goes up to
+   `9.mp3`, add `assets/songs/10.mp3` (or `.mp4` for a video).
+2. Append the matching entry to the **end** of `config/quiz-questions.json`, so its
+   array position lines up with the new filename's number:
 
 ```jsonc
-  { "song": "my-song.mp3", "answers": ["My Song", "My Song (Live)"] }
+  { "answers": ["My Song", "My Song (Live)"] }
 ```
 
 ---
@@ -195,9 +205,16 @@ so it never breaks the game.
 
 ## 6. Song assets
 
-All quiz `song` files live under **`assets/songs/`**. The following stay at the
-`assets/` root and are **not** quiz songs: `jeopardy-theme.mp3`, `airpods.png`,
-`ding.mp3`, `loud.mp4`, `icon.icns`, `icon.ico`.
+All quiz song files live under **`assets/songs/`**, named `0.<ext>`, `1.<ext>`,
+`2.<ext>`, ... — a generic, spoiler‑free number, not the song's real name (the whole
+point is that opening the packaged app or `assets/songs/` shouldn't reveal any
+answer). `.mp4` files play as a fullscreen video; anything else plays as audio. The
+following stay at the `assets/` root and are **not** quiz songs: `jeopardy-theme.mp3`,
+`airpods.png`, `ding.mp3`, `loud.mp4`, `icon.icns`, `icon.ico`.
+
+The client lists `assets/songs/` itself at startup (`client/bridge.js`'s `readDir`
+port) and orders the results by each filename's leading number — it never reads
+`config/quiz-questions.json` or any other config file to know what to play (see §4).
 
 `assets/` is git‑ignored (large binaries are distributed separately), but the whole
 folder — including `assets/songs/` — is bundled into builds via `assets/**/*` in

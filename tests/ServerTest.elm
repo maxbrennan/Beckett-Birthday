@@ -3,6 +3,7 @@ module ServerTest exposing (..)
 import Dict
 import Expect
 import Game.IQTest as IQTest
+import Game.Quiz exposing (Question)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Random
@@ -44,6 +45,7 @@ import Server.Protocol
         , distListResultEnvelope
         , iqDingEnvelope
         , distRegisterAckEnvelope
+        , quizAnswerResultEnvelope
         , stateEnvelope
         , stateUpdateAckEnvelope
         , timedOutEnvelope
@@ -363,6 +365,11 @@ entry uuid =
     }
 
 
+baseQuizQuestions : List Question
+baseQuizQuestions =
+    [ Question [ "Alpha" ], Question [ "Beta" ], Question [ "Gamma" ] ]
+
+
 baseModel : Model
 baseModel =
     { connectedPlayers = Dict.empty
@@ -373,6 +380,7 @@ baseModel =
     , seed = Random.initialSeed 0
     , quizProgress = Dict.empty
     , totalQuestions = 3
+    , quizQuestions = baseQuizQuestions
     }
 
 
@@ -2462,6 +2470,135 @@ quizProgressRoutingSuite =
 
                     ( m, _ ) =
                         update (quizAdvancedMsg "c1" 0) connected
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+                in
+                entryOf |> Maybe.map .quizProgress |> Expect.equal (Just 1)
+        ]
+
+
+-- ── Quiz-answer server-side validation ───────────────────────────────────────
+-- The server, not the client, holds the answers (see quizQuestions/
+-- quizQuestionsFilePath) and decides correctness via Game.Quiz.decideAnswer --
+-- the client only ever gets config/quiz-manifest.json (see #54/#32).
+
+
+quizAnswerSubmittedMsg : String -> { idx : Int, answer : String } -> Msg
+quizAnswerSubmittedMsg clientId { idx, answer } =
+    MessageReceived
+        { clientId = clientId
+        , payload = clientEnvelope "quizAnswerSubmitted" [ ( "idx", Encode.int idx ), ( "answer", Encode.string answer ) ]
+        , now = 0
+        }
+
+
+quizAnswerDecodeSuite : Test
+quizAnswerDecodeSuite =
+    describe "decodeClientEnvelope decodes quizAnswerSubmitted"
+        [ test "into ClientQuizAnswerSubmitted with idx and answer" <|
+            \_ ->
+                Decode.decodeValue decodeClientEnvelope
+                    (clientEnvelope "quizAnswerSubmitted" [ ( "idx", Encode.int 1 ), ( "answer", Encode.string "Beta" ) ])
+                    |> Expect.equal (Ok (ClientQuizAnswerSubmitted { idx = 1, answer = "Beta" }))
+        ]
+
+
+quizAnswerResultEnvelopeSuite : Test
+quizAnswerResultEnvelopeSuite =
+    describe "quizAnswerResultEnvelope"
+        [ test "carries idx, correct, and revealAnswer" <|
+            \_ ->
+                quizAnswerResultEnvelope { idx = 1, correct = False, revealAnswer = "Beta" }
+                    |> Encode.encode 0
+                    |> Expect.equal """{"payload":"quizAnswerResult","quizAnswerResult":{"idx":1,"correct":false,"revealAnswer":"Beta"}}"""
+        ]
+
+
+quizAnswerRoutingSuite : Test
+quizAnswerRoutingSuite =
+    describe "quiz-answer message routing in Server.update"
+        [ test "a correct answer for the current question advances progress and replies correct=True" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal (Just 1)
+        , test "a correct answer is case/punctuation-insensitive (see normalize)" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "  ALPHA!! " }) connected
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal (Just 1)
+        , test "an incorrect answer does not advance progress" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "nope" }) connected
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+        , test "the last question's correct answer completes the quiz and grants winText" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizProgress = Dict.singleton "uuid1" 2
+                        }
+
+                    ( _, cmd ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 2, answer = "gamma" }) connected
+                in
+                cmd |> Expect.notEqual Cmd.none
+        , test "a skip-ahead idx (out of order) is ignored, progress untouched" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 1, answer = "beta" }) connected
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+        , test "an idx beyond the loaded question list is ignored" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizProgress = Dict.singleton "uuid1" 5
+                        }
+
+                    ( m, _ ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 5, answer = "anything" }) connected
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal (Just 5)
+        , test "quizAnswerSubmitted with no clientId->uuid mapping is a no-op" <|
+            \_ ->
+                let
+                    ( m, _ ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) baseModel
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+        , test "progress from a correct answer is persisted into the registry" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, _ ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected
 
                     entryOf =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head

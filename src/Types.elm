@@ -22,7 +22,11 @@ type Screen
     | BlankScreen Int
     | VideoScreen Int String
     | QuestionScreen Int String
-    | WrongAnswerScreen Int
+      -- idx, and the correct answer's display text, delivered by the server
+      -- in QuizAnswerResult (never bundled into the client -- see #54). The
+      -- text is dropped on serialization, same as WinScreen's -- see
+      -- encodeScreen/decodeScreen in Sync.elm.
+    | WrongAnswerScreen Int String
     | IQTestScreen IQTestScreenState
     | IQTestCountdownScreen IQTestCountdownState
     | IQTestActiveScreen IQTestState
@@ -55,7 +59,8 @@ type alias Model =
     , timerEndsAt : Float
     , myUuid : Maybe String
     , wsUrl : String
-    , questions : List Question
+    , questions : List String
+    , awaitingAnswerResult : Bool
     }
 
 
@@ -85,5 +90,5 @@ type Msg
     | WsDisconnected String
     | WsReconnect
     | UuidLoaded (Maybe String)
-    | QuestionsLoaded (List Question)
+    | QuestionsLoaded (List String)
     | NoOp

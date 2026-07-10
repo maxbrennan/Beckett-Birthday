@@ -15,11 +15,12 @@ const ELM_SERVER_JS = path.join(PROJECT_ROOT, 'elm-server.js');
 // totalQuestions) to independently know the real question count for win-gating —
 // see acceptQuizAdvance/quizJustCompleted. Test servers need a small fixture of
 // their own so that read doesn't fail; kept tiny so tests don't need to drive many
-// quizAdvanced events to reach a win.
+// quizAdvanced events to reach a win. No `song` field (see #70's review) -- a
+// question's array position alone ties it to a numbered file in assets/songs/.
 const TEST_QUIZ_QUESTION_COUNT = 2;
 const TEST_QUIZ_QUESTIONS = [
-    { song: 'test-song-0.mp3', answers: ['answer zero'] },
-    { song: 'test-song-1.mp3', answers: ['answer one'] },
+    { answers: ['answer zero'] },
+    { answers: ['answer one'] },
 ];
 
 // Mirrors the row shape scripts/add-admin.js writes, reusing the same hashPassword the
