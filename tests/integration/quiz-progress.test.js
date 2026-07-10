@@ -159,4 +159,52 @@ describe('server-side quiz-progress win gating', () => {
         });
         expect(entry.quizProgress).toBe(TEST_QUIZ_QUESTION_COUNT);
     }, 10000);
+
+    // Issue #74: the persisted quiz-slide screen is server-derived from confirmed
+    // progress (Server.elm's deriveQuizScreen), never trusted from the client's raw
+    // stateUpdate -- a crafted client can't park itself on an unearned question, and
+    // the next delivery resumes at the slide it actually earned.
+    test('a crafted unearned quiz-slide stateUpdate is corrected to the server-derived screen on the next delivery', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'quiz-progress-derived-screen.dmg',
+            winText: WIN_TEXT,
+        });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        // Earn exactly one question, keeping progress (1) below the total (2) so the
+        // derived screen stays in play.
+        conn.send({ quizAdvanced: { idx: 0 } });
+        await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === build.uuid);
+            return e && e.quizProgress === 1 ? e : undefined;
+        });
+
+        // Claim a question screen far past the earned one, with a typed answer in tow.
+        conn.send({
+            stateUpdate: {
+                json: stateWithScreen({ tag: 'QuestionScreen', idx: 9, s: 'stolen-answer-peek' }),
+            },
+        });
+        await conn.waitFor((m) => m.payload === 'stateUpdateAck');
+
+        // The persisted screen must be the derived BlankScreen at the earned index,
+        // with the crafted screen (and its typed text) gone entirely.
+        const entry = await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === build.uuid);
+            return e && e.state && e.state.screen && e.state.screen.tag === 'BlankScreen' ? e : undefined;
+        });
+        expect(entry.state.screen).toEqual({ tag: 'BlankScreen', idx: 1 });
+        expect(JSON.stringify(entry)).not.toContain('stolen-answer-peek');
+        await conn.close();
+
+        // Reconnect: mid-game states deliver via the jeopardy snapshot, so the
+        // corrected screen arrives stowed in savedState (see kick.test.js).
+        const { conn: reconn, result } = await connectAsPlayer(TEST_PORT, build.uuid);
+        const delivered = JSON.parse(result.stateUpdate.json);
+        expect(delivered.screen.tag).toBe('BeginScreen');
+        expect(delivered.savedState.screen).toEqual({ tag: 'BlankScreen', idx: 1 });
+        await reconn.close();
+    }, 10000);
 });

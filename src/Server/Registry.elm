@@ -15,12 +15,13 @@ type alias RegistryEntry =
 
     -- Opaque (Registry.elm never inspects it) snapshot of the IQ test's
     -- server-owned Server.IqTimerState, encoded via Server.elm's
-    -- encodeIqTimerStateFull. This is a TEMPORARY, IQ-only stepping stone: it
-    -- exists so a server restart can rehydrate the in-memory iqTimers Dict
-    -- (see Server.elm's init) instead of silently losing a player's progress.
-    -- Every other screen still round-trips through `state` alone, written
-    -- verbatim from the client's own stateUpdate. quizProgress below is the
-    -- generalization of this idea to the quiz phase specifically.
+    -- encodeIqTimerStateFull. It exists so a server restart can rehydrate the
+    -- in-memory iqTimers Dict (see Server.elm's init) instead of silently
+    -- losing a player's progress. quizProgress below is the generalization of
+    -- this idea to the quiz phase; for both, the `state` blob's `screen` is
+    -- overwritten from this server-owned record wherever it's derivable (see
+    -- Server.elm's deriveIqScreen/deriveQuizScreen) rather than trusting the
+    -- client's own stateUpdate verbatim.
     , iqTimer : Maybe Encode.Value
 
     -- The furthest quiz question index (see Server.elm's quizProgress Dict)
@@ -264,6 +265,20 @@ overwriteField key newValue original =
         |> Result.withDefault Dict.empty
         |> Dict.insert key newValue
         |> Encode.dict identity identity
+
+
+-- Overwrite just the `screen` of one entry's persisted state blob with a
+-- server-derived value, preserving pending/now/etc. exactly as last reported.
+overwriteEntryScreen : String -> Encode.Value -> List RegistryEntry -> List RegistryEntry
+overwriteEntryScreen uuid screen =
+    List.map
+        (\e ->
+            if e.uuid == uuid then
+                { e | state = Just (overwriteField "screen" screen (Maybe.withDefault (Encode.object []) e.state)) }
+
+            else
+                e
+        )
 
 
 setPendingStateEdit : String -> List RegistryEntry -> List RegistryEntry

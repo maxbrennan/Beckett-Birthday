@@ -90,7 +90,7 @@ On disconnect the entry is *paused*, not dropped: `ClientDisconnected` bumps
 `ClientIqResume` re-arms the appropriate schedule once the player is back and
 has actually rendered the IQ screen again -- see `resumeIqTimer`.
 
-**Persistence (IQ-only stepping stone):** every live change to this state is
+**Persistence:** every live change to this state is
 also mirrored into the player's `RegistryEntry.iqTimer` field in
 `builds.jsonl` (see `persistIqTimerInRegistry`/`setIqTimer`/`clearIqTimer`),
 and wherever it's derivable, the persisted `state.screen` is overwritten to
@@ -100,11 +100,12 @@ is what makes the client's IQ screen 100% derivable from the server's own
 state instead of a second, independently-drifting copy, and it's also what
 lets `init`/`FileRead` rehydrate `iqTimers` after a full process restart
 (otherwise a restart would silently reset a mid-punishment-phase player back
-to the baseline count). The IQ test is the *first* game phase moved to this
-pattern -- every other screen still round-trips through the client's raw
-`stateUpdate` verbatim (`updateEntryState`). Generalizing this beyond the IQ
-test would mean extending `deriveIqScreen`/`persistIqTimerInRegistry` (or an
-analogous per-phase deriver) beyond these IQ-specific types.
+to the baseline count). The IQ test was the first game phase moved to this
+pattern; the quiz-slide phase now follows it via
+`deriveQuizScreen`/`persistQuizScreenInRegistry`, driven by the far smaller
+server-owned `Model.quizProgress` instead of a state record like this one.
+Screens outside those two families still round-trip through the client's raw
+`stateUpdate` verbatim (`updateEntryState`).
 -}
 type alias IqTimerState =
     { epoch : Int -- bumped on every start; stale Process.sleep fires are ignored
@@ -234,6 +235,10 @@ applyCatch s =
 -- explicit, monotonic sequence of quizAdvanced events -- never the freeform
 -- client-reported `state.screen` -- to decide when a player has passed every
 -- question. See RegistryEntry.quizProgress and Model.quizProgress/totalQuestions.
+-- The same confirmed progress also drives the persisted quiz-slide screen
+-- (deriveQuizScreen/persistQuizScreenInRegistry below), mirroring the IQ
+-- test's deriveIqScreen pattern, so a self-reported quiz slide can't drift
+-- from what the player has actually earned.
 
 
 quizQuestionsFilePath : String
@@ -261,6 +266,147 @@ fail-safe default, not a trivially satisfiable edge case.
 quizJustCompleted : { next : Int, total : Int } -> Bool
 quizJustCompleted { next, total } =
     total > 0 && next == total
+
+
+{-| Project a player's confirmed quiz progress onto the exact JSON shape
+`Sync.elm`'s `encodeScreen` produces for `BlankScreen`, so the persisted
+quiz-slide screen can be derived from server state instead of the client's own
+report (the quiz analogue of `deriveIqScreen`). `BlankScreen progress` is the
+start of the slide the player has earned but not yet passed -- the client
+replays that slide's song/video from the top on resume, deliberately
+collapsing finer-grained transient state (a typed-but-unsubmitted answer, a
+mid-playback position, a wrong-answer reveal) that only ever existed
+client-side. `Nothing` when progress is out of the playable range: at or past
+`total` the quiz is complete and the client's own `WinScreen` report stays
+authoritative (`BlankScreen total` names no question and would strand the
+player on a slide with nothing to play), and `total <= 0` means the question
+config was never read -- same fail-safe convention as `quizJustCompleted`.
+-}
+deriveQuizScreen : { progress : Int, total : Int } -> Maybe Encode.Value
+deriveQuizScreen { progress, total } =
+    if 0 <= progress && progress < total then
+        Just <|
+            Encode.object
+                [ ( "tag", Encode.string "BlankScreen" )
+                , ( "idx", Encode.int progress )
+                ]
+
+    else
+        Nothing
+
+
+{-| The screen tags whose persisted value is server-derived via
+`deriveQuizScreen` rather than trusted from the client's report. Matched
+against `innermostScreenTag` so a quiz slide can't hide inside the
+`CheckingAnswerScreen`/`ConfirmingAnswerScreen` wrappers.
+-}
+quizSlideTags : List String
+quizSlideTags =
+    [ "BlankScreen", "VideoScreen", "QuestionScreen", "WrongAnswerScreen" ]
+
+
+{-| The reported `screen.tag`, unwrapped through any
+`CheckingAnswerScreen`/`ConfirmingAnswerScreen` `nextScreen` nesting (the
+serialized mirror of `Main.elm`'s `innerBlankIdx`). "" when there's no
+decodable tag, which no screen family matches.
+-}
+innermostScreenTag : Encode.Value -> String
+innermostScreenTag stateValue =
+    Decode.decodeValue (Decode.field "screen" Decode.value) stateValue
+        |> Result.map unwrapScreenTag
+        |> Result.withDefault ""
+
+
+unwrapScreenTag : Encode.Value -> String
+unwrapScreenTag screenValue =
+    case Decode.decodeValue (Decode.field "tag" Decode.string) screenValue of
+        Ok tag ->
+            if tag == "CheckingAnswerScreen" || tag == "ConfirmingAnswerScreen" then
+                Decode.decodeValue (Decode.field "nextScreen" Decode.value) screenValue
+                    |> Result.map unwrapScreenTag
+                    |> Result.withDefault ""
+
+            else
+                tag
+
+        Err _ ->
+            ""
+
+
+{-| Record a confirmed quiz advance in a player's registry row: the progress
+counter always, and -- where derivable -- the persisted `state.screen`
+overwritten to the freshly-earned slide, so a disconnect right after a correct
+answer resumes there instead of at stale mid-transition client state. Mirrors
+`persistIqTimerInRegistry`; on the final advance (`next == total`) only the
+counter is written and the client's own report (its `WinScreen`) stays
+authoritative.
+-}
+persistQuizScreenInRegistry : String -> { next : Int, total : Int } -> List RegistryEntry -> List RegistryEntry
+persistQuizScreenInRegistry uuid { next, total } registry =
+    let
+        withProgress =
+            updateEntryQuizProgress uuid next registry
+    in
+    case deriveQuizScreen { progress = next, total = total } of
+        Nothing ->
+            withProgress
+
+        Just screen ->
+            overwriteEntryScreen uuid screen withProgress
+
+
+{-| The quiz half of the `ClientStateUpdate` screen override: when the client
+self-reports any quiz-slide screen, the persisted `screen` is rewritten to the
+one derived from the server's own confirmed progress -- a crafted report can't
+park itself on a question it hasn't earned (or leak the upcoming slide), and
+an honest report only ever collapses to the start of the very slide it was
+already on. Reports outside the quiz-slide family, and reports made before
+the question config is readable, pass through untouched.
+-}
+applyQuizScreenOverride : String -> Encode.Value -> Model -> List RegistryEntry -> List RegistryEntry
+applyQuizScreenOverride uuid inner model registry =
+    let
+        derived =
+            if List.member (innermostScreenTag inner) quizSlideTags then
+                deriveQuizScreen
+                    { progress = Dict.get uuid model.quizProgress |> Maybe.withDefault 0
+                    , total = model.totalQuestions
+                    }
+
+            else
+                Nothing
+    in
+    case derived of
+        Just screen ->
+            overwriteEntryScreen uuid screen registry
+
+        Nothing ->
+            registry
+
+
+{-| Admin state edits are the other write path onto quiz-slide screens.
+Without this, an edit onto e.g. `QuestionScreen 2` leaves `quizProgress`
+stale, so `acceptQuizAdvance` rejects the player's next answer (stranding
+them mid-quiz) -- and `applyQuizScreenOverride` would snap the edited screen
+straight back on their next stateUpdate. Mirrors `reconcileIqTimerAfterEdit`:
+the edited slide's idx becomes the new authoritative progress, clamped into
+the playable range so even an out-of-range edit self-heals to a real slide.
+Edits onto anything outside the quiz-slide family reconcile nothing.
+-}
+reconcileQuizProgressAfterEdit : String -> Encode.Value -> Model -> Model
+reconcileQuizProgressAfterEdit uuid parsedState model =
+    if List.member (innermostScreenTag parsedState) quizSlideTags then
+        let
+            progress =
+                clamp 0 (model.totalQuestions - 1) (extractQuestionIdx parsedState)
+        in
+        { model
+            | quizProgress = Dict.insert uuid progress model.quizProgress
+            , registry = updateEntryQuizProgress uuid progress model.registry
+        }
+
+    else
+        model
 
 
 {-| The client's overall trivia slide index, read off whatever's already
@@ -499,7 +645,8 @@ restart) and, where derivable, overwrites just the `screen` key -- `pending`/
 `now`/etc. stay exactly as the client last reported them. `Nothing` clears
 `iqTimer` and leaves `.state` untouched entirely -- the client's own report
 becomes authoritative again from that point on (e.g. once the test completes).
-IQ-only for now; every other screen/player passes through unaffected.
+Every other screen/player passes through unaffected;
+`persistQuizScreenInRegistry` is the quiz-slide counterpart.
 -}
 persistIqTimerInRegistry : String -> Maybe IqTimerState -> List RegistryEntry -> List RegistryEntry
 persistIqTimerInRegistry uuid maybeState registry =
@@ -512,15 +659,7 @@ persistIqTimerInRegistry uuid maybeState registry =
             withIqTimer
 
         Just screen ->
-            List.map
-                (\e ->
-                    if e.uuid == uuid then
-                        { e | state = Just (overwriteField "screen" screen (Maybe.withDefault (Encode.object []) e.state)) }
-
-                    else
-                        e
-                )
-                withIqTimer
+            overwriteEntryScreen uuid screen withIqTimer
 
 
 {-| Record a live IqTimerState change both in-memory and in the registry (so it
@@ -1118,21 +1257,25 @@ update msg model =
                                 rawRegistry =
                                     updateEntryState uuid inner model.registry
 
-                                -- IQ-only override, for now: if there's a live server-authoritative
-                                -- IQ timer for this player, its derived screen wins over whatever
-                                -- the client itself just self-reported, closing the drift/clobber
-                                -- vector this whole persistence change exists to fix. Every other
-                                -- screen/player still flows through untouched -- this is the
-                                -- intentionally-scoped-down version of "the client's state should
-                                -- be 100% derivable from the server's" (IQ-only, for now; see the
-                                -- doc comment on IqTimerState).
+                                -- Server-derived screens win over whatever the client itself
+                                -- just self-reported, closing the drift/clobber vector this
+                                -- persistence pattern exists to fix (see the doc comment on
+                                -- IqTimerState): first the quiz-slide correction, then -- on top
+                                -- -- the IQ timer's, when one is live. The IQ persist runs last
+                                -- deliberately: a live-but-IqIdle timer derives Nothing, and
+                                -- gating the quiz correction on the timer's absence instead
+                                -- would let a report slip past both. Screens in neither family
+                                -- still flow through untouched.
+                                quizCorrected =
+                                    applyQuizScreenOverride uuid inner model rawRegistry
+
                                 newRegistry =
                                     case Dict.get uuid model.iqTimers of
                                         Just state ->
-                                            persistIqTimerInRegistry uuid (Just state) rawRegistry
+                                            persistIqTimerInRegistry uuid (Just state) quizCorrected
 
                                         Nothing ->
-                                            rawRegistry
+                                            quizCorrected
 
                                 -- The client already syncs its full state roughly every
                                 -- second, so this ride-along check is all the server needs
@@ -1294,7 +1437,9 @@ update msg model =
                                             updateEntryState editUuid parsedState model.registry
 
                                         reconciledModel =
-                                            reconcileIqTimerAfterEdit editUuid parsedState { model | registry = rawEditedRegistry }
+                                            { model | registry = rawEditedRegistry }
+                                                |> reconcileIqTimerAfterEdit editUuid parsedState
+                                                |> reconcileQuizProgressAfterEdit editUuid parsedState
                                     in
                                     ( { reconciledModel
                                         | pendingStateEdits = Set.remove editUuid model.pendingStateEdits
@@ -1513,7 +1658,7 @@ update msg model =
                                 Just next ->
                                     let
                                         newRegistry =
-                                            updateEntryQuizProgress uuid next model.registry
+                                            persistQuizScreenInRegistry uuid { next = next, total = model.totalQuestions } model.registry
 
                                         newModel =
                                             { model
@@ -1582,7 +1727,7 @@ update msg model =
                                             -- the result reply.
                                             let
                                                 newRegistry =
-                                                    updateEntryQuizProgress uuid next model.registry
+                                                    persistQuizScreenInRegistry uuid { next = next, total = model.totalQuestions } model.registry
 
                                                 newModel =
                                                     { model

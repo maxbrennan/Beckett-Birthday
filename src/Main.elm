@@ -225,6 +225,33 @@ trackEndedTarget questions screen name =
             Nothing
 
 
+-- Which PlaySong (if any) resuming from a jeopardy savedState must schedule.
+-- Only a bare BlankScreen on a *video* slide with no PlaySong already pending
+-- needs the kick: the server-derived resume screen (see Server.elm's
+-- deriveQuizScreen) is a BlankScreen with whatever `pending` the client last
+-- reported, and while an audio slide self-starts from there (the audio element
+-- renders and plays -- see Audio.currentQuizSong), a video slide only ever
+-- starts via PlaySong's transition into VideoScreen, so without this it would
+-- sit on the blank screen forever.
+resumePlaySongTarget : List String -> List PendingEvent -> Screen -> Maybe Int
+resumePlaySongTarget questions pending screen =
+    case screen of
+        BlankScreen idx ->
+            case getQuestion questions idx of
+                Just song ->
+                    if isVideo song && not (hasPendingPlaySong idx pending) then
+                        Just idx
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
 -- Promotes a CheckingAnswerScreen to ConfirmingAnswerScreen once the client
 -- actually has a connection to send that state over.
 promoteChecking : Screen -> Screen
@@ -295,14 +322,25 @@ update msg model =
                             videoSeekTime saved
                                 |> Maybe.map (\t -> setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t })
                                 |> Maybe.withDefault Cmd.none
+
+                        resumed =
+                            { model
+                                | screen = saved.screen
+                                , pending = rebasedPending
+                                , savedState = Nothing
+                                , jeopardyPlaying = False
+                                , pendingStartTime = saved.songResumeTime
+                            }
+
+                        kicked =
+                            case resumePlaySongTarget model.questions rebasedPending saved.screen of
+                                Just idx ->
+                                    resumed |> schedule 1000 (PlaySong idx)
+
+                                Nothing ->
+                                    resumed
                     in
-                    ( { model
-                        | screen = saved.screen
-                        , pending = rebasedPending
-                        , savedState = Nothing
-                        , jeopardyPlaying = False
-                        , pendingStartTime = saved.songResumeTime
-                      }
+                    ( kicked
                     , Cmd.batch [ pauseMusic "jeopardy-audio", videoCmd, resumeCmd model saved.screen ]
                     )
 
