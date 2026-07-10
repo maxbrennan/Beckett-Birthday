@@ -2610,6 +2610,40 @@ quizAnswerRoutingSuite =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
                 in
                 entryOf |> Maybe.map .quizProgress |> Expect.equal (Just 1)
+        , test "quizAnswerSubmitted is ignored while the player has a live IQ-timer entry" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" iqState
+                        }
+
+                    ( m, cmd ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
+        , test "quizAnswerSubmitted is ignored while the player's IQ-timer entry is IqIdle" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdle }
+                        }
+
+                    ( m, cmd ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
         ]
 
 
