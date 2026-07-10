@@ -63,7 +63,15 @@ describe('win text delivery', () => {
         expect(entry.state).toBeNull();
     });
 
-    test('a win-transition stateUpdate triggers a winText message with the text', async () => {
+    // Regression test for the fixed exploit (issue #33): the server used to grant
+    // winText purely because the client self-reported this screen tag in a
+    // freeform stateUpdate blob (see the removed src/Server/Protocol.elm
+    // stateIsWin), with zero independent verification. Now winText is only ever
+    // granted once the server's own tracked quiz progress (quizAdvanced events,
+    // see tests/integration/quiz-progress.test.js) independently confirms
+    // completion, so this same crafted stateUpdate -- sent by a player who never
+    // sent a single quizAdvanced event -- must no longer produce anything.
+    test('a crafted win-claiming stateUpdate, with no server-tracked quiz progress, does not trigger winText', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'win-deliver.dmg',
@@ -77,8 +85,9 @@ describe('win text delivery', () => {
                 json: stateWithScreen({ tag: 'ConfirmingAnswerScreen', nextScreen: { tag: 'WinScreen' } }),
             },
         });
-        const winMsg = await conn.waitFor((m) => m.payload === 'winText');
-        expect(winMsg.winText.text).toBe(WIN_TEXT);
+        // The ack still comes back; a winText message must not.
+        await conn.waitFor((m) => m.payload === 'stateUpdateAck');
+        await expect(conn.waitFor((m) => m.payload === 'winText', 500)).rejects.toThrow();
         await conn.close();
     }, 10000);
 
@@ -109,7 +118,7 @@ describe('win text delivery', () => {
         const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
         conn.send({ stateUpdate: { json: stateWithScreen({ tag: 'BeginScreen' }) } });
         // The ack still comes back; a winText message must not.
-        await conn.waitFor((m) => m.payload === 'ack');
+        await conn.waitFor((m) => m.payload === 'stateUpdateAck');
         await expect(conn.waitFor((m) => m.payload === 'winText', 500)).rejects.toThrow();
         await conn.close();
     }, 10000);

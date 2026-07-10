@@ -11,6 +11,18 @@ const auth = require('../../server/auth.js');
 const SERVER_SCRIPT = path.join(PROJECT_ROOT, 'server', 'index.js');
 const ELM_SERVER_JS = path.join(PROJECT_ROOT, 'elm-server.js');
 
+// The server now reads config/quiz-questions.json itself at startup (Server.elm's
+// totalQuestions) to independently know the real question count for win-gating —
+// see acceptQuizAdvance/quizJustCompleted. Test servers need a small fixture of
+// their own so that read doesn't fail; kept tiny so tests don't need to drive many
+// quizAdvanced events to reach a win. No `song` field (see #70's review) -- a
+// question's array position alone ties it to a numbered file in assets/songs/.
+const TEST_QUIZ_QUESTION_COUNT = 2;
+const TEST_QUIZ_QUESTIONS = [
+    { answers: ['answer zero'] },
+    { answers: ['answer one'] },
+];
+
 // Mirrors the row shape scripts/add-admin.js writes, reusing the same hashPassword the
 // server verifies against (server/auth.js's findUser/verifyPassword), rather than a
 // second reimplementation of the password hashing scheme.
@@ -43,6 +55,11 @@ async function startTestServer({ port, seedUsers = [], existingTempDir } = {}) {
         fs.mkdirSync(authDir, { recursive: true });
         for (const user of seedUsers) seedUser(authDir, user);
         fs.mkdirSync(path.join(tempDir, 'app-builds'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, 'config'), { recursive: true });
+        fs.writeFileSync(
+            path.join(tempDir, 'config', 'quiz-questions.json'),
+            JSON.stringify(TEST_QUIZ_QUESTIONS)
+        );
     }
 
     const child = spawn(process.execPath, [SERVER_SCRIPT], {
@@ -98,4 +115,4 @@ async function startTestServer({ port, seedUsers = [], existingTempDir } = {}) {
     return { tempDir, stop };
 }
 
-module.exports = { startTestServer, PROJECT_ROOT, ELM_SERVER_JS };
+module.exports = { startTestServer, PROJECT_ROOT, ELM_SERVER_JS, TEST_QUIZ_QUESTION_COUNT };

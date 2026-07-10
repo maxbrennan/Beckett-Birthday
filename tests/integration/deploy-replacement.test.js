@@ -49,7 +49,7 @@ describe('deploy-replacement', () => {
 
         const preservedState = { screen: 'IQTest', score: 7 };
         playerConn.send({ stateUpdate: { json: JSON.stringify(preservedState) } });
-        await playerConn.waitFor((m) => m.payload === 'ack');
+        await playerConn.waitFor((m) => m.payload === 'stateUpdateAck');
 
         const replacement = await distClient.replaceBuild(TEST_PORT, admin, oldBuild.uuid, {
             platform: 'mac',
@@ -85,7 +85,7 @@ describe('deploy-replacement', () => {
         expect(editAuth.success).toBe(true);
         expect(JSON.parse(json)).toEqual(preservedState);
         const saveResult = await distClient.saveStateEdit(editConn, replacement.uuid, JSON.stringify(preservedState));
-        expect(saveResult.payload).toBe('ack');
+        expect(saveResult.payload).toBe('distStateEditSaveAck');
         await editConn.close();
 
         const unlockedEntry = await waitUntil(() => {
@@ -131,7 +131,7 @@ describe('deploy-replacement', () => {
         expect(JSON.parse(json)).toEqual({});
         const newState = { screen: 'BeginScreen' };
         const saveResult = await distClient.saveStateEdit(editConn, replacement.uuid, JSON.stringify(newState));
-        expect(saveResult.payload).toBe('ack');
+        expect(saveResult.payload).toBe('distStateEditSaveAck');
         await editConn.close();
 
         await waitUntil(() => {
@@ -154,7 +154,7 @@ describe('deploy-replacement', () => {
         conn.send({ distRegister: { uuid: registeredUuid, platform: 'mac' } });
         const authResult = await admin.respondToChallenge(conn);
         expect(authResult.success).toBe(true);
-        await conn.waitFor((m) => m.payload === 'ack');
+        await conn.waitFor((m) => m.payload === 'distRegisterAck');
 
         conn.send({
             distReplaceComplete: {
@@ -164,7 +164,7 @@ describe('deploy-replacement', () => {
             },
         });
 
-        await expect(conn.waitFor((m) => m.payload === 'ack', 1000)).rejects.toThrow(/timed out/);
+        await expect(conn.waitFor((m) => m.payload === 'distReplaceCompleteAck', 1000)).rejects.toThrow(/timed out/);
         await conn.close();
     });
 
@@ -216,7 +216,7 @@ describe('deploy-replacement', () => {
 
         // auth fails before distReplaceComplete (oldUuid = '') would ever be sent — no
         // ack, no upload token, nothing to replace.
-        await expect(conn.waitFor((m) => m.payload === 'ack', 500)).rejects.toThrow();
+        await expect(conn.waitFor((m) => m.payload === 'distRegisterAck', 500)).rejects.toThrow();
         await conn.closed();
 
         // prove nothing was created, via a genuinely-authenticated distList call.
@@ -236,7 +236,7 @@ describe('deploy-replacement', () => {
 
         // same shape as above — a syntactically valid but never-registered oldUuid is
         // conceptually what would have been sent, but auth fails first so it never is.
-        await expect(conn.waitFor((m) => m.payload === 'ack', 500)).rejects.toThrow();
+        await expect(conn.waitFor((m) => m.payload === 'distRegisterAck', 500)).rejects.toThrow();
         await conn.closed();
 
         const { authResult: listAuth, entries } = await distClient.listBuilds(TEST_PORT, admin);
@@ -333,7 +333,7 @@ describe('deploy-replacement', () => {
 
             const newState = { screen: 'BeginScreen', jeopardyPlaying: false };
             const saveResult = await distClient.saveStateEdit(conn, replacement.uuid, JSON.stringify(newState));
-            expect(saveResult.payload).toBe('ack');
+            expect(saveResult.payload).toBe('distStateEditSaveAck');
             await conn.close();
 
             const entry = await waitUntil(() => {

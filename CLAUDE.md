@@ -65,22 +65,32 @@ Two-level challenge–response auth (Ed25519 keys or username/password), impleme
 
 ```
 src/
-  Main.elm          — client entry point, top-level Model/Msg/update/view
+  Main.elm          — client entry point: init/update/subscriptions/main, wired to Types/Sync/View
   Server.elm        — server entry point, top-level Model/Msg/update
-  View.elm          — rendering helpers (stub; view logic lives in Main.elm)
-  Audio.elm         — audio port helpers
-  Sync.elm          — WebSocket connection handling / state sync (stub)
-  Types.elm         — shared type aliases (stub)
+  View.elm          — rendering: Html Msg view functions, plus pure helpers like formatTimer
+  Audio.elm         — audio element rendering, plus pure helpers like currentQuizSong
+  Sync.elm          — ServerEnvelope decoding and Model/Screen JSON encode/decode
+  Types.elm         — canonical Model/Screen/Msg/PausedState/PendingEvent type definitions
   Game/
     IQTest.elm      — IQ test screen: ding scheduling, fake-flash trap, scoring
     Quiz.elm        — music quiz: questions, answer validation, flow
   Server/
-    Distribution.elm — dist register/upload/auth handlers (stub)
-    Protocol.elm     — client envelope decoder, server envelope builders (stub)
-    Registry.elm     — RegistryEntry JSONL encode/decode, writeRegistry (stub)
+    Distribution.elm — DistInfo/DistStage type declarations (the one genuinely thin module here)
+    Protocol.elm     — client envelope decoder, server envelope builders
+    Registry.elm     — RegistryEntry JSONL encode/decode, writeRegistry, snapshotForJeopardy
 ```
 
-Stubs marked above are planned modules; their logic currently lives in the monolithic `Main.elm` and `Server.elm` files.
+`Main.elm`'s `update` pulls its per-`Msg` decision logic into pure functions wherever the Msg carries real business logic, mirroring `Server.elm`'s pattern (`classifyDing`, `advanceOnClear`, etc., exercised directly by `tests/ServerTest.elm`): functions typed only over `Game.IQTest`'s/`Game.Quiz`'s own state (e.g. `decideSpaceBar`, `nextFfPhase`, `decideAnswer`) live in those sibling modules, since `Types.elm` imports them and a reverse import would be circular; functions that need `Screen`/`Model`/`PausedState` (e.g. `screenAllowsTimeout`, `videoSeekTime`, `trackEndedTarget`) stay inline in `Main.elm` just above `update`. `Server.Distribution.elm` is the only module above that's genuinely a stub (type declarations only, no functions).
+
+### Test coverage conventions
+
+`View.elm`'s `Html Msg`-producing functions are excluded from the elm-coverage unit-test target (`ci/check-elm-coverage.js`'s `EXCLUDED_MODULES`) — every one of them takes the full `Model` rather than narrow view-model data, so unit-testing them meaningfully would mean either full-`Model` snapshot fixtures per screen or a view-model refactor, neither warranted today. They're verified instead by `tests/integration/gui.electron.js`, which drives the real rendered Electron app. `View.elm`'s pure non-rendering helpers (e.g. `formatTimer`) are still unit-tested normally, in `tests/AudioViewTest.elm`.
+
+The elm-coverage floor in `.github/workflows/ci.yml`'s `elm-coverage` job (97%, excluding `View`) meets the 95% target from issue #26. The small residual gap in `Main.elm`/`Server.elm` is genuinely unreachable via `elm-test`, not undertested:
+- `Task.perform`/port-subscription callbacks (e.g. `Server.elm`'s `scheduleCountdownStep`/`scheduleDing`, `Main.elm`'s `ShowQuestion`'s DOM-focus callback) only run when the real runtime resolves the underlying `Task`/port event — a pure `update` call in a test never executes them.
+- `init`/`subscriptions`/`main` are `Platform.worker`/`Browser.element` program wiring, not decision logic.
+- `Main.elm` and `Server.elm` both declare a port named `readFile` (and `readFileResult`) — since `elm-test` compiles every test module's dependencies into one program, calling *both* `Main.init` and `Server.init` from tests in the same run makes both same-named ports "reachable" at once, which crashes at runtime ("There can only be one port named `readFile`"). Only one of the two `init`s can be exercised via a direct test; the other's declaration is left uncovered.
+- `Server.elm`'s `reconcileIqTimerAfterEdit` has one `Err _ -> model` branch that's provably dead: `decodeEditedIqScreen`'s `Decode.oneOf` always falls back to `Decode.succeed EditedIqOther`, so decoding it can never fail.
 
 ## Plan Implementation Workflow
 

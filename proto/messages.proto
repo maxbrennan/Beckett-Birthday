@@ -8,8 +8,16 @@ enum AuthLevel {
 }
 
 message StateUpdate          { string json = 1; }
-message Ack                  { string upload_token = 1; }
+message StateUpdateAck       {}
+message DistRegisterAck      { string upload_token = 1; }
+message DistUploadAck        {}
+message DistCompleteAck      {}
+message DistStateEditSaveAck {}
+message DistReplaceCompleteAck {}
+message DistUndeployAck      {}
 message WinText              { string text = 1; }
+message TimerSync            { double timer_ends_at = 1; }
+message TimedOut             {}
 message AuthChallenge        { bytes challenge = 1; AuthLevel level = 2; }
 message StateRequest         { string uuid = 1; }
 message StateRequestRejected { string reason = 1; }
@@ -73,16 +81,68 @@ message DistListEntry {
 }
 message DistListResult { repeated DistListEntry entries = 1; }
 
+// IQ-test timing/scoring. All timing and the ding/question count live on the
+// server; these client→server messages carry no count (the server is the sole
+// owner of it — it initializes and doubles the count itself).
+message IqStartCountdown   {}  // "player pressed Begin" — server uses its own stored count
+message IqReadyForDing     {}  // "previous ding resolved, send the next one"
+message IqCaught           {}  // "player pressed during a fake flash" — server doubles its count
+// Sent right after the client restores a saved IQTestCountdownScreen/
+// IQTestActiveScreen/FakeFlashCaughtScreen from a reconnect, so the server
+// re-arms whatever it paused on disconnect once the client is actually ready
+// to receive it (no-op if there's nothing paused for this player).
+message IqResume           {}
+
+message IqCountdownTick     { uint32 remaining = 1; }
+message IqCountdownComplete {}
+// fake: the flash has no real ding behind it. trap: the one-time catchable trap
+// (pressing → penalty cutscene); a fake that is not a trap is a 50%-phase fake
+// (pressing → fail). ding_count/total_dings are the server's authoritative counts,
+// sent purely so the client can render them (counter, caught cutscene).
+message IqDing              { bool fake = 1; bool trap = 2; uint32 ding_count = 3; uint32 total_dings = 4; }
+message IqStartLoud         {}
+message IqTestComplete      {}
+
+// "I just passed question idx" (correct answer, or an IQ-test penalty
+// clearing after a wrong one). The server, not this message, decides whether
+// this means the game is won -- see Server.elm's acceptQuizAdvance/
+// quizJustCompleted.
+message QuizAdvanced { uint32 idx = 1; }
+
+// "I typed this answer for question idx" -- the server validates it against
+// config/quiz-questions.json (never sent to the client) and replies with
+// QuizAnswerResult. See Game.Quiz.decideAnswer / Server.elm's handling of
+// ClientQuizAnswerSubmitted.
+message QuizAnswerSubmitted { uint32 idx = 1; string answer = 2; }
+
+// correct: whether the answer matched. reveal_answer: the correct answer's
+// display text, populated only when correct = false (see WrongAnswerScreen).
+message QuizAnswerResult { uint32 idx = 1; bool correct = 2; string reveal_answer = 3; }
+
 message ServerMessage {
   oneof payload {
     StateUpdate          state_update            = 1;
-    Ack                  ack                     = 2;
     AuthChallenge        auth_challenge          = 3;
     AuthResult           auth_result             = 4;
     StateRequestRejected state_request_rejected  = 5;
     DistListResult       dist_list_result        = 6;
     DistStateEditPayload dist_state_edit_payload = 7;
     WinText              win_text                = 8;
+    IqCountdownTick      iq_countdown_tick       = 9;
+    IqCountdownComplete  iq_countdown_complete   = 10;
+    IqDing               iq_ding                 = 11;
+    IqStartLoud          iq_start_loud           = 12;
+    IqTestComplete       iq_test_complete        = 13;
+    StateUpdateAck          state_update_ack           = 14;
+    DistRegisterAck         dist_register_ack          = 15;
+    DistUploadAck           dist_upload_ack            = 16;
+    DistCompleteAck         dist_complete_ack          = 17;
+    DistStateEditSaveAck    dist_state_edit_save_ack   = 18;
+    DistReplaceCompleteAck  dist_replace_complete_ack  = 19;
+    DistUndeployAck         dist_undeploy_ack          = 20;
+    TimerSync               timer_sync                 = 21;
+    TimedOut                timed_out                  = 22;
+    QuizAnswerResult        quiz_answer_result         = 23;
   }
 }
 
@@ -99,5 +159,11 @@ message ClientMessage {
     DistStateEditSave    dist_state_edit_save  = 9;
     DistComplete         dist_complete         = 10;
     DistReplaceComplete  dist_replace_complete = 11;
+    IqStartCountdown     iq_start_countdown    = 12;
+    IqReadyForDing       iq_ready_for_ding     = 13;
+    IqCaught             iq_caught             = 14;
+    IqResume             iq_resume             = 15;
+    QuizAdvanced         quiz_advanced         = 16;
+    QuizAnswerSubmitted  quiz_answer_submitted = 17;
   }
 }
