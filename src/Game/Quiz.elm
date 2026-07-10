@@ -11,12 +11,13 @@ import Json.Decode as Decode
 -- see songOrder below), and a question's position in this array *is* its song's
 -- index, so the array order is the single source of truth for both sides.
 --
--- The question list itself lives in `config/quiz-questions.json` so it can be
--- edited per-version without touching Elm source. Only Server.elm reads it (via
--- the `readFile` port and `decodeQuestions`) -- nothing under config/ is bundled
--- into the client at all (see #54, #70's review). The client instead lists
--- assets/songs/ directly (via the readDir port) and orders the results with
--- songOrder, so it never sees an answer.
+-- The question list itself lives in the `quizQuestions` field of
+-- `config/app-config.json` so it can be edited per-version without touching Elm
+-- source. Only Server.elm reads it (via the `readFile` port and
+-- `decodeQuestions`) -- nothing under config/ is bundled into the client at all
+-- (see #35, #54, #70's review). The client instead lists assets/songs/ directly
+-- (via the readDir port) and orders the results with songOrder, so it never
+-- sees an answer.
 
 
 type alias Question =
@@ -30,12 +31,12 @@ questionDecoder =
 
 decodeQuestions : String -> List Question
 decodeQuestions raw =
-    Decode.decodeString (Decode.list questionDecoder) raw
+    Decode.decodeString (Decode.field "quizQuestions" (Decode.list questionDecoder)) raw
         |> Result.withDefault []
 
 
 -- ── Client-side song ordering ────────────────────────────────────────────────
--- The client never sees quiz-questions.json. It lists assets/songs/ (readDir)
+-- The client never sees config/app-config.json. It lists assets/songs/ (readDir)
 -- and derives play order purely from each filename's leading number -- "0.mp3"
 -- is slide 0, "3.mp4" is slide 3, etc. Anything that doesn't start with a
 -- number (stray files like .DS_Store) is dropped rather than guessed at.

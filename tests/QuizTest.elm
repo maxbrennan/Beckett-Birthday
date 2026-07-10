@@ -80,21 +80,23 @@ decideAnswerTests =
 decodeQuestionsTests : Test
 decodeQuestionsTests =
     describe "decodeQuestions"
-        [ test "decodes a well-formed JSON array of questions" <|
+        [ test "decodes the quizQuestions field of a well-formed app-config.json" <|
             \_ ->
                 Expect.equal
                     [ Question [ "One", "Uno" ], Question [ "Two" ] ]
-                    (decodeQuestions """[{"answers":["One","Uno"]},{"answers":["Two"]}]""")
+                    (decodeQuestions """{"quizQuestions":[{"answers":["One","Uno"]},{"answers":["Two"]}]}""")
         , test "returns an empty list for malformed JSON" <|
             \_ -> Expect.equal [] (decodeQuestions "not json")
         , test "returns an empty list for valid JSON that doesn't match the shape" <|
-            \_ -> Expect.equal [] (decodeQuestions """[{"wrong": "shape"}]""")
+            \_ -> Expect.equal [] (decodeQuestions """{"quizQuestions":[{"wrong": "shape"}]}""")
+        , test "returns an empty list when the quizQuestions field is missing" <|
+            \_ -> Expect.equal [] (decodeQuestions """{"appName":"Test"}""")
         ]
 
 
--- The client never sees quiz-questions.json at all (see #54/#70's review) -- it
--- lists assets/songs/ directly and orders the results with songOrder, purely
--- from each filename's leading number.
+-- The client never sees config/app-config.json at all (see #35, #54/#70's
+-- review) -- it lists assets/songs/ directly and orders the results with
+-- songOrder, purely from each filename's leading number.
 songOrderTests : Test
 songOrderTests =
     describe "songOrder"

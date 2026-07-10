@@ -110,9 +110,9 @@ message IqTestComplete      {}
 message QuizAdvanced { uint32 idx = 1; }
 
 // "I typed this answer for question idx" -- the server validates it against
-// config/quiz-questions.json (never sent to the client) and replies with
-// QuizAnswerResult. See Game.Quiz.decideAnswer / Server.elm's handling of
-// ClientQuizAnswerSubmitted.
+// config/app-config.json's quizQuestions field (never sent to the client) and
+// replies with QuizAnswerResult. See Game.Quiz.decideAnswer / Server.elm's
+// handling of ClientQuizAnswerSubmitted.
 message QuizAnswerSubmitted { uint32 idx = 1; string answer = 2; }
 
 // correct: whether the answer matched. reveal_answer: the correct answer's

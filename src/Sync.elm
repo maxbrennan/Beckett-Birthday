@@ -161,8 +161,8 @@ quizAdvancedEnvelope idx =
 
 
 -- "I typed this answer for question idx" -- the server validates it against
--- config/quiz-questions.json (never sent to the client) and replies with a
--- quizAnswerResult message (see ServerQuizAnswerResult above).
+-- config/app-config.json's quizQuestions field (never sent to the client) and
+-- replies with a quizAnswerResult message (see ServerQuizAnswerResult above).
 quizAnswerSubmittedEnvelope : { idx : Int, answer : String } -> Encode.Value
 quizAnswerSubmittedEnvelope { idx, answer } =
     Encode.object
