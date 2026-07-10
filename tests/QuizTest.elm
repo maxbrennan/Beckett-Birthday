@@ -1,7 +1,8 @@
 module QuizTest exposing (..)
 
 import Expect
-import Game.Quiz exposing (AnswerOutcome(..), Question, capitalize, decideAnswer, decodeQuestions, getQuestion, isVideo, normalize, songNumericPrefix, songOrder)
+import Game.Quiz exposing (AnswerOutcome(..), Question, capitalize, decideAnswer, decodeQuestions, getQuestion, isVideo, normalize, questionDecoder, songNumericPrefix, songOrder)
+import Json.Decode as Decode
 import Test exposing (Test, describe, test)
 
 
@@ -91,6 +92,25 @@ decodeQuestionsTests =
             \_ -> Expect.equal [] (decodeQuestions """{"quizQuestions":[{"wrong": "shape"}]}""")
         , test "returns an empty list when the quizQuestions field is missing" <|
             \_ -> Expect.equal [] (decodeQuestions """{"appName":"Test"}""")
+        ]
+
+
+-- Server.elm's questionsForUuid decodes a RegistryEntry's stored quizQuestions blob as a
+-- bare array (the shape a "repeated Question" proto field round-trips to), distinct from
+-- decodeQuestions' {"quizQuestions": [...]}-wrapped app-config.json shape above.
+bareQuestionListDecodeTests : Test
+bareQuestionListDecodeTests =
+    describe "Decode.list questionDecoder (the shape stored on RegistryEntry.quizQuestions)"
+        [ test "decodes a bare array of questions" <|
+            \_ ->
+                """[{"answers":["One","Uno"]},{"answers":["Two"]}]"""
+                    |> Decode.decodeString (Decode.list questionDecoder)
+                    |> Expect.equal (Ok [ Question [ "One", "Uno" ], Question [ "Two" ] ])
+        , test "decodes an empty array" <|
+            \_ ->
+                "[]"
+                    |> Decode.decodeString (Decode.list questionDecoder)
+                    |> Expect.equal (Ok [])
         ]
 
 

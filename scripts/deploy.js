@@ -82,6 +82,38 @@ if (require.main === module) {
         return text;
     }
 
+    // The quiz questions/answers live only on the server (stored per-build in
+    // builds.jsonl, see #77), so -- like winText -- they're read here at deploy time and
+    // sent with distComplete rather than bundled into the client.
+    function readQuizQuestions() {
+        let raw;
+        try {
+            raw = fs.readFileSync(APP_CONFIG_FILE, 'utf8');
+        } catch (err) {
+            fail(`could not read ${APP_CONFIG_FILE}: ${err.message}`);
+        }
+        let questions;
+        try {
+            questions = JSON.parse(raw).quizQuestions;
+        } catch (err) {
+            fail(`could not parse ${APP_CONFIG_FILE}: ${err.message}`);
+        }
+        const isValid =
+            Array.isArray(questions) &&
+            questions.length > 0 &&
+            questions.every(
+                (q) =>
+                    q &&
+                    Array.isArray(q.answers) &&
+                    q.answers.length > 0 &&
+                    q.answers.every((a) => typeof a === 'string' && a !== '')
+            );
+        if (!isValid) {
+            fail(`${APP_CONFIG_FILE} must contain a non-empty "quizQuestions" array of { answers: [non-empty strings] }`);
+        }
+        return questions;
+    }
+
     function generateUuid() {
         const uuid = crypto.randomUUID();
         fs.writeFileSync(UUID_FILE, JSON.stringify({ uuid }, null, 2) + '\n');
@@ -202,9 +234,11 @@ if (require.main === module) {
         }
         if (!uploadToken) fail('server did not issue an upload token');
 
-        // Read (and validate) the win text before the slow electron-builder run so a
-        // missing/malformed config fails fast rather than after a full build.
+        // Read (and validate) the win text and quiz questions before the slow
+        // electron-builder run so a missing/malformed config fails fast rather than
+        // after a full build.
         const winText = readWinText();
+        const quizQuestions = readQuizQuestions();
 
         console.log('[dist] auth complete; running electron-builder');
         await runElectronBuilder().catch((err) => fail(err.message));
@@ -217,7 +251,7 @@ if (require.main === module) {
         await uploadBuild({ host, port, token: uploadToken, filename: built.name, contents });
         console.log('[dist] upload complete');
 
-        send(ws, { distComplete: { uuid, filename: built.name, winText } });
+        send(ws, { distComplete: { uuid, filename: built.name, winText, quizQuestions } });
 
         while (true) {
             const msg = await nextMessage();

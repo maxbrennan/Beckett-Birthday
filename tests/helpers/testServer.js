@@ -11,10 +11,12 @@ const auth = require('../../server/auth.js');
 const SERVER_SCRIPT = path.join(PROJECT_ROOT, 'server', 'index.js');
 const ELM_SERVER_JS = path.join(PROJECT_ROOT, 'elm-server.js');
 
-// The server now reads config/app-config.json's quizQuestions field itself at
-// startup (Server.elm's totalQuestions) to independently know the real question
-// count for win-gating — see acceptQuizAdvance/quizJustCompleted. Test servers
-// need a small fixture of their own so that read doesn't fail; kept tiny so
+// quizQuestions is per-build now (see #77): the server no longer reads config/
+// app-config.json at startup at all, it resolves each connecting player's own
+// questions from their RegistryEntry.quizQuestions (sent at deploy time on
+// distComplete/distReplaceComplete -- see Server.elm's questionsForUuid). Tests
+// deploy builds with this fixture via distClient.js's deployBuild/replaceBuild
+// (which default to it) rather than a shared startup config file. Kept tiny so
 // tests don't need to drive many quizAdvanced events to reach a win. No `song`
 // field (see #70's review) -- a question's array position alone ties it to a
 // numbered file in assets/songs/.
@@ -56,11 +58,6 @@ async function startTestServer({ port, seedUsers = [], existingTempDir } = {}) {
         fs.mkdirSync(authDir, { recursive: true });
         for (const user of seedUsers) seedUser(authDir, user);
         fs.mkdirSync(path.join(tempDir, 'app-builds'), { recursive: true });
-        fs.mkdirSync(path.join(tempDir, 'config'), { recursive: true });
-        fs.writeFileSync(
-            path.join(tempDir, 'config', 'app-config.json'),
-            JSON.stringify({ quizQuestions: TEST_QUIZ_QUESTIONS })
-        );
     }
 
     const child = spawn(process.execPath, [SERVER_SCRIPT], {
@@ -116,4 +113,4 @@ async function startTestServer({ port, seedUsers = [], existingTempDir } = {}) {
     return { tempDir, stop };
 }
 
-module.exports = { startTestServer, PROJECT_ROOT, ELM_SERVER_JS, TEST_QUIZ_QUESTION_COUNT };
+module.exports = { startTestServer, PROJECT_ROOT, ELM_SERVER_JS, TEST_QUIZ_QUESTION_COUNT, TEST_QUIZ_QUESTIONS };

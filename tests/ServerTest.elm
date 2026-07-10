@@ -34,6 +34,7 @@ import Server
         , innermostScreenTag
         , persistIqTimerInRegistry
         , persistQuizScreenInRegistry
+        , questionsForUuid
         , quizJustCompleted
         , reconcileIqTimerAfterEdit
         , reconcileQuizProgressAfterEdit
@@ -127,7 +128,7 @@ registrySuite =
     describe "RegistryEntry winText codec"
         [ test "round-trips winText through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -148,6 +149,70 @@ registrySuite =
         ]
 
 
+quizQuestionsRegistrySuite : Test
+quizQuestionsRegistrySuite =
+    describe "RegistryEntry.quizQuestions codec"
+        [ test "round-trips quizQuestions through encode/decode" <|
+            \_ ->
+                entry "u1"
+                    |> encodeRegistryEntry
+                    |> Encode.encode 0
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .quizQuestions
+                    |> Expect.equal (Ok (Just (encodeTestQuestions baseQuizQuestions)))
+        , test "defaults quizQuestions to Nothing for older rows missing the field" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .quizQuestions
+                    |> Expect.equal (Ok Nothing)
+        , test "defaults quizQuestions to Nothing when explicitly serialized as null" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false,"quizQuestions":null}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .quizQuestions
+                    |> Expect.equal (Ok Nothing)
+        ]
+
+
+questionsForUuidSuite : Test
+questionsForUuidSuite =
+    describe "questionsForUuid"
+        [ test "resolves the connecting player's own build's questions from the registry" <|
+            \_ ->
+                questionsForUuid "uuid1" baseModel.registry
+                    |> Expect.equal baseQuizQuestions
+        , test "a different uuid on a different build resolves independently" <|
+            \_ ->
+                let
+                    entryUuid1 =
+                        entry "uuid1"
+
+                    registry =
+                        [ { entryUuid1 | quizQuestions = Just (encodeTestQuestions [ Question [ "only" ] ]) }
+                        , entry "uuid2"
+                        ]
+                in
+                Expect.all
+                    [ \_ -> questionsForUuid "uuid1" registry |> Expect.equal [ Question [ "only" ] ]
+                    , \_ -> questionsForUuid "uuid2" registry |> Expect.equal baseQuizQuestions
+                    ]
+                    ()
+        , test "an unknown uuid resolves to []" <|
+            \_ ->
+                questionsForUuid "no-such-uuid" baseModel.registry
+                    |> Expect.equal []
+        , test "a registry entry with quizQuestions = Nothing resolves to []" <|
+            \_ ->
+                let
+                    entryU =
+                        entry "u"
+                in
+                questionsForUuid "u" [ { entryU | quizQuestions = Nothing } ]
+                    |> Expect.equal []
+        ]
+
+
 encodeRegistryTests : Test
 encodeRegistryTests =
     describe "encodeRegistry"
@@ -155,7 +220,7 @@ encodeRegistryTests =
             \_ -> encodeRegistry [] |> Expect.equal ""
         , test "a non-empty registry encodes one JSON line per entry, newline-terminated" <|
             \_ ->
-                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing } ]
+                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ]
                     |> String.endsWith "\n"
                     |> Expect.equal True
         ]
@@ -199,7 +264,7 @@ timerSuite =
     describe "RegistryEntry.timerEndsAt"
         [ test "round-trips a set deadline through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345 }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345, quizQuestions = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -224,12 +289,12 @@ timerSuite =
                     |> Expect.equal False
         , test "isExpired is False before the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000 }
+                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000, quizQuestions = Nothing }
                     |> isExpired 1000
                     |> Expect.equal False
         , test "isExpired is True once now reaches the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000 }
+                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000, quizQuestions = Nothing }
                     |> isExpired 1000
                     |> Expect.equal True
         , test "timerSyncEnvelope carries the deadline under timerSync.timerEndsAt" <|
@@ -290,26 +355,65 @@ clientEnvelopeSuite =
                 """{"payload":"distUpload","distUpload":{"uuid":"u1","filename":"f.dmg","contents":"YWJj","chunkIndex":2,"isLast":true}}"""
                     |> Decode.decodeString decodeClientEnvelope
                     |> Expect.equal (Ok (ClientDistUpload { uuid = "u1", filename = "f.dmg", contentsBase64 = "YWJj", chunkIndex = 2, isLast = True }))
-        , test "distComplete with winText" <|
+        , test "distComplete carries winText and quizQuestions" <|
             \_ ->
-                """{"payload":"distComplete","distComplete":{"uuid":"u1","filename":"f.dmg","winText":"gg"}}"""
+                """{"payload":"distComplete","distComplete":{"uuid":"u1","filename":"f.dmg","winText":"gg","quizQuestions":[{"answers":["a"]}]}}"""
                     |> Decode.decodeString decodeClientEnvelope
-                    |> Expect.equal (Ok (ClientDistComplete { uuid = "u1", filename = "f.dmg", winText = "gg" }))
-        , test "distComplete without winText defaults to empty string" <|
+                    |> Expect.equal
+                        (Ok
+                            (ClientDistComplete
+                                { uuid = "u1"
+                                , filename = "f.dmg"
+                                , winText = "gg"
+                                , quizQuestions = encodeTestQuestions [ Question [ "a" ] ]
+                                }
+                            )
+                        )
+        , test "distComplete without winText/quizQuestions defaults to empty" <|
             \_ ->
                 """{"payload":"distComplete","distComplete":{"uuid":"u1","filename":"f.dmg"}}"""
                     |> Decode.decodeString decodeClientEnvelope
-                    |> Expect.equal (Ok (ClientDistComplete { uuid = "u1", filename = "f.dmg", winText = "" }))
+                    |> Expect.equal
+                        (Ok
+                            (ClientDistComplete
+                                { uuid = "u1", filename = "f.dmg", winText = "", quizQuestions = Encode.list identity [] }
+                            )
+                        )
         , test "distStateEdit carries the uuid" <|
             \_ ->
                 """{"payload":"distStateEdit","distStateEdit":{"uuid":"u1"}}"""
                     |> Decode.decodeString decodeClientEnvelope
                     |> Expect.equal (Ok (ClientDistStateEdit "u1"))
-        , test "distReplaceComplete carries the uuid swap and filename" <|
+        , test "distReplaceComplete carries the uuid swap, filename, quizQuestions and winText" <|
+            \_ ->
+                """{"payload":"distReplaceComplete","distReplaceComplete":{"newUuid":"n","oldUuid":"o","filename":"f.dmg","quizQuestions":[{"answers":["x"]}],"winText":"gg2"}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal
+                        (Ok
+                            (ClientDistReplaceComplete
+                                { newUuid = "n"
+                                , oldUuid = "o"
+                                , filename = "f.dmg"
+                                , quizQuestions = encodeTestQuestions [ Question [ "x" ] ]
+                                , winText = "gg2"
+                                }
+                            )
+                        )
+        , test "distReplaceComplete without quizQuestions/winText defaults to empty" <|
             \_ ->
                 """{"payload":"distReplaceComplete","distReplaceComplete":{"newUuid":"n","oldUuid":"o","filename":"f.dmg"}}"""
                     |> Decode.decodeString decodeClientEnvelope
-                    |> Expect.equal (Ok (ClientDistReplaceComplete { newUuid = "n", oldUuid = "o", filename = "f.dmg" }))
+                    |> Expect.equal
+                        (Ok
+                            (ClientDistReplaceComplete
+                                { newUuid = "n"
+                                , oldUuid = "o"
+                                , filename = "f.dmg"
+                                , quizQuestions = Encode.list identity []
+                                , winText = ""
+                                }
+                            )
+                        )
         , test "an unrecognized payload maps to ClientUnknown" <|
             \_ ->
                 """{"payload":"somethingElse"}"""
@@ -356,6 +460,16 @@ resultIsOk r =
             False
 
 
+encodeTestQuestions : List Question -> Encode.Value
+encodeTestQuestions questions =
+    Encode.list (\q -> Encode.object [ ( "answers", Encode.list Encode.string q.answers ) ]) questions
+
+
+baseQuizQuestions : List Question
+baseQuizQuestions =
+    [ Question [ "Alpha" ], Question [ "Beta" ], Question [ "Gamma" ] ]
+
+
 entry : String -> RegistryEntry
 entry uuid =
     { uuid = uuid
@@ -367,12 +481,8 @@ entry uuid =
     , iqTimer = Nothing
     , quizProgress = 0
     , timerEndsAt = Nothing
+    , quizQuestions = Just (encodeTestQuestions baseQuizQuestions)
     }
-
-
-baseQuizQuestions : List Question
-baseQuizQuestions =
-    [ Question [ "Alpha" ], Question [ "Beta" ], Question [ "Gamma" ] ]
 
 
 baseModel : Model
@@ -384,8 +494,6 @@ baseModel =
     , iqTimers = Dict.empty
     , seed = Random.initialSeed 0
     , quizProgress = Dict.empty
-    , totalQuestions = 3
-    , quizQuestions = baseQuizQuestions
     }
 
 
@@ -1334,6 +1442,7 @@ persistIqTimerInRegistrySuite =
                           , iqTimer = Nothing
                           , quizProgress = 0
                           , timerEndsAt = Nothing
+                          , quizQuestions = Nothing
                           }
                         ]
 
@@ -1371,6 +1480,7 @@ persistIqTimerInRegistrySuite =
                           , iqTimer = Just (Encode.object [ ( "epoch", Encode.int 1 ) ])
                           , quizProgress = 0
                           , timerEndsAt = Nothing
+                          , quizQuestions = Nothing
                           }
                         ]
 
@@ -1398,6 +1508,7 @@ persistIqTimerInRegistrySuite =
                           , iqTimer = Nothing
                           , quizProgress = 0
                           , timerEndsAt = Nothing
+                          , quizQuestions = Nothing
                           }
                         ]
 
@@ -1596,7 +1707,7 @@ stateRequestSuite =
             \_ ->
                 let
                     staged =
-                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing } ] }
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ] }
 
                     ( m, _ ) =
                         update (stateRequestMsg "c1" "uuid1") staged
@@ -1613,7 +1724,7 @@ stateRequestSuite =
                         Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "BeginScreen" ) ] ) ]
 
                     staged =
-                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just beginState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing } ] }
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just beginState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ] }
 
                     ( m, _ ) =
                         update (stateRequestMsg "c1" "uuid1") staged
@@ -1630,7 +1741,7 @@ stateRequestSuite =
                             ]
 
                     staged =
-                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just midGameState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing } ] }
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just midGameState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ] }
 
                     ( m, _ ) =
                         update (stateRequestMsg "c1" "uuid1") staged
@@ -1775,7 +1886,11 @@ distCompleteMsg clientId uuid filename =
         { clientId = clientId
         , payload =
             clientEnvelope "distComplete"
-                [ ( "uuid", Encode.string uuid ), ( "filename", Encode.string filename ), ( "winText", Encode.string "gg" ) ]
+                [ ( "uuid", Encode.string uuid )
+                , ( "filename", Encode.string filename )
+                , ( "winText", Encode.string "gg" )
+                , ( "quizQuestions", encodeTestQuestions [ Question [ "a" ] ] )
+                ]
         , now = 0
         }
 
@@ -1800,7 +1915,7 @@ distCompleteSuite =
                         update (distCompleteMsg "c1" "u1" "f.dmg") staged
                 in
                 m.registry |> Expect.equal staged.registry
-        , test "a matching completion adds the entry with its winText and clears the stage" <|
+        , test "a matching completion adds the entry with its winText/quizQuestions and clears the stage" <|
             \_ ->
                 let
                     staged =
@@ -1814,6 +1929,10 @@ distCompleteSuite =
                 in
                 Expect.all
                     [ \_ -> newEntry |> Maybe.map .winText |> Expect.equal (Just "gg")
+                    , \_ ->
+                        newEntry
+                            |> Maybe.andThen .quizQuestions
+                            |> Expect.equal (Just (encodeTestQuestions [ Question [ "a" ] ]))
                     , \_ -> Dict.get "c1" m.distClients |> Expect.equal Nothing
                     ]
                     ()
@@ -1826,7 +1945,15 @@ distReplaceCompleteMsg clientId newUuid oldUuid filename =
         { clientId = clientId
         , payload =
             clientEnvelope "distReplaceComplete"
-                [ ( "newUuid", Encode.string newUuid ), ( "oldUuid", Encode.string oldUuid ), ( "filename", Encode.string filename ) ]
+                [ ( "newUuid", Encode.string newUuid )
+                , ( "oldUuid", Encode.string oldUuid )
+                , ( "filename", Encode.string filename )
+
+                -- Deliberately distinct from entry/baseQuizQuestions' values (winText "",
+                -- Alpha/Beta/Gamma) so tests can tell "freshly sent" apart from "inherited".
+                , ( "winText", Encode.string "new reward text" )
+                , ( "quizQuestions", encodeTestQuestions [ Question [ "replaced answer" ] ] )
+                ]
         , now = 0
         }
 
@@ -1851,7 +1978,7 @@ distReplaceCompleteSuite =
                         update (distReplaceCompleteMsg "c1" "new1" "uuid1" "f.dmg") staged
                 in
                 m.registry |> Expect.equal staged.registry
-        , test "a matching replacement carries the old entry's state/winText to the new uuid and locks it pending" <|
+        , test "a matching replacement carries the old entry's state to the new uuid and locks it pending" <|
             \_ ->
                 let
                     staged =
@@ -1874,6 +2001,48 @@ distReplaceCompleteSuite =
                     , \_ -> Set.member "new1" m.pendingStateEdits |> Expect.equal True
                     ]
                     ()
+        , test "a matching replacement uses the freshly-sent winText/quizQuestions, not the old entry's" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "new1", platform = "mac" })
+                        }
+
+                    ( m, _ ) =
+                        update (distReplaceCompleteMsg "c1" "new1" "uuid1" "f-new.dmg") staged
+
+                    newEntry =
+                        m.registry |> List.filter (\e -> e.uuid == "new1") |> List.head
+                in
+                Expect.all
+                    [ \_ -> newEntry |> Maybe.map .winText |> Expect.equal (Just "new reward text")
+                    , \_ ->
+                        newEntry
+                            |> Maybe.andThen .quizQuestions
+                            |> Expect.equal (Just (encodeTestQuestions [ Question [ "replaced answer" ] ]))
+                    ]
+                    ()
+        , test "a matching replacement still carries quizProgress forward from the old entry (unlike winText/quizQuestions)" <|
+            \_ ->
+                let
+                    withProgress =
+                        baseModel.registry
+                            |> List.map (\e -> if e.uuid == "uuid1" then { e | quizProgress = 2 } else e)
+
+                    staged =
+                        { baseModel
+                            | registry = withProgress
+                            , distClients = Dict.singleton "c1" (AwaitingUpload { uuid = "new1", platform = "mac" })
+                        }
+
+                    ( m, _ ) =
+                        update (distReplaceCompleteMsg "c1" "new1" "uuid1" "f-new.dmg") staged
+
+                    newEntry =
+                        m.registry |> List.filter (\e -> e.uuid == "new1") |> List.head
+                in
+                newEntry |> Maybe.map .quizProgress |> Expect.equal (Just 2)
         ]
 
 
@@ -2515,7 +2684,8 @@ quizProgressRoutingSuite =
                     ( afterThird, _ ) =
                         update (quizAdvancedMsg "c1" 2) afterSecond
                 in
-                -- baseModel.totalQuestions is 3, so idx 0,1,2 reaches it exactly.
+                -- baseModel's entries carry 3 questions (baseQuizQuestions), so idx 0,1,2
+                -- reaches the total exactly.
                 Dict.get "uuid1" afterThird.quizProgress |> Expect.equal (Just 3)
         , test "a skip-ahead idx (out of order) is ignored" <|
             \_ ->
@@ -2598,9 +2768,9 @@ quizProgressRoutingSuite =
 
 
 -- ── Quiz-answer server-side validation ───────────────────────────────────────
--- The server, not the client, holds the answers (see quizQuestions/
--- quizQuestionsFilePath) and decides correctness via Game.Quiz.decideAnswer --
--- the client only ever gets config/quiz-manifest.json (see #54/#32).
+-- The server, not the client, holds the answers (see questionsForUuid, resolved
+-- per connecting player's own RegistryEntry.quizQuestions -- see #77) and decides
+-- correctness via Game.Quiz.decideAnswer -- the client never sees an answer (#54/#32).
 
 
 quizAnswerSubmittedMsg : String -> { idx : Int, answer : String } -> Msg
@@ -2854,6 +3024,7 @@ persistQuizScreenInRegistrySuite =
                           , iqTimer = Nothing
                           , quizProgress = 0
                           , timerEndsAt = Nothing
+                          , quizQuestions = Nothing
                           }
                         ]
 
@@ -2974,13 +3145,15 @@ quizScreenOverrideRoutingSuite =
                         update (stateUpdateMsg "c1" wrappedWin) staged
                 in
                 persistedScreenField "tag" Decode.string m |> Expect.equal (Just "ConfirmingAnswerScreen")
-        , test "before the question config is read (totalQuestions 0) a quiz-slide report is left alone" <|
+        , test "for a build with no quiz questions on its RegistryEntry (total 0) a quiz-slide report is left alone" <|
             \_ ->
                 let
                     staged =
                         { baseModel
                             | connectedPlayers = Dict.singleton "uuid1" "c1"
-                            , totalQuestions = 0
+                            , registry =
+                                baseModel.registry
+                                    |> List.map (\e -> if e.uuid == "uuid1" then { e | quizQuestions = Nothing } else e)
                         }
 
                     ( m, _ ) =

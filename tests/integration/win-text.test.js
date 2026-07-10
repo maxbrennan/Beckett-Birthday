@@ -91,7 +91,10 @@ describe('win text delivery', () => {
         await conn.close();
     }, 10000);
 
-    test('a replacement build inherits the win text from the build it replaces', async () => {
+    // winText is resent fresh on every replace deploy, not inherited from the uuid being
+    // replaced (see #77 -- a deliberate divergence from state/iqTimer/quizProgress/
+    // timerEndsAt, which the server does carry forward).
+    test('a replacement build uses the newly-sent win text, not the original\'s', async () => {
         const original = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'win-orig.dmg',
@@ -99,12 +102,14 @@ describe('win text delivery', () => {
         });
         await waitUntil(() => readRegistry().find((e) => e.uuid === original.uuid));
 
+        const REPLACEMENT_WIN_TEXT = 'Text a different code to Max to claim your reward!';
         const replacement = await distClient.replaceBuild(TEST_PORT, admin, original.uuid, {
             platform: 'mac',
             filename: 'win-replacement.dmg',
+            winText: REPLACEMENT_WIN_TEXT,
         });
         const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === replacement.uuid));
-        expect(entry.winText).toBe(WIN_TEXT);
+        expect(entry.winText).toBe(REPLACEMENT_WIN_TEXT);
     }, 10000);
 
     test('a non-win stateUpdate does not trigger a winText message', async () => {
