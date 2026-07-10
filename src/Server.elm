@@ -1692,67 +1692,78 @@ update msg model =
                             ( model, Cmd.none )
 
                         Just uuid ->
-                            let
-                                current =
-                                    Dict.get uuid model.quizProgress |> Maybe.withDefault 0
-                            in
-                            case acceptQuizAdvance { current = current, idx = idx } of
-                                Nothing ->
-                                    ( model, Cmd.none )
+                            -- A live iqTimers entry (including IqIdle, "waiting to
+                            -- restart") means the player is mid-penalty; a crafted
+                            -- client submitting an answer concurrently shouldn't be
+                            -- able to skip the penalty by advancing anyway. The
+                            -- legitimate quizAnswerSubmitted sent right after the IQ
+                            -- test genuinely completes is unaffected -- clearIqTimer
+                            -- removes the entry before iqTestCompleteEnvelope is sent.
+                            if Dict.member uuid model.iqTimers then
+                                ( model, Cmd.none )
 
-                                Just next ->
-                                    case decideAnswer model.quizQuestions idx answer of
-                                        NoQuestion ->
-                                            ( model, Cmd.none )
+                            else
+                                let
+                                    current =
+                                        Dict.get uuid model.quizProgress |> Maybe.withDefault 0
+                                in
+                                case acceptQuizAdvance { current = current, idx = idx } of
+                                    Nothing ->
+                                        ( model, Cmd.none )
 
-                                        IncorrectAnswer ->
-                                            let
-                                                revealAnswer =
-                                                    getQuestion model.quizQuestions idx
-                                                        |> Maybe.andThen (.answers >> List.head)
-                                                        |> Maybe.map capitalize
-                                                        |> Maybe.withDefault "Unknown"
-                                            in
-                                            ( model
-                                            , sendToClient
-                                                { clientId = clientId
-                                                , payload = quizAnswerResultEnvelope { idx = idx, correct = False, revealAnswer = revealAnswer }
-                                                }
-                                            )
+                                    Just next ->
+                                        case decideAnswer model.quizQuestions idx answer of
+                                            NoQuestion ->
+                                                ( model, Cmd.none )
 
-                                        _ ->
-                                            -- CorrectContinue or CorrectWin: either way the
-                                            -- answer for idx was right, so progress advances --
-                                            -- exactly the ClientQuizAdvanced branch above, plus
-                                            -- the result reply.
-                                            let
-                                                newRegistry =
-                                                    persistQuizScreenInRegistry uuid { next = next, total = model.totalQuestions } model.registry
-
-                                                newModel =
-                                                    { model
-                                                        | quizProgress = Dict.insert uuid next model.quizProgress
-                                                        , registry = newRegistry
+                                            IncorrectAnswer ->
+                                                let
+                                                    revealAnswer =
+                                                        getQuestion model.quizQuestions idx
+                                                            |> Maybe.andThen (.answers >> List.head)
+                                                            |> Maybe.map capitalize
+                                                            |> Maybe.withDefault "Unknown"
+                                                in
+                                                ( model
+                                                , sendToClient
+                                                    { clientId = clientId
+                                                    , payload = quizAnswerResultEnvelope { idx = idx, correct = False, revealAnswer = revealAnswer }
                                                     }
+                                                )
 
-                                                resultCmd =
-                                                    sendToClient
-                                                        { clientId = clientId
-                                                        , payload = quizAnswerResultEnvelope { idx = idx, correct = True, revealAnswer = "" }
+                                            _ ->
+                                                -- CorrectContinue or CorrectWin: either way the
+                                                -- answer for idx was right, so progress advances --
+                                                -- exactly the ClientQuizAdvanced branch above, plus
+                                                -- the result reply.
+                                                let
+                                                    newRegistry =
+                                                        persistQuizScreenInRegistry uuid { next = next, total = model.totalQuestions } model.registry
+
+                                                    newModel =
+                                                        { model
+                                                            | quizProgress = Dict.insert uuid next model.quizProgress
+                                                            , registry = newRegistry
                                                         }
 
-                                                winCmd =
-                                                    if quizJustCompleted { next = next, total = model.totalQuestions } then
-                                                        newRegistry
-                                                            |> List.filter (\e -> e.uuid == uuid)
-                                                            |> List.head
-                                                            |> Maybe.map (\e -> sendToClient { clientId = clientId, payload = winTextEnvelope e.winText })
-                                                            |> Maybe.withDefault Cmd.none
+                                                    resultCmd =
+                                                        sendToClient
+                                                            { clientId = clientId
+                                                            , payload = quizAnswerResultEnvelope { idx = idx, correct = True, revealAnswer = "" }
+                                                            }
 
-                                                    else
-                                                        Cmd.none
-                                            in
-                                            ( newModel, Cmd.batch [ writeRegistry newRegistry, resultCmd, winCmd ] )
+                                                    winCmd =
+                                                        if quizJustCompleted { next = next, total = model.totalQuestions } then
+                                                            newRegistry
+                                                                |> List.filter (\e -> e.uuid == uuid)
+                                                                |> List.head
+                                                                |> Maybe.map (\e -> sendToClient { clientId = clientId, payload = winTextEnvelope e.winText })
+                                                                |> Maybe.withDefault Cmd.none
+
+                                                        else
+                                                            Cmd.none
+                                                in
+                                                ( newModel, Cmd.batch [ writeRegistry newRegistry, resultCmd, winCmd ] )
 
                 _ ->
                     ( model, Cmd.none )
