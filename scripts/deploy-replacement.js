@@ -84,6 +84,23 @@ function readQuizQuestions() {
     return questions;
 }
 
+// Self-contained duplicate of scripts/deploy.js's readIqSkipOfferDisabled.
+function readIqSkipOfferDisabled() {
+    let raw;
+    try {
+        raw = fs.readFileSync(APP_CONFIG_FILE, 'utf8');
+    } catch (err) {
+        fail(`could not read ${APP_CONFIG_FILE}: ${err.message}`);
+    }
+    let enabled;
+    try {
+        enabled = JSON.parse(raw).iqSkipOfferEnabled;
+    } catch (err) {
+        fail(`could not parse ${APP_CONFIG_FILE}: ${err.message}`);
+    }
+    return enabled === false;
+}
+
 function generateUuid() {
     const uuid = crypto.randomUUID();
     fs.writeFileSync(UUID_FILE, JSON.stringify({ uuid }, null, 2) + '\n');
@@ -305,6 +322,7 @@ async function main() {
     // full build.
     const winText = readWinText();
     const quizQuestions = readQuizQuestions();
+    const iqSkipOfferDisabled = readIqSkipOfferDisabled();
 
     console.log('[dist] auth complete; running electron-builder');
     await runElectronBuilder().catch((err) => fail(err.message));
@@ -337,7 +355,7 @@ async function main() {
     });
     console.log('[dist] upload complete');
 
-    send(ws, { distReplaceComplete: { newUuid, oldUuid: OLD_UUID, filename: built.name, quizQuestions, winText } });
+    send(ws, { distReplaceComplete: { newUuid, oldUuid: OLD_UUID, filename: built.name, quizQuestions, winText, iqSkipOfferDisabled } });
 
     while (true) {
         const msg = await nextMessage();

@@ -114,6 +114,28 @@ if (require.main === module) {
         return questions;
     }
 
+    // Unlike winText/quizQuestions, iqSkipOfferEnabled is optional: a missing or
+    // non-boolean value defaults to enabled (true), so config/app-config.json files that
+    // predate this flag keep deploying the one-time IQ-test skip offer unchanged. Returns
+    // the *disabled* flag -- the wire representation -- since protobufjs omits a false
+    // scalar, so "disabled" (default false) rather than "enabled" (default true) must be
+    // what's actually transmitted (see proto/messages.proto's IqOfferGate doc comment).
+    function readIqSkipOfferDisabled() {
+        let raw;
+        try {
+            raw = fs.readFileSync(APP_CONFIG_FILE, 'utf8');
+        } catch (err) {
+            fail(`could not read ${APP_CONFIG_FILE}: ${err.message}`);
+        }
+        let enabled;
+        try {
+            enabled = JSON.parse(raw).iqSkipOfferEnabled;
+        } catch (err) {
+            fail(`could not parse ${APP_CONFIG_FILE}: ${err.message}`);
+        }
+        return enabled === false;
+    }
+
     function generateUuid() {
         const uuid = crypto.randomUUID();
         fs.writeFileSync(UUID_FILE, JSON.stringify({ uuid }, null, 2) + '\n');
@@ -239,6 +261,7 @@ if (require.main === module) {
         // after a full build.
         const winText = readWinText();
         const quizQuestions = readQuizQuestions();
+        const iqSkipOfferDisabled = readIqSkipOfferDisabled();
 
         console.log('[dist] auth complete; running electron-builder');
         await runElectronBuilder().catch((err) => fail(err.message));
@@ -251,7 +274,7 @@ if (require.main === module) {
         await uploadBuild({ host, port, token: uploadToken, filename: built.name, contents });
         console.log('[dist] upload complete');
 
-        send(ws, { distComplete: { uuid, filename: built.name, winText, quizQuestions } });
+        send(ws, { distComplete: { uuid, filename: built.name, winText, quizQuestions, iqSkipOfferDisabled } });
 
         while (true) {
             const msg = await nextMessage();

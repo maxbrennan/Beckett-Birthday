@@ -1,7 +1,7 @@
 module MainTest exposing (..)
 
 import Expect
-import Game.IQTest exposing (FakeFlashPhase(..), IQTestState, iqQuestionCount)
+import Game.IQTest exposing (FakeFlashPhase(..), IQSkipPhase(..), IQTestState, iqQuestionCount)
 import Json.Encode as Encode
 import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, resumePlaySongTarget, subscriptions, tickFromPosix, update)
 import Test exposing (Test, describe, test)
@@ -45,6 +45,7 @@ baseModel =
     , questions = [ "song0.mp3", "video1.mp4" ]
     , awaitingAnswerResult = False
     , iqOfferMade = False
+    , iqOfferEnabled = True
     }
 
 
@@ -425,6 +426,145 @@ fakeFlashNextPhaseSuite =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state, iqOfferMade = False }
                 in
                 result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 3, totalDings = 20 })
+        , test "FfCounterOut skips straight to the IQ begin screen when the config disables the offer" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 3, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut }
+
+                    ( result, _ ) =
+                        update FakeFlashNextPhase
+                            { baseModel | screen = FakeFlashCaughtScreen state, iqOfferMade = False, iqOfferEnabled = False }
+                in
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 3, totalDings = 20 })
+        ]
+
+
+iqSkipOfferDeclinedSuite : Test
+iqSkipOfferDeclinedSuite =
+    describe "IQSkipOfferDeclined"
+        [ test "returns to the IQ begin screen and marks the offer made" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipOfferDeclined
+                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 }, iqOfferMade = False }
+                in
+                ( result.screen, result.iqOfferMade )
+                    |> Expect.equal ( IQTestScreen { questionIdx = 2, totalDings = 100 }, True )
+        , test "ignored off the skip-offer screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipOfferDeclined { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+iqSkipOfferAcceptedSuite : Test
+iqSkipOfferAcceptedSuite =
+    describe "IQSkipOfferAccepted"
+        [ test "starts the count-up animation and marks the offer made" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipOfferAccepted
+                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 }, iqOfferMade = False }
+                in
+                ( result.screen, result.iqOfferMade )
+                    |> Expect.equal
+                        ( IQTestSkipAnimScreen { questionIdx = 2, displayCount = 0, total = 100, phase = SkipCounterIn }
+                        , True
+                        )
+        , test "ignored off the skip-offer screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipOfferAccepted { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+iqSkipAnimNextPhaseSuite : Test
+iqSkipAnimNextPhaseSuite =
+    describe "IQSkipAnimNextPhase"
+        [ test "SkipCounterIn advances to SkipTick" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipAnimNextPhase
+                            { baseModel | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 0, total = 100, phase = SkipCounterIn } }
+                in
+                result.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 0, total = 100, phase = SkipTick })
+        , test "SkipCounterOut advances to the next song's BlankScreen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipAnimNextPhase
+                            { baseModel | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipCounterOut } }
+                in
+                result.screen |> Expect.equal (BlankScreen 3)
+        , test "SkipTick (mid-count) is a no-op here -- only IQSkipCounterTick advances it" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipAnimNextPhase
+                            { baseModel | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 5, total = 100, phase = SkipTick } }
+                in
+                result.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 5, total = 100, phase = SkipTick })
+        , test "ignored off the skip-anim screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipAnimNextPhase { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+iqSkipCounterTickSuite : Test
+iqSkipCounterTickSuite =
+    describe "IQSkipCounterTick"
+        [ test "SkipTick below total increments displayCount and bumps dingKey" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipCounterTick
+                            { baseModel
+                                | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 5, total = 100, phase = SkipTick }
+                                , dingKey = 7
+                            }
+                in
+                ( result.screen, result.dingKey )
+                    |> Expect.equal
+                        ( IQTestSkipAnimScreen { questionIdx = 2, displayCount = 6, total = 100, phase = SkipTick }
+                        , 8
+                        )
+        , test "SkipTick reaching total transitions to SkipCounterOut" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipCounterTick
+                            { baseModel | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipTick } }
+                in
+                result.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipCounterOut })
+        , test "SkipCounterOut (not SkipTick) is a no-op here" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipCounterTick
+                            { baseModel | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipCounterOut } }
+                in
+                result.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipCounterOut })
+        , test "ignored off the skip-anim screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipCounterTick { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
         ]
 
 
@@ -740,6 +880,30 @@ dingWindowExpiredSuite =
                         update DingWindowExpired { baseModel | screen = BeginScreen }
                 in
                 result.screen |> Expect.equal BeginScreen
+        , test "a fail after clearing enough dings shows the skip offer, when enabled" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update DingWindowExpired
+                            { baseModel
+                                | screen = IQTestActiveScreen { iqActiveState | dingActive = True, dingCount = 5, totalDings = 9 }
+                                , iqOfferEnabled = True
+                                , iqOfferMade = False
+                            }
+                in
+                result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 0, totalDings = 9 })
+        , test "a fail after clearing enough dings returns to the instructions screen when the config disables the offer" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update DingWindowExpired
+                            { baseModel
+                                | screen = IQTestActiveScreen { iqActiveState | dingActive = True, dingCount = 5, totalDings = 9 }
+                                , iqOfferEnabled = False
+                                , iqOfferMade = False
+                            }
+                in
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 9 })
         ]
 
 

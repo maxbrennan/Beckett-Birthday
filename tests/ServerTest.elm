@@ -49,6 +49,7 @@ import Server.Protocol
         , decodeClientEnvelope
         , distListResultEnvelope
         , iqDingEnvelope
+        , iqOfferGateEnvelope
         , distRegisterAckEnvelope
         , quizAnswerResultEnvelope
         , stateEnvelope
@@ -128,7 +129,7 @@ registrySuite =
     describe "RegistryEntry winText codec"
         [ test "round-trips winText through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -172,6 +173,26 @@ quizQuestionsRegistrySuite =
                     |> Decode.decodeString decodeRegistryEntry
                     |> Result.map .quizQuestions
                     |> Expect.equal (Ok Nothing)
+        ]
+
+
+iqOfferDisabledRegistrySuite : Test
+iqOfferDisabledRegistrySuite =
+    describe "RegistryEntry.iqOfferDisabled codec"
+        [ test "round-trips iqOfferDisabled = True through encode/decode" <|
+            \_ ->
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = True }
+                    |> encodeRegistryEntry
+                    |> Encode.encode 0
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .iqOfferDisabled
+                    |> Expect.equal (Ok True)
+        , test "defaults iqOfferDisabled to False (offer enabled) for older rows missing the field" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .iqOfferDisabled
+                    |> Expect.equal (Ok False)
         ]
 
 
@@ -223,7 +244,7 @@ encodeRegistryTests =
                     |> Expect.equal (Ok [])
         , test "encodeRegistry output is newline-terminated" <|
             \_ ->
-                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ]
+                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False } ]
                     |> String.endsWith "\n"
                     |> Expect.equal True
         ]
@@ -249,8 +270,8 @@ decodeRegistryTests =
             \_ ->
                 let
                     entries =
-                        [ { uuid = "u1", filename = "f1", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing }
-                        , { uuid = "u2", filename = "f2", platform = "win", state = Nothing, pendingStateEdit = True, winText = "you win", iqTimer = Nothing, quizProgress = 3, timerEndsAt = Just 42, quizQuestions = Nothing }
+                        [ { uuid = "u1", filename = "f1", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False }
+                        , { uuid = "u2", filename = "f2", platform = "win", state = Nothing, pendingStateEdit = True, winText = "you win", iqTimer = Nothing, quizProgress = 3, timerEndsAt = Just 42, quizQuestions = Nothing, iqOfferDisabled = False }
                         ]
                 in
                 entries
@@ -279,7 +300,7 @@ timerSuite =
     describe "RegistryEntry.timerEndsAt"
         [ test "round-trips a set deadline through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345, quizQuestions = Nothing }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345, quizQuestions = Nothing, iqOfferDisabled = False }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -304,12 +325,12 @@ timerSuite =
                     |> Expect.equal False
         , test "isExpired is False before the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000, quizQuestions = Nothing }
+                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000, quizQuestions = Nothing, iqOfferDisabled = False }
                     |> isExpired 1000
                     |> Expect.equal False
         , test "isExpired is True once now reaches the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000, quizQuestions = Nothing }
+                { uuid = "u", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000, quizQuestions = Nothing, iqOfferDisabled = False }
                     |> isExpired 1000
                     |> Expect.equal True
         , test "timerSyncEnvelope carries the deadline under timerSync.timerEndsAt" <|
@@ -317,6 +338,11 @@ timerSuite =
                 timerSyncEnvelope 4242
                     |> Decode.decodeValue (Decode.at [ "timerSync", "timerEndsAt" ] Decode.float)
                     |> Expect.equal (Ok 4242)
+        , test "iqOfferGateEnvelope carries the disabled flag under iqOfferGate.disabled" <|
+            \_ ->
+                iqOfferGateEnvelope True
+                    |> Decode.decodeValue (Decode.at [ "iqOfferGate", "disabled" ] Decode.bool)
+                    |> Expect.equal (Ok True)
         , test "timedOutEnvelope tags its payload as timedOut" <|
             \_ ->
                 timedOutEnvelope
@@ -381,7 +407,18 @@ clientEnvelopeSuite =
                                 , filename = "f.dmg"
                                 , winText = "gg"
                                 , quizQuestions = encodeTestQuestions [ Question [ "a" ] ]
+                                , iqOfferDisabled = False
                                 }
+                            )
+                        )
+        , test "distComplete carries iqSkipOfferDisabled" <|
+            \_ ->
+                """{"payload":"distComplete","distComplete":{"uuid":"u1","filename":"f.dmg","iqSkipOfferDisabled":true}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal
+                        (Ok
+                            (ClientDistComplete
+                                { uuid = "u1", filename = "f.dmg", winText = "", quizQuestions = Encode.list identity [], iqOfferDisabled = True }
                             )
                         )
         , test "distComplete without winText/quizQuestions defaults to empty" <|
@@ -391,7 +428,7 @@ clientEnvelopeSuite =
                     |> Expect.equal
                         (Ok
                             (ClientDistComplete
-                                { uuid = "u1", filename = "f.dmg", winText = "", quizQuestions = Encode.list identity [] }
+                                { uuid = "u1", filename = "f.dmg", winText = "", quizQuestions = Encode.list identity [], iqOfferDisabled = False }
                             )
                         )
         , test "distStateEdit carries the uuid" <|
@@ -411,6 +448,23 @@ clientEnvelopeSuite =
                                 , filename = "f.dmg"
                                 , quizQuestions = encodeTestQuestions [ Question [ "x" ] ]
                                 , winText = "gg2"
+                                , iqOfferDisabled = False
+                                }
+                            )
+                        )
+        , test "distReplaceComplete carries iqSkipOfferDisabled" <|
+            \_ ->
+                """{"payload":"distReplaceComplete","distReplaceComplete":{"newUuid":"n","oldUuid":"o","filename":"f.dmg","iqSkipOfferDisabled":true}}"""
+                    |> Decode.decodeString decodeClientEnvelope
+                    |> Expect.equal
+                        (Ok
+                            (ClientDistReplaceComplete
+                                { newUuid = "n"
+                                , oldUuid = "o"
+                                , filename = "f.dmg"
+                                , quizQuestions = Encode.list identity []
+                                , winText = ""
+                                , iqOfferDisabled = True
                                 }
                             )
                         )
@@ -426,6 +480,7 @@ clientEnvelopeSuite =
                                 , filename = "f.dmg"
                                 , quizQuestions = Encode.list identity []
                                 , winText = ""
+                                , iqOfferDisabled = False
                                 }
                             )
                         )
@@ -497,6 +552,7 @@ entry uuid =
     , quizProgress = 0
     , timerEndsAt = Nothing
     , quizQuestions = Just (encodeTestQuestions baseQuizQuestions)
+    , iqOfferDisabled = False
     }
 
 
@@ -1458,6 +1514,7 @@ persistIqTimerInRegistrySuite =
                           , quizProgress = 0
                           , timerEndsAt = Nothing
                           , quizQuestions = Nothing
+                          , iqOfferDisabled = False
                           }
                         ]
 
@@ -1496,6 +1553,7 @@ persistIqTimerInRegistrySuite =
                           , quizProgress = 0
                           , timerEndsAt = Nothing
                           , quizQuestions = Nothing
+                          , iqOfferDisabled = False
                           }
                         ]
 
@@ -1524,6 +1582,7 @@ persistIqTimerInRegistrySuite =
                           , quizProgress = 0
                           , timerEndsAt = Nothing
                           , quizQuestions = Nothing
+                          , iqOfferDisabled = False
                           }
                         ]
 
@@ -1722,7 +1781,7 @@ stateRequestSuite =
             \_ ->
                 let
                     staged =
-                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ] }
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False } ] }
 
                     ( m, _ ) =
                         update (stateRequestMsg "c1" "uuid1") staged
@@ -1739,7 +1798,7 @@ stateRequestSuite =
                         Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "BeginScreen" ) ] ) ]
 
                     staged =
-                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just beginState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ] }
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just beginState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False } ] }
 
                     ( m, _ ) =
                         update (stateRequestMsg "c1" "uuid1") staged
@@ -1756,7 +1815,7 @@ stateRequestSuite =
                             ]
 
                     staged =
-                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just midGameState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ] }
+                        { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just midGameState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False } ] }
 
                     ( m, _ ) =
                         update (stateRequestMsg "c1" "uuid1") staged
@@ -3046,6 +3105,7 @@ persistQuizScreenInRegistrySuite =
                           , quizProgress = 0
                           , timerEndsAt = Nothing
                           , quizQuestions = Nothing
+                          , iqOfferDisabled = False
                           }
                         ]
 

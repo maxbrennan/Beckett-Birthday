@@ -17,6 +17,12 @@ message DistReplaceCompleteAck {}
 message DistUndeployAck      {}
 message WinText              { string text = 1; }
 message TimerSync            { double timer_ends_at = 1; }
+// disabled: true if this build's config/app-config.json set iqSkipOfferEnabled
+// to false at deploy time. Absent/false (protobufjs' default for an unset bool)
+// means enabled -- see RegistryEntry.iqOfferDisabled and Main.elm's iqFail/
+// FfCounterOut gates, which is why this is phrased as the negative rather than
+// mirroring the config file's positive "iqSkipOfferEnabled" name.
+message IqOfferGate          { bool disabled = 1; }
 message TimedOut             {}
 message AuthChallenge        { bytes challenge = 1; AuthLevel level = 2; }
 message StateRequest         { string uuid = 1; }
@@ -68,15 +74,16 @@ message DistUpload {
 }
 message DistUndeploy        { string uuid = 1; }
 message DistList            {}
-message DistComplete         { string uuid = 1; string filename = 2; string win_text = 3; repeated Question quiz_questions = 4; }
+// iq_skip_offer_disabled: see IqOfferGate above -- absent/false means enabled.
+message DistComplete         { string uuid = 1; string filename = 2; string win_text = 3; repeated Question quiz_questions = 4; bool iq_skip_offer_disabled = 5; }
 message DistStateEdit        { string uuid = 1; }
 message DistStateEditSave    { string uuid = 1; string json = 2; }
 message DistStateEditPayload { string uuid = 1; string json = 2; }
-// quiz_questions/win_text are resent fresh at replacement time, not inherited from the uuid
-// being replaced -- unlike every other per-build field (state/iqTimer/quizProgress/
-// timerEndsAt), which the server carries forward from the old entry. See Server.elm's
-// ClientDistReplaceComplete handler.
-message DistReplaceComplete  { string new_uuid = 1; string old_uuid = 2; string filename = 3; repeated Question quiz_questions = 4; string win_text = 5; }
+// quiz_questions/win_text/iq_skip_offer_disabled are resent fresh at replacement time, not
+// inherited from the uuid being replaced -- unlike every other per-build field (state/iqTimer/
+// quizProgress/timerEndsAt), which the server carries forward from the old entry. See
+// Server.elm's ClientDistReplaceComplete handler.
+message DistReplaceComplete  { string new_uuid = 1; string old_uuid = 2; string filename = 3; repeated Question quiz_questions = 4; string win_text = 5; bool iq_skip_offer_disabled = 6; }
 
 message DistListEntry {
   string uuid     = 1;
@@ -153,6 +160,7 @@ message ServerMessage {
     TimerSync               timer_sync                 = 21;
     TimedOut                timed_out                  = 22;
     QuizAnswerResult        quiz_answer_result         = 23;
+    IqOfferGate             iq_offer_gate              = 24;
   }
 }
 

@@ -89,10 +89,10 @@ cp localhost+2-key.pem certs/key.pem
 
 Copy the example and edit it. `config/app-config.json` is git‑ignored — it holds
 the real trivia answers and win‑screen text, both spoilers for the birthday recipient
-(see §4/§5), plus the app's display name. It is read only by the **server** and by
-build‑time scripts; nothing under `config/` is ever bundled into a client build (see
-§2) — the client instead discovers songs by listing `assets/songs/` directly, in
-numeric filename order (see §4/§6).
+(see §4/§5), plus the app's display name and the IQ‑test skip‑offer toggle (§5a). It
+is read only by the **server** and by build‑time scripts; nothing under `config/` is
+ever bundled into a client build (see §2) — the client instead discovers songs by
+listing `assets/songs/` directly, in numeric filename order (see §4/§6).
 
 ```bash
 cp config/app-config.example.json config/app-config.json
@@ -203,6 +203,24 @@ and sent to the server along with that build, which stores it per‑build in
 `app-builds/builds.json` and delivers it to that player at win time. If
 `config/app-config.json` is missing or `winScreen` is empty, the deploy fails
 outright rather than shipping a build with no win text.
+
+### 5a. Enable/disable the IQ‑test skip offer
+
+The IQ test's one‑time "skip this and take on a mystery challenge later" offer
+(shown after the player's first qualifying failure) is on by default. To turn it
+off for a build, set **`config/app-config.json`**'s `iqSkipOfferEnabled` to `false`:
+
+```json
+{
+  "iqSkipOfferEnabled": false
+}
+```
+
+Like `winScreen`, this is read by `scripts/deploy.js`/`scripts/deploy-replacement.js`
+at deploy time and stored per‑build in `app-builds/builds.json`, then delivered to
+that player once they connect. Unlike `winScreen`, it's optional — a missing field
+(or an existing `config/app-config.json` from before this option existed) is treated
+as `true` (offer enabled), so older configs keep working unchanged.
 
 ---
 

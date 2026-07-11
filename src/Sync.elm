@@ -23,6 +23,7 @@ type ServerEnvelope
     | ServerQuizAnswerResult { idx : Int, correct : Bool, revealAnswer : String }
     | ServerTimerSync Float
     | ServerTimedOut
+    | ServerIqOfferGate Bool
     | ServerUnknown
 
 
@@ -96,6 +97,14 @@ decodeServerEnvelope =
 
                     "timedOut" ->
                         Decode.succeed ServerTimedOut
+
+                    "iqOfferGate" ->
+                        -- protobufjs omits default (false) scalar fields, so a missing
+                        -- "disabled" means the offer is enabled -- see IqOfferGate's proto
+                        -- doc comment. Inverted here so every Elm caller reads the
+                        -- positively-phrased "enabled" and never has to re-derive it.
+                        Decode.oneOf [ Decode.at [ "iqOfferGate", "disabled" ] Decode.bool, Decode.succeed False ]
+                            |> Decode.map (not >> ServerIqOfferGate)
 
                     _ ->
                         Decode.succeed ServerUnknown
@@ -682,6 +691,7 @@ decodeModel =
                 , questions = []
                 , awaitingAnswerResult = False
                 , iqOfferMade = offerMade
+                , iqOfferEnabled = True
                 }
         )
         (Decode.field "screen" decodeScreen)

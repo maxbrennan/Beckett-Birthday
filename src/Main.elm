@@ -69,6 +69,7 @@ init wsUrl =
       , questions = []
       , awaitingAnswerResult = False
       , iqOfferMade = False
+      , iqOfferEnabled = True
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
@@ -157,7 +158,7 @@ iqFail model state =
     ( clearPending
         { model
             | screen =
-                if not model.iqOfferMade && state.dingCount >= iqOfferMinDings then
+                if model.iqOfferEnabled && not model.iqOfferMade && state.dingCount >= iqOfferMinDings then
                     IQTestSkipOfferScreen screenState
 
                 else
@@ -669,7 +670,7 @@ update msg model =
                                     ( clearPending
                                         { model
                                             | screen =
-                                                if not model.iqOfferMade then
+                                                if model.iqOfferEnabled && not model.iqOfferMade then
                                                     IQTestSkipOfferScreen screenState
 
                                                 else
@@ -723,6 +724,7 @@ update msg model =
                                             , wsUrl = model.wsUrl
                                             , questions = model.questions
                                             , timerEndsAt = model.timerEndsAt
+                                            , iqOfferEnabled = model.iqOfferEnabled
                                           }
                                         , videoCmd
                                         )
@@ -905,6 +907,13 @@ update msg model =
                     -- ClientStateRequest handling): the server-established 7-day
                     -- deadline, for display only -- the client never computes it.
                     ( { model | timerEndsAt = deadline }, Cmd.none )
+
+                Ok (ServerIqOfferGate enabled) ->
+                    -- Delivered once per stateRequest, alongside ServerTimerSync (see
+                    -- Server.elm's ClientStateRequest handling): this build's
+                    -- config-time choice of whether the one-time IQ-test skip offer
+                    -- (see iqFail/FfCounterOut) is available at all.
+                    ( { model | iqOfferEnabled = enabled }, Cmd.none )
 
                 Ok ServerTimedOut ->
                     -- The server's own clock decided the session is over.

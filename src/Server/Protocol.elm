@@ -11,10 +11,10 @@ type ClientEnvelope
     | ClientStateRequest String
     | ClientDistRegister DistInfo
     | ClientDistUpload { uuid : String, filename : String, contentsBase64 : String, chunkIndex : Int, isLast : Bool }
-    | ClientDistComplete { uuid : String, filename : String, winText : String, quizQuestions : Encode.Value }
+    | ClientDistComplete { uuid : String, filename : String, winText : String, quizQuestions : Encode.Value, iqOfferDisabled : Bool }
     | ClientDistStateEdit String
     | ClientDistStateEditSave { uuid : String, json : String }
-    | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String, quizQuestions : Encode.Value, winText : String }
+    | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String, quizQuestions : Encode.Value, winText : String, iqOfferDisabled : Bool }
     | ClientDistUndeploy String
     | ClientDistList
     | ClientIqStartCountdown
@@ -71,8 +71,8 @@ decodeClientEnvelope =
                             (Decode.at [ "distUpload", "isLast" ] Decode.bool)
 
                     "distComplete" ->
-                        Decode.map4
-                            (\u f w q -> ClientDistComplete { uuid = u, filename = f, winText = w, quizQuestions = q })
+                        Decode.map5
+                            (\u f w q d -> ClientDistComplete { uuid = u, filename = f, winText = w, quizQuestions = q, iqOfferDisabled = d })
                             (Decode.at [ "distComplete", "uuid" ] Decode.string)
                             (Decode.at [ "distComplete", "filename" ] Decode.string)
                             -- older deploy clients omit winText; codec defaults it to "".
@@ -83,6 +83,9 @@ decodeClientEnvelope =
                                 , Decode.succeed (Encode.list identity [])
                                 ]
                             )
+                            -- protobufjs omits a false scalar, and older deploy clients predate
+                            -- this field entirely -- both cases mean the offer stays enabled.
+                            (Decode.oneOf [ Decode.at [ "distComplete", "iqSkipOfferDisabled" ] Decode.bool, Decode.succeed False ])
 
                     "distStateEdit" ->
                         Decode.map ClientDistStateEdit
@@ -96,8 +99,9 @@ decodeClientEnvelope =
                     "distReplaceComplete" ->
                         Decode.map5
                             (\n o f q w ->
-                                ClientDistReplaceComplete
-                                    { newUuid = n, oldUuid = o, filename = f, quizQuestions = q, winText = w }
+                                \d ->
+                                    ClientDistReplaceComplete
+                                        { newUuid = n, oldUuid = o, filename = f, quizQuestions = q, winText = w, iqOfferDisabled = d }
                             )
                             (Decode.at [ "distReplaceComplete", "newUuid" ] Decode.string)
                             (Decode.at [ "distReplaceComplete", "oldUuid" ] Decode.string)
@@ -110,6 +114,13 @@ decodeClientEnvelope =
                             )
                             -- older deploy clients omit winText; codec defaults it to "".
                             (Decode.oneOf [ Decode.at [ "distReplaceComplete", "winText" ] Decode.string, Decode.succeed "" ])
+                            |> Decode.andThen
+                                (\partial ->
+                                    -- protobufjs omits a false scalar, and older deploy clients predate
+                                    -- this field entirely -- both cases mean the offer stays enabled.
+                                    Decode.map partial
+                                        (Decode.oneOf [ Decode.at [ "distReplaceComplete", "iqSkipOfferDisabled" ] Decode.bool, Decode.succeed False ])
+                                )
 
                     "distUndeploy" ->
                         Decode.map ClientDistUndeploy
@@ -257,6 +268,18 @@ timerSyncEnvelope timerEndsAt =
     Encode.object
         [ ( "payload", Encode.string "timerSync" )
         , ( "timerSync", Encode.object [ ( "timerEndsAt", Encode.float timerEndsAt ) ] )
+        ]
+
+
+-- Delivers this build's config-time iqSkipOfferEnabled choice (see RegistryEntry.
+-- iqOfferDisabled). Sent once per stateRequest, alongside timerSyncEnvelope, since the
+-- client itself decides when to show the one-time IQ-test skip offer (see Main.elm's
+-- iqFail/FfCounterOut) and never round-trips that decision through the server.
+iqOfferGateEnvelope : Bool -> Encode.Value
+iqOfferGateEnvelope disabled =
+    Encode.object
+        [ ( "payload", Encode.string "iqOfferGate" )
+        , ( "iqOfferGate", Encode.object [ ( "disabled", Encode.bool disabled ) ] )
         ]
 
 

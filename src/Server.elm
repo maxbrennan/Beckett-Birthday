@@ -1243,6 +1243,7 @@ update msg model =
                                         [ writeRegistry registryWithTimer
                                         , sendToClient { clientId = clientId, payload = stateEnvelope storedState }
                                         , sendToClient { clientId = clientId, payload = timerSyncEnvelope deadline }
+                                        , sendToClient { clientId = clientId, payload = iqOfferGateEnvelope entry.iqOfferDisabled }
                                         ]
                                     )
 
@@ -1259,6 +1260,7 @@ update msg model =
                                         [ writeRegistry newRegistry
                                         , sendToClient { clientId = clientId, payload = stateEnvelope snapshotted }
                                         , sendToClient { clientId = clientId, payload = timerSyncEnvelope deadline }
+                                        , sendToClient { clientId = clientId, payload = iqOfferGateEnvelope entry.iqOfferDisabled }
                                         ]
                                     )
 
@@ -1360,8 +1362,10 @@ update msg model =
                                             -- right after the last upload chunk, immediately
                                             -- superseded by ClientDistComplete's own entry (same
                                             -- filename, filtered out below) once that message
-                                            -- arrives with the real winText/quizQuestions.
+                                            -- arrives with the real winText/quizQuestions/
+                                            -- iqOfferDisabled.
                                             , quizQuestions = Nothing
+                                            , iqOfferDisabled = False
                                             }
 
                                         newRegistry =
@@ -1388,7 +1392,7 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
-                Ok (ClientDistComplete { uuid, filename, winText, quizQuestions }) ->
+                Ok (ClientDistComplete { uuid, filename, winText, quizQuestions, iqOfferDisabled }) ->
                     case Dict.get clientId model.distClients of
                         Just (AwaitingUpload info) ->
                             if info.uuid == uuid then
@@ -1404,6 +1408,7 @@ update msg model =
                                         , quizProgress = 0
                                         , timerEndsAt = Nothing
                                         , quizQuestions = Just quizQuestions
+                                        , iqOfferDisabled = iqOfferDisabled
                                         }
 
                                     newRegistry =
@@ -1487,7 +1492,7 @@ update msg model =
                     , requestAuth { clientId = clientId, level = 2 }
                     )
 
-                Ok (ClientDistReplaceComplete { newUuid, oldUuid, filename, quizQuestions, winText }) ->
+                Ok (ClientDistReplaceComplete { newUuid, oldUuid, filename, quizQuestions, winText, iqOfferDisabled }) ->
                     case Dict.get clientId model.distClients of
                         Just (AwaitingUpload info) ->
                             if info.uuid == newUuid then
@@ -1507,14 +1512,15 @@ update msg model =
                                         , state = oldState
                                         , pendingStateEdit = True
 
-                                        -- Unlike every field below, winText and quizQuestions are
-                                        -- resent fresh on every replace deploy (see
-                                        -- scripts/deploy-replacement.js) rather than inherited from
-                                        -- oldEntry -- a replacement build's songs/config may have
+                                        -- Unlike every field below, winText, quizQuestions, and
+                                        -- iqOfferDisabled are resent fresh on every replace deploy
+                                        -- (see scripts/deploy-replacement.js) rather than inherited
+                                        -- from oldEntry -- a replacement build's songs/config may have
                                         -- changed, and reusing the old uuid's answers/reward text
                                         -- would silently mismatch the new build. See #77.
                                         , winText = winText
                                         , quizQuestions = Just quizQuestions
+                                        , iqOfferDisabled = iqOfferDisabled
 
                                         -- Carry the IQ snapshot to the new uuid too, same as state.
                                         -- (model.iqTimers itself stays keyed by oldUuid until a restart

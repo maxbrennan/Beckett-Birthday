@@ -45,6 +45,16 @@ type alias RegistryEntry =
     -- (not inherited from the old entry) on a build replacement -- see Server.elm's
     -- ClientDistReplaceComplete handler.
     , quizQuestions : Maybe Encode.Value
+
+    -- Per-build override of config/app-config.json's iqSkipOfferEnabled, sent at deploy
+    -- time on DistComplete/DistReplaceComplete (see scripts/deploy.js). False (the
+    -- default, including for rows that predate this field) means the one-time IQ-test
+    -- skip offer is enabled; true disables it. Phrased as the negative to match
+    -- IqOfferGate's wire representation (protobufjs omits a false scalar, so "disabled"
+    -- must be the transmitted value for "enabled" to be the safe default -- see Main.elm's
+    -- iqFail/FfCounterOut gates). Resent fresh (not inherited) on build replacement, same
+    -- as winText/quizQuestions above.
+    , iqOfferDisabled : Bool
     }
 
 
@@ -69,6 +79,7 @@ encodeRegistryEntry entry =
         , ( "quizProgress", Encode.int entry.quizProgress )
         , ( "timerEndsAt", entry.timerEndsAt |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
         , ( "quizQuestions", Maybe.withDefault Encode.null entry.quizQuestions )
+        , ( "iqOfferDisabled", Encode.bool entry.iqOfferDisabled )
         ]
 
 
@@ -119,14 +130,18 @@ decodeRegistryEntry =
         )
         |> Decode.andThen
             (\partial ->
-                -- Decode.map8 above is already at elm/json's mapN ceiling, so timerEndsAt
-                -- and quizQuestions (the 9th/10th fields) are applied here instead.
-                Decode.map2 partial
+                -- Decode.map8 above is already at elm/json's mapN ceiling, so timerEndsAt,
+                -- quizQuestions, and iqOfferDisabled (the 9th/10th/11th fields) are applied here.
+                Decode.map3 partial
                     -- older rows predate the server-owned timer; treat missing as Nothing
                     -- (established fresh on this player's next stateRequest).
                     (Decode.maybe (Decode.field "timerEndsAt" Decode.float))
                     -- older rows predate per-build quiz questions; treat missing as Nothing.
                     (decodeOptionalValue "quizQuestions")
+                    -- older rows predate this field; treat missing as False (offer enabled).
+                    (Decode.maybe (Decode.field "iqOfferDisabled" Decode.bool)
+                        |> Decode.map (Maybe.withDefault False)
+                    )
             )
 
 

@@ -64,6 +64,13 @@ type alias Model =
     , questions : List String
     , awaitingAnswerResult : Bool
     , iqOfferMade : Bool
+
+    -- This build's config-time choice (see RegistryEntry.iqOfferDisabled), delivered
+    -- once via ServerIqOfferGate on the initial stateRequest. Defaults True (offer
+    -- enabled) so a client that hasn't heard from the server yet behaves like the
+    -- pre-config-flag behavior. Never round-tripped through encodeModel/decodeModel --
+    -- restored across a WsDataReceived decode the same way myUuid/wsUrl/questions are.
+    , iqOfferEnabled : Bool
     }
 
 
