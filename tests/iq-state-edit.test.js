@@ -96,7 +96,7 @@ describe('IQ timer reconciliation after an admin state edit', () => {
         // discarded whatever reconcileIqTimerAfterEdit had put in .registry (its
         // iqTimer snapshot and re-derived screen). That meant the edit took
         // effect for an in-memory resume (same process) but would have been lost
-        // on the very next restart's rehydration from builds.jsonl.
+        // on the very next restart's rehydration from builds.json.
         const build = await distClient.deployBuild(TEST_PORT, admin, {});
         const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
 

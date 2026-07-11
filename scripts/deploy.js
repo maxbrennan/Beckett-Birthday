@@ -60,7 +60,7 @@ if (require.main === module) {
         process.exit(1);
     };
 
-    // The win text lives only on the server (stored per-build in builds.jsonl), so it is
+    // The win text lives only on the server (stored per-build in builds.json), so it is
     // read here at deploy time and sent with distComplete rather than bundled into the
     // client. config/app-config.json is excluded from the electron-builder files list.
     function readWinText() {
@@ -83,7 +83,7 @@ if (require.main === module) {
     }
 
     // The quiz questions/answers live only on the server (stored per-build in
-    // builds.jsonl, see #77), so -- like winText -- they're read here at deploy time and
+    // builds.json, see #77), so -- like winText -- they're read here at deploy time and
     // sent with distComplete rather than bundled into the client.
     function readQuizQuestions() {
         let raw;

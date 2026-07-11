@@ -1,7 +1,6 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const registryHelper = require('../helpers/registry');
 const { startTestServer } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
@@ -33,9 +32,7 @@ function stateWithScreen(screen) {
 }
 
 function readRegistry() {
-    const file = path.join(server.tempDir, 'app-builds', 'builds.jsonl');
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    return registryHelper.readRegistry(server.tempDir);
 }
 
 describe('win text delivery', () => {

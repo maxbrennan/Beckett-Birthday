@@ -86,7 +86,7 @@ has actually rendered the IQ screen again -- see `resumeIqTimer`.
 
 **Persistence:** every live change to this state is
 also mirrored into the player's `RegistryEntry.iqTimer` field in
-`builds.jsonl` (see `persistIqTimerInRegistry`/`setIqTimer`/`clearIqTimer`),
+`builds.json` (see `persistIqTimerInRegistry`/`setIqTimer`/`clearIqTimer`),
 and wherever it's derivable, the persisted `state.screen` is overwritten to
 match rather than left as whatever the client last self-reported (see
 `deriveIqScreen`, and the override in the `ClientStateUpdate` handler). This
@@ -1876,7 +1876,7 @@ update msg model =
                     Ok contents ->
                         let
                             parsedRegistry =
-                                parseRegistryJsonl contents
+                                decodeRegistry contents
 
                             -- Rehydrate in-memory WS-connect gating from the persisted
                             -- flag so it agrees with on-disk download gating after a

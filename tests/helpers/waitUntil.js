@@ -4,7 +4,7 @@
 // over the WebSocket as soon as it dispatches the corresponding Cmd.batch in
 // src/Server.elm — but that batch's writeFile/registry write and its sendToClient ack
 // aren't sequenced relative to each other, so the ack can arrive slightly before the
-// write actually lands on disk. Tests that read app-builds/builds.jsonl right after an
+// write actually lands on disk. Tests that read app-builds/builds.json right after an
 // ack should poll for the expected state rather than assume it's already there.
 //
 // Also used by tests/gui.electron.js (a plain Node script, not a Jest file) to poll the

@@ -50,7 +50,7 @@ type alias RegistryEntry =
 
 registryFilePath : String
 registryFilePath =
-    "app-builds/builds.jsonl"
+    "app-builds/builds.json"
 
 
 -- ── Codecs ────────────────────────────────────────────────────────────────────
@@ -74,17 +74,7 @@ encodeRegistryEntry entry =
 
 encodeRegistry : List RegistryEntry -> String
 encodeRegistry entries =
-    let
-        body =
-            entries
-                |> List.map (\e -> Encode.encode 0 (encodeRegistryEntry e))
-                |> String.join "\n"
-    in
-    if body == "" then
-        ""
-
-    else
-        body ++ "\n"
+    Encode.encode 2 (Encode.object [ ( "builds", Encode.list encodeRegistryEntry entries ) ]) ++ "\n"
 
 
 -- Treat a JSON-null-serialized value the same as a genuinely missing field.
@@ -113,7 +103,7 @@ decodeRegistryEntry =
         (Decode.field "filename" Decode.string)
         (Decode.field "platform" Decode.string)
         (decodeOptionalValue "state")
-        -- older builds.jsonl rows predate this field; treat missing as unlocked.
+        -- older builds.json rows predate this field; treat missing as unlocked.
         (Decode.maybe (Decode.field "pendingStateEdit" Decode.bool)
             |> Decode.map (Maybe.withDefault False)
         )
@@ -140,12 +130,14 @@ decodeRegistryEntry =
             )
 
 
-parseRegistryJsonl : String -> List RegistryEntry
-parseRegistryJsonl raw =
-    raw
-        |> String.split "\n"
-        |> List.filter (\l -> String.trim l /= "")
-        |> List.filterMap (\l -> Decode.decodeString decodeRegistryEntry l |> Result.toMaybe)
+decodeRegistry : String -> List RegistryEntry
+decodeRegistry contents =
+    Decode.decodeString
+        (Decode.field "builds" (Decode.list (Decode.maybe decodeRegistryEntry))
+            |> Decode.map (List.filterMap identity)
+        )
+        contents
+        |> Result.withDefault []
 
 
 -- ── State Helpers ─────────────────────────────────────────────────────────────

@@ -1,7 +1,6 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const registryHelper = require('../helpers/registry');
 const { startTestServer, TEST_QUIZ_QUESTION_COUNT } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
@@ -17,9 +16,7 @@ let server;
 let admin;
 
 function readRegistry() {
-    const file = path.join(server.tempDir, 'app-builds', 'builds.jsonl');
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    return registryHelper.readRegistry(server.tempDir);
 }
 
 // Regression test for issue #54/#32: the server, not the client, must hold the

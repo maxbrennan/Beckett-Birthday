@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const auth = require('../../server/auth.js');
 const { startTestServer } = require('../helpers/testServer');
 const { connect } = require('../helpers/protocolClient');
 const { AdminClient } = require('../helpers/adminAuth');
@@ -56,12 +57,8 @@ describe('password auth', () => {
         expect(fs.existsSync(admin.publicKeyPath)).toBe(true);
 
         // server registered the uuid, bound to the public key we sent
-        const uuidsFile = path.join(server.tempDir, '.auth', 'uuids.jsonl');
-        const rows = fs
-            .readFileSync(uuidsFile, 'utf8')
-            .trim()
-            .split('\n')
-            .map((line) => JSON.parse(line));
+        const uuidsFile = path.join(server.tempDir, '.auth', 'uuids.json');
+        const rows = auth._internals.readJsonRows(uuidsFile, 'uuids');
         const row = rows.find((r) => r.uuid === result.uuid);
 
         expect(row).toBeTruthy();

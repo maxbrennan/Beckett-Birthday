@@ -5,7 +5,7 @@ const path = require('path');
 const { PROJECT_ROOT } = require('../helpers/certPaths');
 
 // Guards issue #27: the personalized win text must live only on the server (in
-// builds.jsonl / config/app-config.json's winScreen field, read at deploy time),
+// builds.json / config/app-config.json's winScreen field, read at deploy time),
 // never compiled into the shipped client bundle. If someone reintroduces a
 // hardcoded literal in the client Elm, this fails.
 //

@@ -23,7 +23,7 @@ npm test                   # runs elm-test (tests/ directory)
 npm run deploy:mac         # build Electron DMG and upload to production server
 npm run deploy:win         # build Electron EXE and upload to production server
 npm run undeploy           # remove a deployed build from the server
-npm run add-admin          # add an admin user to .auth/users.jsonl
+npm run add-admin          # add an admin user to .auth/users.json
 ```
 
 ## Architecture
@@ -44,22 +44,22 @@ Client→Server flow: Elm port → `bridge.js` → `codec.encodeClient` → WebS
 
 ### State persistence
 
-The server stores each player's game state as JSON in `app-builds/builds.jsonl` (a JSONL file keyed by UUID). When a client sends a `stateUpdate`, the server writes the new state. When a client disconnects, the server snapshots the current screen into a `savedState` field and resets to `BeginScreen` so the next connection resumes from the saved position.
+The server stores each player's game state as JSON in `app-builds/builds.json` (a `{"builds": [...]}` object keyed by UUID). When a client sends a `stateUpdate`, the server writes the new state. When a client disconnects, the server snapshots the current screen into a `savedState` field and resets to `BeginScreen` so the next connection resumes from the saved position.
 
 ### Auth system
 
 Two-level challenge–response auth (Ed25519 keys or username/password), implemented in `server/auth.js`:
-- **Admin (level 2)**: required for deploying builds, undeploying, and listing. Credentials stored in `.auth/users.jsonl`; per-session UUIDs + public keys in `.auth/uuids.jsonl`.
+- **Admin (level 2)**: required for deploying builds, undeploying, and listing. Credentials stored in `.auth/users.json`; per-session UUIDs + public keys in `.auth/uuids.json`.
 - On first password auth, the client generates an Ed25519 keypair, stores it in `~/.birthday-auth/keys/`, and the server registers the public key so future logins are passwordless via key signing.
 - If key auth fails, `auth.js` sets `_keyAuthFailed = true`, reconnects, and retries with password auth.
 
 ### Distribution system
 
-`scripts/deploy.js` authenticates with the server (`distRegister` → auth challenge), runs `electron-builder`, then uploads the built DMG/EXE in a single HTTPS `POST /upload` (bearer token from the auth ack) and finalizes with a `distComplete` message. The server stores uploads under `app-builds/` and records them in `builds.jsonl`. Players download their build via HTTPS GET `/<uuid>`.
+`scripts/deploy.js` authenticates with the server (`distRegister` → auth challenge), runs `electron-builder`, then uploads the built DMG/EXE in a single HTTPS `POST /upload` (bearer token from the auth ack) and finalizes with a `distComplete` message. The server stores uploads under `app-builds/` and records them in `builds.json`. Players download their build via HTTPS GET `/<uuid>`.
 
 ### Dev vs. production
 
-`DEV` is set to `true`/`false` via PM2's `env`/`env_dev` blocks in `ecosystem.config.js` (not `.env` — `.env` only holds ports/TLS paths). Dev uses port 8443 (localhost); production uses port 443 with TLS certs from `certs/`. Uuid validation is identical in both modes: a uuid must have a matching entry in `app-builds/builds.jsonl` or the connection is rejected — the only difference between dev and prod is which host/port the client connects to. The Electron client opens DevTools automatically when `DEV=true`.
+`DEV` is set to `true`/`false` via PM2's `env`/`env_dev` blocks in `ecosystem.config.js` (not `.env` — `.env` only holds ports/TLS paths). Dev uses port 8443 (localhost); production uses port 443 with TLS certs from `certs/`. Uuid validation is identical in both modes: a uuid must have a matching entry in `app-builds/builds.json` or the connection is rejected — the only difference between dev and prod is which host/port the client connects to. The Electron client opens DevTools automatically when `DEV=true`.
 
 ### Elm module layout
 
@@ -77,7 +77,7 @@ src/
   Server/
     Distribution.elm — DistInfo/DistStage type declarations (the one genuinely thin module here)
     Protocol.elm     — client envelope decoder, server envelope builders
-    Registry.elm     — RegistryEntry JSONL encode/decode, writeRegistry, snapshotForJeopardy
+    Registry.elm     — RegistryEntry JSON encode/decode, writeRegistry, snapshotForJeopardy
 ```
 
 `Main.elm`'s `update` pulls its per-`Msg` decision logic into pure functions wherever the Msg carries real business logic, mirroring `Server.elm`'s pattern (`classifyDing`, `advanceOnClear`, etc., exercised directly by `tests/ServerTest.elm`): functions typed only over `Game.IQTest`'s/`Game.Quiz`'s own state (e.g. `decideSpaceBar`, `nextFfPhase`, `decideAnswer`) live in those sibling modules, since `Types.elm` imports them and a reverse import would be circular; functions that need `Screen`/`Model`/`PausedState` (e.g. `screenAllowsTimeout`, `videoSeekTime`, `trackEndedTarget`) stay inline in `Main.elm` just above `update`. `Server.Distribution.elm` is the only module above that's genuinely a stub (type declarations only, no functions).

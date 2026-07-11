@@ -200,7 +200,7 @@ Edit **`config/app-config.json`**'s `winScreen` field:
 
 Whatever you put in `winScreen` is read by `scripts/deploy.js` at deploy time (§7c)
 and sent to the server along with that build, which stores it per‑build in
-`app-builds/builds.jsonl` and delivers it to that player at win time. If
+`app-builds/builds.json` and delivers it to that player at win time. If
 `config/app-config.json` is missing or `winScreen` is empty, the deploy fails
 outright rather than shipping a build with no win text.
 
@@ -233,7 +233,7 @@ it so a player can download and connect. It requires an admin account.
 ### 7a. One‑time: create an admin
 
 ```bash
-npm run add-admin      # prompts for a username + password → .auth/users.jsonl (level 2)
+npm run add-admin      # prompts for a username + password → .auth/users.json (level 2)
 ```
 
 The first deploy prompts for these credentials, then stores an Ed25519 keypair under
@@ -257,7 +257,7 @@ npm run deploy:mac     # or: deploy:win / deploy:linux
 This will: generate a fresh per‑build UUID into `app-uuid.json`, authenticate to the
 server, run `electron-builder`, and upload the artifact (a single HTTPS `POST /upload`
 with a one‑time token). The server saves the binary under `app-builds/` and records it in
-`app-builds/builds.jsonl`, keyed by that UUID.
+`app-builds/builds.json`, keyed by that UUID.
 
 ### Manage deployed builds
 
@@ -274,7 +274,7 @@ npm run deploy:replacement:mac -- <old-uuid>
 ## 8. Access the app from a client
 
 A client is identified to the server by the **UUID** baked into its build
-(`app-uuid.json`); that UUID must have a matching row in `app-builds/builds.jsonl` or the
+(`app-uuid.json`); that UUID must have a matching row in `app-builds/builds.json` or the
 connection is refused.
 
 ### 8a. Same computer (development)
@@ -313,7 +313,7 @@ have to be right:
    https://<PROD_SERVER_HOST>/<uuid>
    ```
 
-   (The server streams the file for any UUID present in `builds.jsonl`; unknown UUIDs get
+   (The server streams the file for any UUID present in `builds.json`; unknown UUIDs get
    a 404.) They install and launch — the bundled `.env` sends them to your server and the
    bundled `app-uuid.json` identifies them.
 

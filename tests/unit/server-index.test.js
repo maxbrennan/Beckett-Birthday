@@ -64,11 +64,12 @@ describe('isValidUuid', () => {
 });
 
 describe('findRegistryEntry', () => {
-    const registryText = [
-        JSON.stringify({ uuid: 'uuid-a', filename: 'a.dmg' }),
-        JSON.stringify({ uuid: 'uuid-b', filename: 'b.exe' }),
-        'not json',
-    ].join('\n');
+    const registryText = JSON.stringify({
+        builds: [
+            { uuid: 'uuid-a', filename: 'a.dmg' },
+            { uuid: 'uuid-b', filename: 'b.exe' },
+        ],
+    });
 
     test('finds the matching entry by uuid', () => {
         expect(findRegistryEntry(registryText, 'uuid-b')).toEqual({ uuid: 'uuid-b', filename: 'b.exe' });
@@ -78,8 +79,9 @@ describe('findRegistryEntry', () => {
         expect(findRegistryEntry(registryText, 'uuid-z')).toBeNull();
     });
 
-    test('skips malformed JSONL lines without throwing', () => {
-        expect(() => findRegistryEntry(registryText, 'uuid-a')).not.toThrow();
+    test('returns null on malformed JSON without throwing', () => {
+        expect(() => findRegistryEntry('not json', 'uuid-a')).not.toThrow();
+        expect(findRegistryEntry('not json', 'uuid-a')).toBeNull();
     });
 });
 
