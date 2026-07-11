@@ -21,9 +21,12 @@ function isValidUuid(uuid) {
 }
 
 function findRegistryEntry(registryText, uuid) {
-    return registryText.trim().split('\n')
-        .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
-        .find(e => e && e.uuid === uuid) || null;
+    try {
+        const doc = JSON.parse(registryText);
+        return (doc.builds || []).find(e => e.uuid === uuid) || null;
+    } catch (_) {
+        return null;
+    }
 }
 
 function resolveDownloadDecision(entry) {
@@ -228,7 +231,7 @@ if (require.main === module) {
         }), { binary: true });
     });
 
-    const REGISTRY_FILE = path.join(process.cwd(), 'app-builds', 'builds.jsonl');
+    const REGISTRY_FILE = path.join(process.cwd(), 'app-builds', 'builds.json');
     const BUILDS_DIR = path.join(process.cwd(), 'app-builds');
 
     app.ports.deleteBuildFile.subscribe((filename) => {

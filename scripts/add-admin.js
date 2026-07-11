@@ -1,5 +1,4 @@
 const crypto = require('crypto');
-const fs = require('fs');
 const { _internals } = require('../server/auth.js');
 
 const AUTH_LEVEL_ADMIN = 2;
@@ -26,8 +25,7 @@ if (require.main === module) {
         const salt = crypto.randomBytes(16).toString('hex');
         const row = buildAdminRow(username, password, salt, _internals.hashPassword);
 
-        fs.mkdirSync(_internals.SERVER_DIR, { recursive: true });
-        fs.appendFileSync(_internals.USERS_FILE, JSON.stringify(row) + '\n');
+        _internals.appendJsonRow(_internals.USERS_FILE, 'users', row);
 
         console.log(`Added admin user '${username}' to ${_internals.USERS_FILE}`);
     }

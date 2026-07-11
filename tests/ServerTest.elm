@@ -60,12 +60,12 @@ import Server.Protocol
 import Server.Registry
     exposing
         ( RegistryEntry
+        , decodeRegistry
         , decodeRegistryEntry
         , encodeRegistry
         , encodeRegistryEntry
         , findUuidByClient
         , isExpired
-        , parseRegistryJsonl
         , registryFilePath
         , snapshotForJeopardy
         , updateEntryTimer
@@ -216,9 +216,12 @@ questionsForUuidSuite =
 encodeRegistryTests : Test
 encodeRegistryTests =
     describe "encodeRegistry"
-        [ test "an empty registry encodes to an empty string" <|
-            \_ -> encodeRegistry [] |> Expect.equal ""
-        , test "a non-empty registry encodes one JSON line per entry, newline-terminated" <|
+        [ test "an empty registry encodes to a well-formed empty builds document" <|
+            \_ ->
+                encodeRegistry []
+                    |> Decode.decodeString (Decode.field "builds" (Decode.list Decode.value))
+                    |> Expect.equal (Ok [])
+        , test "encodeRegistry output is newline-terminated" <|
             \_ ->
                 encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ]
                     |> String.endsWith "\n"
@@ -226,22 +229,34 @@ encodeRegistryTests =
         ]
 
 
-parseRegistryJsonlTests : Test
-parseRegistryJsonlTests =
-    describe "parseRegistryJsonl"
-        [ test "parses multiple lines, skipping blanks and malformed rows" <|
+decodeRegistryTests : Test
+decodeRegistryTests =
+    describe "decodeRegistry"
+        [ test "parses a builds document, skipping a malformed entry" <|
             \_ ->
                 let
                     raw =
-                        """{"uuid":"u1","filename":"f1","platform":"mac","state":null,"pendingStateEdit":false}
-
-not json
-{"uuid":"u2","filename":"f2","platform":"win","state":null,"pendingStateEdit":false}
-"""
+                        """{"builds":[{"uuid":"u1","filename":"f1","platform":"mac","state":null,"pendingStateEdit":false},{"not":"an entry"},{"uuid":"u2","filename":"f2","platform":"win","state":null,"pendingStateEdit":false}]}"""
                 in
-                parseRegistryJsonl raw
+                decodeRegistry raw
                     |> List.map .uuid
                     |> Expect.equal [ "u1", "u2" ]
+        , test "totally garbled input decodes to an empty registry" <|
+            \_ -> decodeRegistry "not json" |> Expect.equal []
+        , test "a document missing the builds field decodes to an empty registry" <|
+            \_ -> decodeRegistry """{"other":[]}""" |> Expect.equal []
+        , test "round-trips a registry through encode then decode" <|
+            \_ ->
+                let
+                    entries =
+                        [ { uuid = "u1", filename = "f1", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing }
+                        , { uuid = "u2", filename = "f2", platform = "win", state = Nothing, pendingStateEdit = True, winText = "you win", iqTimer = Nothing, quizProgress = 3, timerEndsAt = Just 42, quizQuestions = Nothing }
+                        ]
+                in
+                entries
+                    |> encodeRegistry
+                    |> decodeRegistry
+                    |> Expect.equal entries
         ]
 
 
@@ -1261,7 +1276,7 @@ iqEditSuite =
         ]
 
 
--- ── Persistence: server state mirrored into builds.jsonl (IQ-only stepping stone) ──
+-- ── Persistence: server state mirrored into builds.json (IQ-only stepping stone) ──
 
 
 iqTimerCodecSuite : Test
@@ -2072,12 +2087,18 @@ fileReadSuite =
                     row1 =
                         Encode.encode 0
                             (Encode.object
-                                [ ( "uuid", Encode.string "u1" )
-                                , ( "filename", Encode.string "f1.dmg" )
-                                , ( "platform", Encode.string "mac" )
-                                , ( "state", Encode.null )
-                                , ( "pendingStateEdit", Encode.bool True )
-                                , ( "iqTimer", savedIqTimer )
+                                [ ( "builds"
+                                  , Encode.list identity
+                                        [ Encode.object
+                                            [ ( "uuid", Encode.string "u1" )
+                                            , ( "filename", Encode.string "f1.dmg" )
+                                            , ( "platform", Encode.string "mac" )
+                                            , ( "state", Encode.null )
+                                            , ( "pendingStateEdit", Encode.bool True )
+                                            , ( "iqTimer", savedIqTimer )
+                                            ]
+                                        ]
+                                  )
                                 ]
                             )
 

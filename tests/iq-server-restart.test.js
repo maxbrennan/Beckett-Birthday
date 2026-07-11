@@ -5,12 +5,11 @@
 // so a real process restart silently reset a mid-punishment-phase player back to the
 // baseline iqQuestionCount, discarding real progress. Now every live IqTimerState
 // change is also mirrored into the player's registry row (RegistryEntry.iqTimer,
-// builds.jsonl), and the server rehydrates iqTimers from it on startup (see
+// builds.json), and the server rehydrates iqTimers from it on startup (see
 // Server.elm's init/FileRead) -- so a restart looks, to the existing pause/resume
 // machinery, just like every connected player having disconnected simultaneously.
 
-const fs = require('fs');
-const path = require('path');
+const registryHelper = require('./helpers/registry');
 const { startTestServer } = require('./helpers/testServer');
 const { AdminClient } = require('./helpers/adminAuth');
 const distClient = require('./helpers/distClient');
@@ -30,21 +29,12 @@ async function registerPlayer() {
     return { conn, uuid: build.uuid };
 }
 
-function registryFile() {
-    return path.join(server.tempDir, 'app-builds', 'builds.jsonl');
-}
-
 function readRegistryLines() {
-    return fs
-        .readFileSync(registryFile(), 'utf8')
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => JSON.parse(line));
+    return registryHelper.readRegistry(server.tempDir);
 }
 
 function writeRegistryLines(entries) {
-    fs.writeFileSync(registryFile(), entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    registryHelper.writeRegistry(server.tempDir, entries);
 }
 
 describe('IQ timer survives a server restart', () => {
@@ -68,7 +58,7 @@ describe('IQ timer survives a server restart', () => {
         const beforeRestart = await conn.waitFor(isTick, 3000);
         const remainingAtRestart = beforeRestart.iqCountdownTick.remaining;
 
-        // Restart the whole process against the same temp dir (same builds.jsonl).
+        // Restart the whole process against the same temp dir (same builds.json).
         await server.stop({ keepData: true });
         await conn.closed();
         server = await startTestServer({ port: TEST_PORT, existingTempDir: server.tempDir });

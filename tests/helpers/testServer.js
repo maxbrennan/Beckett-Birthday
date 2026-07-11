@@ -33,7 +33,7 @@ function seedUser(authDir, { username, password, level }) {
     const saltHex = crypto.randomBytes(16).toString('hex');
     const hash = auth._internals.hashPassword(password, saltHex);
     const row = { username, salt: saltHex, hash, level };
-    fs.appendFileSync(path.join(authDir, 'users.jsonl'), JSON.stringify(row) + '\n');
+    auth._internals.appendJsonRow(path.join(authDir, 'users.json'), 'users', row);
 }
 
 // Spawns a real `server/index.js` in production mode (DEV unset/false) against an

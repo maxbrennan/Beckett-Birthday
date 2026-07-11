@@ -271,7 +271,7 @@ encodeScreen scr =
 
         WrongAnswerScreen idx _ ->
             -- Deliberately drop the reveal text: it must never be written into
-            -- persisted state (builds.jsonl), same as WinScreen's text. A
+            -- persisted state (builds.json), same as WinScreen's text. A
             -- disconnect on this screen resets to BeginScreen anyway (see
             -- CLAUDE.md), so the text was never going to survive a resume.
             Encode.object [ ( "tag", Encode.string "WrongAnswerScreen" ), ( "idx", Encode.int idx ) ]
@@ -290,7 +290,7 @@ encodeScreen scr =
 
         WinScreen _ ->
             -- Deliberately drop the win text: it must never be written into persisted
-            -- state (builds.jsonl). The server re-delivers it at win time via winText.
+            -- state (builds.json). The server re-delivers it at win time via winText.
             Encode.object [ ( "tag", Encode.string "WinScreen" ) ]
 
         TimedOutScreen ->

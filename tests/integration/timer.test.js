@@ -1,7 +1,6 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const registryHelper = require('../helpers/registry');
 const { startTestServer } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
@@ -19,14 +18,11 @@ let server;
 let admin;
 
 function readRegistry() {
-    const file = path.join(server.tempDir, 'app-builds', 'builds.jsonl');
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    return registryHelper.readRegistry(server.tempDir);
 }
 
 function writeRegistry(entries) {
-    const file = path.join(server.tempDir, 'app-builds', 'builds.jsonl');
-    fs.writeFileSync(file, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    registryHelper.writeRegistry(server.tempDir, entries);
 }
 
 // The server only evicts a uuid from connectedPlayers once it processes the WS 'close'
@@ -46,7 +42,7 @@ async function reconnectAsPlayer(port, uuid, { timeoutMs = 2000 } = {}) {
     }
 }
 
-// A freshly restarted server rehydrates its registry from builds.jsonl asynchronously
+// A freshly restarted server rehydrates its registry from builds.json asynchronously
 // (Server.elm's init issues a readFile port request); a stateRequest that lands before
 // that read completes is rejected as "unknown uuid" and the socket closed. Retry until
 // the server answers with a real state response, mirroring reconnectAsPlayer above.

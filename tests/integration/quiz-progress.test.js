@@ -1,7 +1,6 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const registryHelper = require('../helpers/registry');
 const { startTestServer, TEST_QUIZ_QUESTION_COUNT } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
@@ -17,9 +16,7 @@ let server;
 let admin;
 
 function readRegistry() {
-    const file = path.join(server.tempDir, 'app-builds', 'builds.jsonl');
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    return registryHelper.readRegistry(server.tempDir);
 }
 
 // Minimal player state; a raw stateUpdate the fabricated-exploit test uses to simulate a
@@ -136,7 +133,7 @@ describe('server-side quiz-progress win gating', () => {
         await conn.close();
     }, 10000);
 
-    test('completed progress persists into builds.jsonl', async () => {
+    test('completed progress persists into builds.json', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'quiz-progress-persist.dmg',
