@@ -35,7 +35,6 @@
     "add-admin": "node scripts/add-admin.js"
   },
   "build": {
-    "//": "WARNING: nothing under config/ may ever be bundled into the client -- it's all server-side-only now (config/app-config.json's winScreen reward text and quizQuestions answers -- see #35, #54/#70's review). Do not add config/**/* back to `files` below. The client gets song order by listing assets/songs/ directly (client/bridge.js's readDir port + Game.Quiz.songOrder), not from any config file.",
     "files": [
       ".env",
       "client/bridge.js",
