@@ -67,7 +67,8 @@ type IqPhase
     | IqAwaitingReady -- countdown done or a ding resolved; waiting for the client's iqReadyForDing
     | IqDingScheduled -- a random inter-ding delay is sleeping; ding not yet shown
     | IqDingShown -- a ding was emitted; waiting for the client to resolve it
-    | IqIdle -- post-catch: waiting for the client to press Begin (iqStartCountdown) again
+    | IqIdleNotStarted -- never started this test yet, or an admin's edit:state edit reset it back to the begin screen (EditedIqBegin)
+    | IqIdleCaught -- just caught the trap; waiting for the client to press Begin (iqStartCountdown) again after the fake-flash cutscene
 
 
 {-| Per-player IQ-test state, keyed by **uuid** (the durable player identity, not
@@ -262,7 +263,7 @@ acceptQuizAdvance { current, idx } =
         Nothing
 
 
-{-| True when the player has a live IQ-timer entry (including `IqIdle`,
+{-| True when the player has a live IQ-timer entry (including `IqIdleCaught`,
 "waiting to restart") -- i.e., mid-penalty. Both quiz-progression entry
 points (`ClientQuizAdvanced` and `ClientQuizAnswerSubmitted`) are unexpected
 while this holds: the honest client's quiz screens never render during the
@@ -313,6 +314,50 @@ deriveQuizScreen { progress, total } =
         Nothing
 
 
+{-| Project session expiry onto the exact JSON shape `Sync.elm`'s `encodeScreen`
+produces for `TimedOutScreen`, so an expired session is derivable the same way
+as the IQ/quiz families rather than waiting on the client's own next
+self-report of `TimedOutScreen` to persist it.
+-}
+deriveTimedOutScreen : Float -> RegistryEntry -> Maybe Encode.Value
+deriveTimedOutScreen now entry =
+    if isExpired now entry then
+        Just (Encode.object [ ( "tag", Encode.string "TimedOutScreen" ) ])
+
+    else
+        Nothing
+
+
+{-| Project quiz completion onto the exact JSON shape `Sync.elm`'s `encodeScreen`
+produces for a bare `WinScreen` (its text is never persisted -- see
+`encodeScreen`'s `WinScreen` case -- so this is always the empty-text shape;
+the reveal is delivered separately via `winTextEnvelope`, see
+`ClientStateRequest`'s reconnect-time re-send). Reuses `quizJustCompleted`, the
+same fact the server already computes to gate the win reveal.
+-}
+deriveWinScreen : { progress : Int, total : Int } -> Maybe Encode.Value
+deriveWinScreen { progress, total } =
+    if quizJustCompleted { next = progress, total = total } then
+        Just (Encode.object [ ( "tag", Encode.string "WinScreen" ) ])
+
+    else
+        Nothing
+
+
+{-| `deriveQuizScreen`, falling back to `deriveWinScreen` once progress has
+reached the end -- the one combined function that covers every derivable state
+of the quiz-progress family, from the first slide through the win screen.
+-}
+deriveQuizOrWinScreen : { progress : Int, total : Int } -> Maybe Encode.Value
+deriveQuizOrWinScreen args =
+    case deriveQuizScreen args of
+        Just screen ->
+            Just screen
+
+        Nothing ->
+            deriveWinScreen args
+
+
 {-| The screen tags whose persisted value is server-derived via
 `deriveQuizScreen` rather than trusted from the client's report. Matched
 against `innermostScreenTag` so a quiz slide can't hide inside the
@@ -353,11 +398,10 @@ unwrapScreenTag screenValue =
 
 {-| Record a confirmed quiz advance in a player's registry row: the progress
 counter always, and -- where derivable -- the persisted `state.screen`
-overwritten to the freshly-earned slide, so a disconnect right after a correct
+overwritten to the freshly-earned slide (or, on the final advance, the derived
+win screen -- see `deriveWinScreen`), so a disconnect right after a correct
 answer resumes there instead of at stale mid-transition client state. Mirrors
-`persistIqTimerInRegistry`; on the final advance (`next == total`) only the
-counter is written and the client's own report (its `WinScreen`) stays
-authoritative.
+`persistIqTimerInRegistry`.
 -}
 persistQuizScreenInRegistry : String -> { next : Int, total : Int } -> List RegistryEntry -> List RegistryEntry
 persistQuizScreenInRegistry uuid { next, total } registry =
@@ -365,7 +409,7 @@ persistQuizScreenInRegistry uuid { next, total } registry =
         withProgress =
             updateEntryQuizProgress uuid next registry
     in
-    case deriveQuizScreen { progress = next, total = total } of
+    case deriveQuizOrWinScreen { progress = next, total = total } of
         Nothing ->
             withProgress
 
@@ -374,19 +418,29 @@ persistQuizScreenInRegistry uuid { next, total } registry =
 
 
 {-| The quiz half of the `ClientStateUpdate` screen override: when the client
-self-reports any quiz-slide screen, the persisted `screen` is rewritten to the
-one derived from the server's own confirmed progress -- a crafted report can't
-park itself on a question it hasn't earned (or leak the upcoming slide), and
-an honest report only ever collapses to the start of the very slide it was
-already on. Reports outside the quiz-slide family, and reports made before
-the question config is readable, pass through untouched.
+self-reports any quiz-slide screen (or a `WinScreen`), the persisted `screen`
+is rewritten to the one derived from the server's own confirmed progress -- a
+crafted report can't park itself on a question it hasn't earned (or claim a
+win it hasn't earned), and an honest report only ever collapses to the start
+of the very slide it was already on (or its already-earned win). Reports
+outside this family, and reports made before the question config is readable,
+pass through untouched.
+
+Note `"WinScreen"` is checked separately from `quizSlideTags` rather than
+folded into that list: `quizSlideTags` is also used by
+`reconcileQuizProgressAfterEdit` (the admin edit:state path), where an edit
+onto `WinScreen` has no `idx` to extract and must not be treated as "resetting
+progress to slide 0."
 -}
 applyQuizScreenOverride : String -> Encode.Value -> Model -> List RegistryEntry -> List RegistryEntry
 applyQuizScreenOverride uuid inner model registry =
     let
+        reportedTag =
+            innermostScreenTag inner
+
         derived =
-            if List.member (innermostScreenTag inner) quizSlideTags then
-                deriveQuizScreen
+            if List.member reportedTag quizSlideTags || reportedTag == "WinScreen" then
+                deriveQuizOrWinScreen
                     { progress = Dict.get uuid model.quizProgress |> Maybe.withDefault 0
                     , total = List.length (questionsForUuid uuid registry)
                     }
@@ -449,18 +503,20 @@ extractQuestionIdx stateValue =
 
 
 {-| Project an IqTimerState onto the exact JSON shape `Sync.elm`'s `encodeScreen`
-produces for `IQTestCountdownScreen`/`IQTestActiveScreen`, so the persisted
-registry row can be derived from server state instead of the client's own
-report. `IqIdle` covers both "mid fake-flash-caught cutscene" and "not yet
-started" -- in both cases the correct persisted screen tag
-(`FakeFlashCaughtScreen`/`IQTestScreen`) is one this function has no business
-producing, so `Nothing` leaves the client's own report authoritative there,
-exactly as before this change.
+produces for `IQTestCountdownScreen`/`IQTestActiveScreen`/`IQTestScreen`/
+`FakeFlashCaughtScreen`, so the persisted registry row can be derived from
+server state instead of the client's own report.
 
 Known, deliberate imprecision: `isFlashing`/`loudPlaying` don't track the
 client's local 250ms flash animation or the 3s `StartLoudMusic` delay -- they
 only matter for the brief window before `resumeIqTimer` re-syncs a
-reconnecting client, which was already imprecise before this change.
+reconnecting client, which was already imprecise before this change. Likewise,
+`IqIdleCaught` always derives the fake-flash-caught cutscene restarted at its
+first sub-phase (`FfDelay`) rather than whatever sub-phase the client's local
+animation had actually reached -- a reconnect mid-cutscene replays the cutscene
+from the top instead of resuming it precisely, the same category of accepted
+coarse-resume trade as the quiz-slide family's `WrongAnswerScreen` collapse
+(see `deriveQuizScreen`).
 -}
 deriveIqScreen : IqTimerState -> Maybe Encode.Value
 deriveIqScreen state =
@@ -493,8 +549,42 @@ deriveIqScreen state =
                     , fakeIsTrap = state.lastDing == TrapFake
                     }
 
-        IqIdle ->
-            Nothing
+        IqIdleNotStarted ->
+            Just <|
+                Encode.object
+                    [ ( "tag", Encode.string "IQTestScreen" )
+                    , ( "state"
+                      , Encode.object
+                            [ ( "questionIdx", Encode.int state.questionIdx )
+                            , ( "totalDings", Encode.int state.totalDings )
+                            ]
+                      )
+                    ]
+
+        IqIdleCaught ->
+            let
+                -- state.totalDings/dingCount were already updated by applyCatch (doubled/
+                -- reset) before phase became IqIdleCaught, so the pre-catch values the
+                -- client's own CaughtTrap construction used aren't recoverable exactly --
+                -- halving the post-catch total approximates the original, and the
+                -- numerator is fine at 0 since the restarted cutscene doesn't render it
+                -- until well past FfDelay anyway.
+                originalTotal =
+                    state.totalDings // 2
+            in
+            Just <|
+                Encode.object
+                    [ ( "tag", Encode.string "FakeFlashCaughtScreen" )
+                    , ( "state"
+                      , Encode.object
+                            [ ( "questionIdx", Encode.int state.questionIdx )
+                            , ( "originalTotal", Encode.int originalTotal )
+                            , ( "displayNumerator", Encode.int 0 )
+                            , ( "displayDenominator", Encode.int originalTotal )
+                            , ( "phase", Encode.string "FfDelay" )
+                            ]
+                      )
+                    ]
 
 
 deriveIqActiveScreen : IqTimerState -> { isFlashing : Bool, dingActive : Bool, fakeFlashActive : Bool, fakeIsTrap : Bool } -> Encode.Value
@@ -532,8 +622,11 @@ encodeIqPhase phase =
             IqDingShown ->
                 "IqDingShown"
 
-            IqIdle ->
-                "IqIdle"
+            IqIdleNotStarted ->
+                "IqIdleNotStarted"
+
+            IqIdleCaught ->
+                "IqIdleCaught"
 
 
 decodeIqPhase : Decode.Decoder IqPhase
@@ -554,8 +647,19 @@ decodeIqPhase =
                     "IqDingShown" ->
                         Decode.succeed IqDingShown
 
+                    "IqIdleNotStarted" ->
+                        Decode.succeed IqIdleNotStarted
+
+                    "IqIdleCaught" ->
+                        Decode.succeed IqIdleCaught
+
+                    -- Back-compat: a row persisted before the IqIdle split. Treated as
+                    -- "not started" rather than "caught" -- the one accepted trade-off is
+                    -- that a player genuinely mid-cutscene at the moment this ships sees
+                    -- the plain begin screen instead of a cutscene replay on their next
+                    -- resume. One-time migration shim, safe to remove after a deploy cycle.
                     "IqIdle" ->
-                        Decode.succeed IqIdle
+                        Decode.succeed IqIdleNotStarted
 
                     _ ->
                         Decode.fail ("unknown IqPhase: " ++ s)
@@ -793,7 +897,7 @@ reconcileIqTimerAfterEdit uuid parsedState model =
         Ok (EditedIqBegin { totalDings }) ->
             persist
                 { epoch = nextEpoch
-                , phase = IqIdle
+                , phase = IqIdleNotStarted
                 , questionIdx = questionIdx
                 , countdownRemaining = totalDings
                 , dingCount = 0
@@ -950,9 +1054,10 @@ scheduleNextDing uuid state model =
 
 {-| Re-arm a paused IQ timer once the player has reconnected *and* actually
 rendered the corresponding IQ screen again (signalled by the client's
-`iqResume`, sent right after `BeginPressed` restores an IQ screen from
-`savedState`). Bumping to a fresh epoch here isn't needed -- `ClientDisconnected`
-already bumped it, and nothing was scheduled against the new epoch until now.
+`iqResume`, sent right after `BeginPressed` flips `isBeginScreen` back off an
+already-derived IQ screen). Bumping to a fresh epoch here isn't needed --
+`ClientDisconnected` already bumped it, and nothing was scheduled against the
+new epoch until now.
 
 - `IqCounting`: resend the current tick immediately (so the UI doesn't wait up
   to 1s for the next natural tick) and re-arm the 1s loop.
@@ -965,8 +1070,8 @@ already bumped it, and nothing was scheduled against the new epoch until now.
 - `IqDingShown`: resend the same ding fresh. In practice `ClientDisconnected` already
   rewinds any `IqDingShown` entry to `IqDingScheduled` before this ever runs, so this
   branch is a defensive fallback rather than a normally-reachable path.
-- `IqIdle`: nothing to resume; the player will press Begin to send a fresh
-  `iqStartCountdown`.
+- `IqIdleNotStarted`/`IqIdleCaught`: nothing to resume; the player will press
+  Begin to send a fresh `iqStartCountdown`.
 -}
 resumeIqTimer : String -> Model -> ( Model, Cmd Msg )
 resumeIqTimer uuid model =
@@ -1009,7 +1114,10 @@ resumeIqTimer uuid model =
                         )
                     )
 
-                IqIdle ->
+                IqIdleNotStarted ->
+                    ( model, Cmd.none )
+
+                IqIdleCaught ->
                     ( model, Cmd.none )
 
 
@@ -1142,10 +1250,10 @@ update msg model =
                 Just uuid ->
                     let
                         -- Leave the player's persisted state exactly as it was. The
-                        -- jeopardy snapshot (mid-game screen → savedState, reset to
-                        -- BeginScreen) now happens lazily on their next stateRequest
-                        -- (see ClientStateRequest below), so a server stop/restart that
-                        -- never fires a disconnect still resumes the player correctly.
+                        -- jeopardy snapshot (isBeginScreen -> True) now happens lazily
+                        -- on their next stateRequest (see ClientStateRequest below), so
+                        -- a server stop/restart that never fires a disconnect still
+                        -- resumes the player correctly.
                         baseModel =
                             { model
                                 | connectedPlayers = Dict.remove uuid model.connectedPlayers
@@ -1199,17 +1307,17 @@ update msg model =
                                     storedState =
                                         Maybe.withDefault (Encode.object []) entry.state
 
-                                    -- If the player left mid-game (persisted screen is
-                                    -- anything other than BeginScreen), snapshot that
-                                    -- screen into savedState and reset to BeginScreen so
-                                    -- they resume via the jeopardy Start flow. A player
-                                    -- already on BeginScreen — or one who never started
-                                    -- (empty state, no screen tag) — is delivered as-is,
-                                    -- leaving their savedState and jeopardyPlaying flag
-                                    -- untouched.
-                                    screenTag =
-                                        Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) storedState
-                                            |> Result.withDefault ""
+                                    -- If the player left mid-game (isBeginScreen false),
+                                    -- snapshot them onto the neutral begin screen so they
+                                    -- resume via the jeopardy Start flow -- the underlying
+                                    -- `screen` is left alone (it's already whatever the
+                                    -- override chain derived), not stashed anywhere. A
+                                    -- player already on the begin screen -- or one who never
+                                    -- started (empty state, no isBeginScreen key) -- is
+                                    -- delivered as-is.
+                                    isAlreadyBegin =
+                                        Decode.decodeValue (Decode.field "isBeginScreen" Decode.bool) storedState
+                                            |> Result.withDefault True
 
                                     connectedModel =
                                         { model | connectedPlayers = Dict.insert uuid clientId model.connectedPlayers }
@@ -1222,6 +1330,21 @@ update msg model =
 
                                     registryWithTimer =
                                         updateEntryTimer uuid deadline model.registry
+
+                                    -- If a completed player reconnects (whether they never saw
+                                    -- the reveal, or it's simply been a while), the derived
+                                    -- WinScreen alone carries no text -- re-send it alongside
+                                    -- the normal delivery so the client doesn't sit on a blank
+                                    -- reveal. Safe to always combine with stateEnvelope (unlike
+                                    -- timedOutEnvelope): the client's WinScreen handling only
+                                    -- ever waits for this message, never races another one that
+                                    -- also assigns `screen`.
+                                    winTextCmd delivered =
+                                        if innermostScreenTag delivered == "WinScreen" then
+                                            sendToClient { clientId = clientId, payload = winTextEnvelope entry.winText }
+
+                                        else
+                                            Cmd.none
                                 in
                                 if isExpired now { entry | timerEndsAt = Just deadline } then
                                     -- The server's own clock says this session is already over.
@@ -1230,19 +1353,33 @@ update msg model =
                                     -- stateEnvelope handling can set `screen` too and whichever
                                     -- message the client processed second would win (see the
                                     -- same ordering note on the ClientStateUpdate branch below).
-                                    ( { connectedModel | registry = registryWithTimer }
+                                    -- Also overwrite the at-rest screen to TimedOutScreen (purely
+                                    -- for builds.json's own correctness -- e.g. the admin edit
+                                    -- tool reads entry.state verbatim), independent of whatever's
+                                    -- actually sent to the client this round trip.
+                                    let
+                                        registryAtRest =
+                                            case deriveTimedOutScreen now { entry | timerEndsAt = Just deadline } of
+                                                Just screen ->
+                                                    overwriteEntryScreen uuid screen registryWithTimer
+
+                                                Nothing ->
+                                                    registryWithTimer
+                                    in
+                                    ( { connectedModel | registry = registryAtRest }
                                     , Cmd.batch
-                                        [ writeRegistry registryWithTimer
+                                        [ writeRegistry registryAtRest
                                         , sendToClient { clientId = clientId, payload = timedOutEnvelope }
                                         ]
                                     )
 
-                                else if screenTag == "" || screenTag == "BeginScreen" then
+                                else if isAlreadyBegin then
                                     ( { connectedModel | registry = registryWithTimer }
                                     , Cmd.batch
                                         [ writeRegistry registryWithTimer
                                         , sendToClient { clientId = clientId, payload = stateEnvelope storedState }
                                         , sendToClient { clientId = clientId, payload = timerSyncEnvelope deadline }
+                                        , winTextCmd storedState
                                         ]
                                     )
 
@@ -1259,6 +1396,7 @@ update msg model =
                                         [ writeRegistry newRegistry
                                         , sendToClient { clientId = clientId, payload = stateEnvelope snapshotted }
                                         , sendToClient { clientId = clientId, payload = timerSyncEnvelope deadline }
+                                        , winTextCmd snapshotted
                                         ]
                                     )
 
@@ -1277,14 +1415,14 @@ update msg model =
                                 -- persistence pattern exists to fix (see the doc comment on
                                 -- IqTimerState): first the quiz-slide correction, then -- on top
                                 -- -- the IQ timer's, when one is live. The IQ persist runs last
-                                -- deliberately: a live-but-IqIdle timer derives Nothing, and
-                                -- gating the quiz correction on the timer's absence instead
-                                -- would let a report slip past both. Screens in neither family
-                                -- still flow through untouched.
+                                -- deliberately, since every IqPhase (including both idle phases)
+                                -- now derives a screen whenever a live entry exists -- so a live
+                                -- IQ timer always wins over any quiz self-report/correction.
+                                -- Screens in neither family still flow through untouched.
                                 quizCorrected =
                                     applyQuizScreenOverride uuid inner model rawRegistry
 
-                                newRegistry =
+                                iqCorrected =
                                     case Dict.get uuid model.iqTimers of
                                         Just state ->
                                             persistIqTimerInRegistry uuid (Just state) quizCorrected
@@ -1296,12 +1434,26 @@ update msg model =
                                 -- second, so this ride-along check is all the server needs
                                 -- to independently detect expiry off its own clock -- no
                                 -- separate polling/scheduling required.
-                                expired =
-                                    newRegistry
+                                derivedTimeout =
+                                    iqCorrected
                                         |> List.filter (\e -> e.uuid == uuid)
                                         |> List.head
-                                        |> Maybe.map (isExpired now)
-                                        |> Maybe.withDefault False
+                                        |> Maybe.andThen (deriveTimedOutScreen now)
+
+                                expired =
+                                    derivedTimeout /= Nothing
+
+                                -- Timeout runs last and unconditionally: if the session has
+                                -- expired, nothing else -- not a live IQ test, not quiz
+                                -- progress -- should leave a stale non-TimedOutScreen value
+                                -- persisted at rest.
+                                newRegistry =
+                                    case derivedTimeout of
+                                        Just screen ->
+                                            overwriteEntryScreen uuid screen iqCorrected
+
+                                        Nothing ->
+                                            iqCorrected
                             in
                             ( { model | registry = newRegistry }
                             , if expired then
@@ -1579,11 +1731,12 @@ update msg model =
                 Ok ClientIqStartCountdown ->
                     -- "Player pressed Begin." The count is the server's own, never
                     -- the client's -- see startCountdown. Only honored when there's
-                    -- no live entry yet, or the existing one is IqIdle (post-catch,
-                    -- waiting to restart) -- the honest client's Begin button only
-                    -- renders on IQTestScreen in those two states, so a countdown
-                    -- already ticking/dinging in any other phase is a stale/crafted
-                    -- request: ignore it rather than silently restarting the test.
+                    -- no live entry yet, or the existing one is idle (IqIdleNotStarted
+                    -- or IqIdleCaught, post-catch waiting to restart) -- the honest
+                    -- client's Begin button only renders on IQTestScreen in those
+                    -- states, so a countdown already ticking/dinging in any other
+                    -- phase is a stale/crafted request: ignore it rather than
+                    -- silently restarting the test.
                     case findUuidByClient clientId model.connectedPlayers of
                         Nothing ->
                             ( model, Cmd.none )
@@ -1594,7 +1747,7 @@ update msg model =
                                     startCountdown uuid model
 
                                 Just state ->
-                                    if state.phase == IqIdle then
+                                    if state.phase == IqIdleNotStarted || state.phase == IqIdleCaught then
                                         startCountdown uuid model
 
                                     else
@@ -1663,7 +1816,7 @@ update msg model =
                                             caught =
                                                 applyCatch state
                                         in
-                                        setIqTimer uuid { caught | phase = IqIdle } model
+                                        setIqTimer uuid { caught | phase = IqIdleCaught } model
 
                                     else
                                         ( model, Cmd.none )
@@ -1674,7 +1827,8 @@ update msg model =
                 Ok ClientIqResume ->
                     -- The client just restored a saved IQ screen (countdown/active)
                     -- after reconnecting. Re-arm whatever was paused for it -- a
-                    -- no-op if there's nothing to resume (e.g. IqIdle, or no entry).
+                    -- no-op if there's nothing to resume (e.g. either idle phase, or
+                    -- no entry).
                     case findUuidByClient clientId model.connectedPlayers of
                         Just uuid ->
                             resumeIqTimer uuid model

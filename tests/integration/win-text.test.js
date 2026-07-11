@@ -1,7 +1,7 @@
 'use strict';
 
 const registryHelper = require('../helpers/registry');
-const { startTestServer } = require('../helpers/testServer');
+const { startTestServer, TEST_QUIZ_QUESTION_COUNT } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
 const { connectAsPlayer } = require('../helpers/playerClient');
@@ -18,17 +18,7 @@ let admin;
 // Minimal player state whose screen is the win-confirming screen the client syncs right
 // before revealing WinScreen (see src/Main.elm WsSyncTick / src/Server/Protocol.elm stateIsWin).
 function stateWithScreen(screen) {
-    return JSON.stringify({
-        screen,
-        jeopardyPlaying: false,
-        now: 0,
-        pending: [],
-        savedState: null,
-        dingKey: 0,
-        pendingStartTime: null,
-        wsClientId: null,
-        timerEndsAt: 0,
-    });
+    return JSON.stringify({ isBeginScreen: false, screen });
 }
 
 function readRegistry() {
@@ -118,10 +108,38 @@ describe('win text delivery', () => {
         await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
 
         const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
-        conn.send({ stateUpdate: { json: stateWithScreen({ tag: 'BeginScreen' }) } });
+        conn.send({ stateUpdate: { json: stateWithScreen({ tag: 'BlankScreen', idx: 0 }) } });
         // The ack still comes back; a winText message must not.
         await conn.waitFor((m) => m.payload === 'stateUpdateAck');
         await expect(conn.waitFor((m) => m.payload === 'winText', 500)).rejects.toThrow();
         await conn.close();
+    }, 10000);
+
+    // Once WinScreen is derivable (see Server.elm's deriveWinScreen), a player who
+    // reconnects after already completing the quiz -- whether they closed the app right
+    // at the moment they won, before ever seeing the reveal, or reconnect much later --
+    // gets a bare derived WinScreen with no text. The reconnect must re-send winText
+    // alongside it rather than leaving the reveal blank forever.
+    test('reconnecting after a win re-delivers winText, even though the derived screen carries no text', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'win-reconnect.dmg',
+            winText: WIN_TEXT,
+        });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        for (let idx = 0; idx < TEST_QUIZ_QUESTION_COUNT; idx += 1) {
+            conn.send({ quizAdvanced: { idx } });
+        }
+        await conn.waitFor((m) => m.payload === 'winText');
+        await conn.close();
+
+        const { conn: reconn, result } = await connectAsPlayer(TEST_PORT, build.uuid);
+        const delivered = JSON.parse(result.stateUpdate.json);
+        expect(delivered.screen.tag).toBe('WinScreen');
+        const winTextMsg = await reconn.waitFor((m) => m.payload === 'winText');
+        expect(winTextMsg.winText.text).toBe(WIN_TEXT);
+        await reconn.close();
     }, 10000);
 });

@@ -179,11 +179,6 @@ encodeMaybeString =
     Maybe.map Encode.string >> Maybe.withDefault Encode.null
 
 
-encodeMaybeFloat : Maybe Float -> Encode.Value
-encodeMaybeFloat =
-    Maybe.map Encode.float >> Maybe.withDefault Encode.null
-
-
 encodeFakeFlashPhase : FakeFlashPhase -> Encode.Value
 encodeFakeFlashPhase phase =
     Encode.string
@@ -257,9 +252,6 @@ encodeScreen scr =
         WsLoadingScreen ->
             Encode.object [ ( "tag", Encode.string "WsLoadingScreen" ) ]
 
-        BeginScreen ->
-            Encode.object [ ( "tag", Encode.string "BeginScreen" ) ]
-
         BlankScreen idx ->
             Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int idx ) ]
 
@@ -271,9 +263,10 @@ encodeScreen scr =
 
         WrongAnswerScreen idx _ ->
             -- Deliberately drop the reveal text: it must never be written into
-            -- persisted state (builds.json), same as WinScreen's text. A
-            -- disconnect on this screen resets to BeginScreen anyway (see
-            -- CLAUDE.md), so the text was never going to survive a resume.
+            -- persisted state (builds.json), same as WinScreen's text. The
+            -- server derives this whole screen family down to BlankScreen
+            -- progress anyway (see Server.elm's deriveQuizScreen), so the text
+            -- was never going to survive a resume.
             Encode.object [ ( "tag", Encode.string "WrongAnswerScreen" ), ( "idx", Encode.int idx ) ]
 
         IQTestScreen state ->
@@ -351,17 +344,6 @@ encodePendingEvent e =
         ]
 
 
-encodePausedState : PausedState -> Encode.Value
-encodePausedState s =
-    Encode.object
-        [ ( "screen", encodeScreen s.screen )
-        , ( "pending", Encode.list encodePendingEvent s.pending )
-        , ( "savedAt", Encode.float s.savedAt )
-        , ( "songResumeTime", encodeMaybeFloat s.songResumeTime )
-        , ( "videoResumeTime", encodeMaybeFloat s.videoResumeTime )
-        ]
-
-
 clientStateEnvelope : Model -> Encode.Value
 clientStateEnvelope model =
     Encode.object
@@ -370,17 +352,21 @@ clientStateEnvelope model =
         ]
 
 
+{-| Only two keys ever round-trip through the server's persisted state
+(`builds.json`): whether the player is parked on the neutral begin screen, and
+the screen itself (now always reconstructable from the server's own
+authoritative state -- see Server.elm's deriveIqScreen/deriveQuizScreen/
+deriveTimedOutScreen). Every other Model field is either session-local
+(`wsClientId`, `myUuid`, `wsUrl`, `questions`, `timerEndsAt`,
+`awaitingAnswerResult`) or purely local live/animation state (`now`, `pending`,
+`dingKey`) that's never read by the server and always resets fresh on
+connect -- see decodeModel.
+-}
 encodeModel : Model -> Encode.Value
 encodeModel model =
     Encode.object
-        [ ( "screen", encodeScreen model.screen )
-        , ( "jeopardyPlaying", Encode.bool model.jeopardyPlaying )
-        , ( "now", Encode.float model.now )
-        , ( "pending", Encode.list encodePendingEvent model.pending )
-        , ( "savedState", model.savedState |> Maybe.map encodePausedState |> Maybe.withDefault Encode.null )
-        , ( "dingKey", Encode.int model.dingKey )
-        , ( "pendingStartTime", encodeMaybeFloat model.pendingStartTime )
-        , ( "wsClientId", encodeMaybeString model.wsClientId )
+        [ ( "isBeginScreen", Encode.bool model.isBeginScreen )
+        , ( "screen", encodeScreen model.screen )
         ]
 
 
@@ -471,9 +457,6 @@ decodeScreen =
 
                     "WsLoadingScreen" ->
                         Decode.succeed WsLoadingScreen
-
-                    "BeginScreen" ->
-                        Decode.succeed BeginScreen
 
                     "BlankScreen" ->
                         Decode.map BlankScreen (Decode.field "idx" Decode.int)
@@ -575,38 +558,31 @@ decodePendingEvent =
         (Decode.field "msg" decodeMsg)
 
 
-decodePausedState : Decoder PausedState
-decodePausedState =
-    Decode.map5
-        (\scr pending savedAt songResumeTime videoResumeTime ->
-            { screen = scr, pending = pending, savedAt = savedAt
-            , songResumeTime = songResumeTime, videoResumeTime = videoResumeTime
-            }
-        )
-        (Decode.field "screen" decodeScreen)
-        (Decode.field "pending" (Decode.list decodePendingEvent))
-        (Decode.field "savedAt" Decode.float)
-        (Decode.field "songResumeTime" (Decode.nullable Decode.float))
-        (Decode.field "videoResumeTime" (Decode.nullable Decode.float))
+{-| Tolerant of both a genuinely brand-new player's `entry.state == Nothing`
+(the server sends `{}` -- see Server.elm's ClientStateRequest) and any
+older-shape row that predates this field: `isBeginScreen` defaults to `True`
+and `screen` defaults to `BlankScreen 0` when absent, rather than requiring the
+server to synthesize a full default state for the empty case.
 
-
+`now`/`pending`/`dingKey` reset to their fresh-connection defaults here rather
+than round-tripping: they're purely local live/animation state, same as
+`myUuid`/`wsUrl`/`questions`/`awaitingAnswerResult`/`timerEndsAt` below.
+`timerEndsAt` is deliberately not decoded here: the session deadline is
+server-owned (see RegistryEntry.timerEndsAt / timerSyncEnvelope) and delivered
+only via the dedicated ServerTimerSync message. The caller preserves the
+model's live `wsClientId`/`myUuid`/`wsUrl`/`questions`/`timerEndsAt` across this
+decode (see Main.elm's ServerStateUpdate handler).
+-}
 decodeModel : Decoder Model
 decodeModel =
-    -- timerEndsAt is deliberately not decoded here: the session deadline is now
-    -- server-owned (see RegistryEntry.timerEndsAt / timerSyncEnvelope) and delivered
-    -- only via the dedicated ServerTimerSync message, never round-tripped through the
-    -- client's own persisted state. The caller preserves the model's live timerEndsAt
-    -- across this decode (see Main.elm's ServerStateUpdate handler).
-    Decode.map8
-        (\scr jp n pend ss dk pst wci ->
-            { screen = scr
-            , jeopardyPlaying = jp
-            , now = n
-            , pending = pend
-            , savedState = ss
-            , dingKey = dk
-            , pendingStartTime = pst
-            , wsClientId = wci
+    Decode.map2
+        (\ibs scr ->
+            { isBeginScreen = ibs
+            , screen = scr
+            , now = 0
+            , pending = []
+            , dingKey = 0
+            , wsClientId = Nothing
             , timerEndsAt = 0
             , myUuid = Nothing
             , wsUrl = ""
@@ -614,11 +590,5 @@ decodeModel =
             , awaitingAnswerResult = False
             }
         )
-        (Decode.field "screen" decodeScreen)
-        (Decode.field "jeopardyPlaying" Decode.bool)
-        (Decode.field "now" Decode.float)
-        (Decode.field "pending" (Decode.list decodePendingEvent))
-        (Decode.field "savedState" (Decode.nullable decodePausedState))
-        (Decode.field "dingKey" Decode.int)
-        (Decode.field "pendingStartTime" (Decode.nullable Decode.float))
-        (Decode.field "wsClientId" (Decode.nullable Decode.string))
+        (Decode.oneOf [ Decode.field "isBeginScreen" Decode.bool, Decode.succeed True ])
+        (Decode.oneOf [ Decode.field "screen" decodeScreen, Decode.succeed (BlankScreen 0) ])

@@ -140,11 +140,49 @@ describe('server-side 7-day session timer (issue #50)', () => {
         expect(connectMsg.payload).toBe('timedOut');
 
         // The periodic sync loop (ClientStateUpdate) independently re-checks expiry too.
-        conn.send({ stateUpdate: { json: JSON.stringify({ screen: { tag: 'BeginScreen' }, pending: [], now: 1, jeopardyPlaying: true, savedState: null }) } });
+        conn.send({ stateUpdate: { json: JSON.stringify({ isBeginScreen: false, screen: { tag: 'IQTestActiveScreen' } }) } });
         const syncMsg = await conn.waitFor((m) => m.payload === 'timedOut' || m.payload === 'stateUpdateAck');
         expect(syncMsg.payload).toBe('timedOut');
 
+        // The expiry is also reflected at rest, regardless of whatever screen the client
+        // was actually self-reporting (see Server.elm's deriveTimedOutScreen) -- this
+        // matters for the admin edit tool reading entry.state verbatim, and for a later
+        // reconnect to deliver the right screen.
+        const persisted = await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === build.uuid);
+            return e && e.state && e.state.screen && e.state.screen.tag === 'TimedOutScreen' ? e : undefined;
+        });
+        expect(persisted.state.screen).toEqual({ tag: 'TimedOutScreen' });
+
         await conn.close();
+    }, 15000);
+
+    test('an expired session persists and delivers TimedOutScreen on a later reconnect too', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'timer-expired-reconnect.dmg',
+        });
+
+        const { conn: setupConn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        await setupConn.close();
+
+        await server.stop({ keepData: true });
+        const entries = readRegistry();
+        const rewritten = entries.map((e) => (e.uuid === build.uuid ? { ...e, timerEndsAt: Date.now() - 1000 } : e));
+        writeRegistry(rewritten);
+        server = await startTestServer({ port: TEST_PORT, existingTempDir: server.tempDir });
+
+        const { conn, result: connectMsg } = await requestStateAfterRestart(TEST_PORT, build.uuid);
+        expect(connectMsg.payload).toBe('timedOut');
+        await conn.close();
+
+        // Confirm the ClientStateRequest expiry path itself (not just ClientStateUpdate's)
+        // persists the derived TimedOutScreen at rest.
+        const persisted = await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === build.uuid);
+            return e && e.state && e.state.screen && e.state.screen.tag === 'TimedOutScreen' ? e : undefined;
+        });
+        expect(persisted.state.screen).toEqual({ tag: 'TimedOutScreen' });
     }, 15000);
 
     test("a replacement build inherits the original build's deadline rather than starting a fresh one", async () => {

@@ -5,20 +5,10 @@ import Game.Quiz exposing (..)
 import Json.Decode as Decode
 
 
-type alias PausedState =
-    { screen : Screen
-    , pending : List PendingEvent
-    , savedAt : Float
-    , songResumeTime : Maybe Float
-    , videoResumeTime : Maybe Float
-    }
-
-
 type Screen
     = WsConnectingScreen
     | WsErrorScreen
     | WsLoadingScreen
-    | BeginScreen
     | BlankScreen Int
     | VideoScreen Int String
     | QuestionScreen Int String
@@ -48,13 +38,16 @@ type alias PendingEvent =
 
 
 type alias Model =
-    { screen : Screen
-    , jeopardyPlaying : Bool
+    { isBeginScreen : Bool
+    , screen : Screen
+
+    -- Local-only from here down: never encoded/decoded (see Sync.elm's
+    -- encodeModel/decodeModel). `pending`/`dingKey` drive live scheduling and
+    -- the ding-slot DOM-restart animation trick and reset fresh on every
+    -- connect/resume rather than surviving a disconnect with any precision.
     , now : Float
     , pending : List PendingEvent
-    , savedState : Maybe PausedState
     , dingKey : Int
-    , pendingStartTime : Maybe Float
     , wsClientId : Maybe String
     , timerEndsAt : Float
     , myUuid : Maybe String
@@ -81,7 +74,6 @@ type Msg
     | FakeFlashNextPhase
     | FakeFlashCounterTick
     | FakeFlashWindowExpired
-    | SongMetadataLoaded
     | DomPropertyReceived { elementId : String, property : String, value : Decode.Value }
     | DomPropertyError String
     | WsClientReady String

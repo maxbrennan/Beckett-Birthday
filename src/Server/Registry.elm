@@ -143,42 +143,20 @@ decodeRegistry contents =
 -- ── State Helpers ─────────────────────────────────────────────────────────────
 
 
+{-| Mark a player as parked on the neutral begin screen. Unlike the old
+BeginScreen/savedState scheme, the persisted `screen` itself is left untouched
+-- it's already whatever the IQ/quiz/timeout override chain last derived (or
+the client's own report, for the families that stay self-reported), so
+there's nothing to stash: the derived screen already *is* the correct resume
+target. That also makes this trivially idempotent no matter how many times
+it's applied (e.g. a player who reconnects then immediately disconnects again
+before ever pressing Begin).
+-}
 snapshotForJeopardy : Encode.Value -> Encode.Value
 snapshotForJeopardy state =
-    let
-        getField name =
-            Decode.decodeValue (Decode.field name Decode.value) state
-                |> Result.withDefault Encode.null
-
-        screenTag =
-            Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) state
-                |> Result.withDefault ""
-
-        savedState =
-            if screenTag == "BeginScreen" then
-                -- Screen is already BeginScreen (e.g. client reconnected then immediately
-                -- disconnected). Carry the existing savedState forward so the original
-                -- game position is not clobbered. BeginScreen can never become a savedState.
-                getField "savedState"
-
-            else
-                Encode.object
-                    [ ( "screen", getField "screen" )
-                    , ( "pending", getField "pending" )
-                    , ( "savedAt", getField "now" )
-                    , ( "songResumeTime", Encode.null )
-                    , ( "videoResumeTime", Encode.null )
-                    ]
-
-        stateDict =
-            Decode.decodeValue (Decode.dict Decode.value) state
-                |> Result.withDefault Dict.empty
-    in
-    stateDict
-        |> Dict.insert "screen" (Encode.object [ ( "tag", Encode.string "BeginScreen" ) ])
-        |> Dict.insert "jeopardyPlaying" (Encode.bool True)
-        |> Dict.insert "pending" (Encode.list identity [])
-        |> Dict.insert "savedState" savedState
+    Decode.decodeValue (Decode.dict Decode.value) state
+        |> Result.withDefault Dict.empty
+        |> Dict.insert "isBeginScreen" (Encode.bool True)
         |> Encode.dict identity identity
 
 

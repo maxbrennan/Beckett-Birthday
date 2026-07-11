@@ -11,13 +11,11 @@ import Sync
         , decodeFakeFlashPhase
         , decodeMsg
         , decodeModel
-        , decodePausedState
         , decodeScreen
         , decodeServerEnvelope
         , encodeFakeFlashPhase
         , encodeModel
         , encodeMsg
-        , encodePausedState
         , encodeScreen
         , iqCaughtEnvelope
         , iqReadyForDingEnvelope
@@ -28,7 +26,7 @@ import Sync
         , stateRequestEnvelope
         )
 import Test exposing (Test, describe, test)
-import Types exposing (Model, Msg(..), PausedState, Screen(..))
+import Types exposing (Model, Msg(..), Screen(..))
 
 
 roundTripScreen : Screen -> Screen
@@ -41,9 +39,7 @@ roundTripScreen scr =
 screenRoundTripTests : Test
 screenRoundTripTests =
     describe "encodeScreen / decodeScreen round-trip"
-        [ test "BeginScreen" <|
-            \_ -> Expect.equal BeginScreen (roundTripScreen BeginScreen)
-        , test "BlankScreen carries its index" <|
+        [ test "BlankScreen carries its index" <|
             \_ -> Expect.equal (BlankScreen 3) (roundTripScreen (BlankScreen 3))
         , test "VideoScreen carries index and filename" <|
             \_ -> Expect.equal (VideoScreen 2 "video.mp4") (roundTripScreen (VideoScreen 2 "video.mp4"))
@@ -149,67 +145,6 @@ msgRoundTripTests =
         ]
 
 
-pausedStateRoundTripTests : Test
-pausedStateRoundTripTests =
-    describe "encodePausedState / decodePausedState round-trip"
-        [ test "round-trips a paused state with pending events and resume times" <|
-            \_ ->
-                let
-                    saved : PausedState
-                    saved =
-                        { screen = BlankScreen 1
-                        , pending = [ { fireAt = 1500, msg = ShowQuestion 1 }, { fireAt = 2000, msg = PlaySong 2 } ]
-                        , savedAt = 1000
-                        , songResumeTime = Just 12.5
-                        , videoResumeTime = Just 3.5
-                        }
-                in
-                encodePausedState saved
-                    |> Decode.decodeValue decodePausedState
-                    |> Expect.equal (Ok saved)
-        , test "round-trips Nothing resume times" <|
-            \_ ->
-                let
-                    saved : PausedState
-                    saved =
-                        { screen = BeginScreen, pending = [], savedAt = 0, songResumeTime = Nothing, videoResumeTime = Nothing }
-                in
-                encodePausedState saved
-                    |> Decode.decodeValue decodePausedState
-                    |> Expect.equal (Ok saved)
-        ]
-
-
-modelWithSavedStateRoundTripTests : Test
-modelWithSavedStateRoundTripTests =
-    let
-        model : Model
-        model =
-            { screen = BlankScreen 0
-            , jeopardyPlaying = False
-            , now = 500
-            , pending = []
-            , savedState = Just { screen = VideoScreen 0 "v.mp4", pending = [], savedAt = 400, songResumeTime = Nothing, videoResumeTime = Just 1.5 }
-            , dingKey = 0
-            , pendingStartTime = Nothing
-            , wsClientId = Nothing
-            , timerEndsAt = 0
-            , myUuid = Nothing
-            , wsUrl = ""
-            , questions = []
-            , awaitingAnswerResult = False
-            }
-    in
-    describe "encodeModel / decodeModel round-trip with a saved state"
-        [ test "round-trips savedState" <|
-            \_ ->
-                encodeModel model
-                    |> Decode.decodeValue decodeModel
-                    |> Result.map .savedState
-                    |> Expect.equal (Ok model.savedState)
-        ]
-
-
 iqEnvelopeBuilderTests : Test
 iqEnvelopeBuilderTests =
     describe "IQ-test client->server envelope builders"
@@ -241,13 +176,11 @@ modelRoundTripTests =
     let
         model : Model
         model =
-            { screen = BlankScreen 2
-            , jeopardyPlaying = True
+            { isBeginScreen = False
+            , screen = BlankScreen 2
             , now = 12345
-            , pending = []
-            , savedState = Nothing
+            , pending = [ { fireAt = 1500, msg = ShowQuestion 1 } ]
             , dingKey = 7
-            , pendingStartTime = Just 999
             , wsClientId = Just "client-1"
             , timerEndsAt = 54321
             , myUuid = Just "should-not-round-trip"
@@ -261,30 +194,53 @@ modelRoundTripTests =
                 |> Decode.decodeValue decodeModel
     in
     describe "encodeModel / decodeModel round-trip"
-        [ test "round-trips the persisted fields" <|
+        [ test "round-trips the two persisted fields" <|
             \_ ->
                 case decoded of
                     Ok m ->
                         Expect.equal
-                            { screen = model.screen, jeopardyPlaying = model.jeopardyPlaying, now = model.now, dingKey = model.dingKey, pendingStartTime = model.pendingStartTime, wsClientId = model.wsClientId }
-                            { screen = m.screen, jeopardyPlaying = m.jeopardyPlaying, now = m.now, dingKey = m.dingKey, pendingStartTime = m.pendingStartTime, wsClientId = m.wsClientId }
+                            { isBeginScreen = model.isBeginScreen, screen = model.screen }
+                            { isBeginScreen = m.isBeginScreen, screen = m.screen }
 
                     Err err ->
                         Expect.fail (Decode.errorToString err)
-        , test "myUuid/wsUrl/questions/awaitingAnswerResult/timerEndsAt are NOT persisted — decodeModel always resets them" <|
+        , test "everything else is session/live-local -- decodeModel always resets it to a fresh-connection default" <|
             \_ ->
-                -- timerEndsAt is server-owned now (see RegistryEntry.timerEndsAt /
-                -- ServerTimerSync): the client never reports or round-trips its own
-                -- copy, so decodeModel always hands back 0 for it, same as the other
-                -- fields a fresh connection is expected to supply itself.
+                -- wsClientId/myUuid/wsUrl/questions/awaitingAnswerResult/timerEndsAt are
+                -- session-local facts decodeModel can't know (Main.elm's ServerStateUpdate
+                -- handler preserves the live model's copies instead -- see its own comment).
+                -- pending/dingKey/now are purely local live/animation state that never
+                -- needs to survive a disconnect with any precision (0/[] is exactly
+                -- correct for a freshly (re)connected session).
                 case decoded of
                     Ok m ->
                         Expect.equal
-                            { myUuid = Nothing, wsUrl = "", questions = [], awaitingAnswerResult = False, timerEndsAt = 0 }
-                            { myUuid = m.myUuid, wsUrl = m.wsUrl, questions = m.questions, awaitingAnswerResult = m.awaitingAnswerResult, timerEndsAt = m.timerEndsAt }
+                            { myUuid = Nothing, wsUrl = "", questions = [], awaitingAnswerResult = False, timerEndsAt = 0, pending = [], dingKey = 0, now = 0 }
+                            { myUuid = m.myUuid, wsUrl = m.wsUrl, questions = m.questions, awaitingAnswerResult = m.awaitingAnswerResult, timerEndsAt = m.timerEndsAt, pending = m.pending, dingKey = m.dingKey, now = m.now }
 
                     Err err ->
                         Expect.fail (Decode.errorToString err)
+        ]
+
+
+decodeModelDefaultsTests : Test
+decodeModelDefaultsTests =
+    describe "decodeModel tolerates the brand-new-player/older-row shape"
+        [ test "isBeginScreen defaults to True when absent" <|
+            \_ ->
+                Decode.decodeString decodeModel """{"screen":{"tag":"BlankScreen","idx":0}}"""
+                    |> Result.map .isBeginScreen
+                    |> Expect.equal (Ok True)
+        , test "screen defaults to BlankScreen 0 when absent" <|
+            \_ ->
+                Decode.decodeString decodeModel """{"isBeginScreen":true}"""
+                    |> Result.map .screen
+                    |> Expect.equal (Ok (BlankScreen 0))
+        , test "a genuinely brand-new player's \"{}\" decodes to isBeginScreen True at BlankScreen 0" <|
+            \_ ->
+                Decode.decodeString decodeModel "{}"
+                    |> Result.map (\m -> ( m.isBeginScreen, m.screen ))
+                    |> Expect.equal (Ok ( True, BlankScreen 0 ))
         ]
 
 
@@ -367,13 +323,11 @@ envelopeBuilderTests =
                 let
                     model : Model
                     model =
-                        { screen = BeginScreen
-                        , jeopardyPlaying = False
+                        { isBeginScreen = True
+                        , screen = BlankScreen 0
                         , now = 0
                         , pending = []
-                        , savedState = Nothing
                         , dingKey = 0
-                        , pendingStartTime = Nothing
                         , wsClientId = Nothing
                         , timerEndsAt = 0
                         , myUuid = Nothing
