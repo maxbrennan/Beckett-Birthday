@@ -19,6 +19,7 @@ const host = process.env.PROD_SERVER_HOST;
 const port = process.env.PROD_SERVER_PORT || '443';
 const SERVER_URL = port === '443' ? `wss://${host}` : `wss://${host}:${port}`;
 const UUID_FILE = path.join(__dirname, '..', 'app-uuid.json');
+const APP_CONFIG_FILE = path.join(__dirname, '..', 'config', 'app-config.json');
 const DIST_DIR = path.join(__dirname, '..', 'dist');
 const EXTENSION = PLATFORM === 'mac' ? '.dmg' : '.exe';
 
@@ -26,6 +27,62 @@ const fail = (msg) => {
     console.error(`[dist] ${msg}`);
     process.exit(1);
 };
+
+// A replacement build resends its own winText/quizQuestions rather than inheriting the
+// uuid it replaces (see #77 -- unlike state/iqTimer/quizProgress/timerEndsAt, which the
+// server carries forward on its own): a replace deploy runs a fresh electron-builder pass
+// against the current config/assets, so the new build's config is what should apply.
+
+// Self-contained duplicate of scripts/deploy.js's readWinText -- the two deploy scripts
+// don't share a config-reading helper module today.
+function readWinText() {
+    let raw;
+    try {
+        raw = fs.readFileSync(APP_CONFIG_FILE, 'utf8');
+    } catch (err) {
+        fail(`could not read ${APP_CONFIG_FILE}: ${err.message}`);
+    }
+    let text;
+    try {
+        text = JSON.parse(raw).winScreen;
+    } catch (err) {
+        fail(`could not parse ${APP_CONFIG_FILE}: ${err.message}`);
+    }
+    if (typeof text !== 'string' || text === '') {
+        fail(`${APP_CONFIG_FILE} must contain a non-empty "winScreen" string`);
+    }
+    return text;
+}
+
+// Self-contained duplicate of scripts/deploy.js's readQuizQuestions.
+function readQuizQuestions() {
+    let raw;
+    try {
+        raw = fs.readFileSync(APP_CONFIG_FILE, 'utf8');
+    } catch (err) {
+        fail(`could not read ${APP_CONFIG_FILE}: ${err.message}`);
+    }
+    let questions;
+    try {
+        questions = JSON.parse(raw).quizQuestions;
+    } catch (err) {
+        fail(`could not parse ${APP_CONFIG_FILE}: ${err.message}`);
+    }
+    const isValid =
+        Array.isArray(questions) &&
+        questions.length > 0 &&
+        questions.every(
+            (q) =>
+                q &&
+                Array.isArray(q.answers) &&
+                q.answers.length > 0 &&
+                q.answers.every((a) => typeof a === 'string' && a !== '')
+        );
+    if (!isValid) {
+        fail(`${APP_CONFIG_FILE} must contain a non-empty "quizQuestions" array of { answers: [non-empty strings] }`);
+    }
+    return questions;
+}
 
 function generateUuid() {
     const uuid = crypto.randomUUID();
@@ -236,12 +293,18 @@ async function main() {
             const isKeyFailure = !!(msg.authResult.key && !msg.authResult.key.success);
             if (isKeyFailure) { pendingRetry = true; }
             else if (!variant.success) { fail('authentication failed'); }
-        } else if (msg.payload === 'ack') {
-            uploadToken = msg.ack.uploadToken;
+        } else if (msg.payload === 'distRegisterAck') {
+            uploadToken = msg.distRegisterAck.uploadToken;
             break;
         }
     }
     if (!uploadToken) fail('server did not issue an upload token');
+
+    // Read (and validate) the win text and quiz questions before the slow
+    // electron-builder run so a missing/malformed config fails fast rather than after a
+    // full build.
+    const winText = readWinText();
+    const quizQuestions = readQuizQuestions();
 
     console.log('[dist] auth complete; running electron-builder');
     await runElectronBuilder().catch((err) => fail(err.message));
@@ -274,12 +337,12 @@ async function main() {
     });
     console.log('[dist] upload complete');
 
-    send(ws, { distReplaceComplete: { newUuid, oldUuid: OLD_UUID, filename: built.name } });
+    send(ws, { distReplaceComplete: { newUuid, oldUuid: OLD_UUID, filename: built.name, quizQuestions, winText } });
 
     while (true) {
         const msg = await nextMessage();
         if (msg.payload === '_closed') fail('connection closed before replacement acknowledged');
-        if (msg.payload === 'ack') break;
+        if (msg.payload === 'distReplaceCompleteAck') break;
     }
 
     console.log(`[dist] replacement acknowledged — old uuid ${OLD_UUID} replaced by ${newUuid}`);

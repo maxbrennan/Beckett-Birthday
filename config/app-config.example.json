@@ -1,0 +1,16 @@
+{
+  "appName": "Ryan Birthday",
+  "quizQuestions": [
+    { "answers": ["Baby Shark (Hip Hop Version)", "Baby Shark Hip Hop", "Baby Shark Hip Hop Edition"] },
+    { "answers": ["Manchild"] },
+    { "answers": ["House Tour"] },
+    { "answers": ["Revenge", "Revenge Parody", "Revenge a Minecraft Parody"] },
+    { "answers": ["Style"] },
+    { "answers": ["...Ready For It?"] },
+    { "answers": ["TIT FOR TAT"] },
+    { "answers": ["Sports car"] },
+    { "answers": ["Revolving door"] },
+    { "answers": ["핑크판타지"] }
+  ],
+  "winScreen": "Text \"creeper... awwww man\" to Max to claim your reward!"
+}

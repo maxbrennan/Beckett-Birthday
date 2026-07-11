@@ -4,6 +4,10 @@
 # Environment config (local secrets)
 .env
 
+# App config: real trivia answers and win-screen text are spoilers, never commit.
+# config/app-config.example.json stays tracked as the template.
+config/app-config.json
+
 # Elm
 elm-stuff/
 elm-client.js

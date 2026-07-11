@@ -1,13 +1,85 @@
 module View exposing (..)
 
-import Audio exposing (viewAudio)
+-- This module's `Html Msg`-producing functions are intentionally excluded from
+-- the elm-coverage unit-test target (see ci/check-elm-coverage.js's
+-- EXCLUDED_MODULES) -- they take the full Model rather than narrow view-model
+-- data, so unit-testing them meaningfully would mean either full-Model
+-- snapshot fixtures per screen or a view-model refactor, neither warranted
+-- here. They're verified instead by tests/integration/gui.electron.js, which
+-- drives the real rendered app. Pure non-rendering helpers (formatTimer) are
+-- still unit-tested normally, in tests/AudioViewTest.elm.
+
+import Audio exposing (currentQuizSong)
 import Game.IQTest exposing (..)
 import Game.Quiz exposing (..)
 import Html exposing (Html, audio, button, div, img, input, p, text, video)
-import Html.Attributes exposing (autoplay, id, loop, placeholder, src, style, type_, value)
+import Html.Attributes exposing (autoplay, disabled, id, loop, placeholder, property, src, style, type_, value)
 import Html.Events exposing (on, onClick, onInput)
+import Html.Keyed
 import Json.Decode as Decode exposing (Decoder)
+import Json.Encode as Encode
 import Types exposing (..)
+
+
+viewAudio : Model -> Html Msg
+viewAudio model =
+    let
+        jeopardyAudio =
+            if model.jeopardyPlaying then
+                audio
+                    [ id "jeopardy-audio"
+                    , src "assets/jeopardy-theme.mp3"
+                    , autoplay True
+                    , loop True
+                    ]
+                    []
+
+            else
+                text ""
+
+        quizAudio =
+            case currentQuizSong model of
+                Just songSrc ->
+                    audio
+                        [ id "quiz-audio"
+                        , src ("assets/songs/" ++ songSrc)
+                        , autoplay True
+                        , on "loadedmetadata" (Decode.succeed SongMetadataLoaded)
+                        , on "ended" (Decode.succeed (TrackEnded songSrc))
+                        ]
+                        []
+
+                Nothing ->
+                    text ""
+
+        dingAudio =
+            Html.Keyed.node "div"
+                []
+                (List.range 0 (dingSlotCount - 1)
+                    |> List.filterMap
+                        (\s ->
+                            let
+                                lastTrigger =
+                                    lastTriggerForSlot s model.dingKey
+                            in
+                            if lastTrigger == 0 then
+                                Nothing
+
+                            else
+                                Just
+                                    ( "ding-slot-" ++ String.fromInt s ++ "-" ++ String.fromInt lastTrigger
+                                    , audio
+                                        [ id ("ding-audio-" ++ String.fromInt s)
+                                        , src "assets/ding.mp3"
+                                        , autoplay True
+                                        , property "volume" (Encode.float iqDingVolume)
+                                        ]
+                                        []
+                                    )
+                        )
+                )
+    in
+    div [] [ jeopardyAudio, quizAudio, dingAudio ]
 
 
 -- ── Layout Helpers ────────────────────────────────────────────────────────────
@@ -193,8 +265,8 @@ viewScreen model =
             let
                 bg =
                     case getQuestion model.questions idx of
-                        Just q ->
-                            if isVideo q.song then
+                        Just song ->
+                            if isVideo song then
                                 "#000000"
 
                             else
@@ -279,6 +351,7 @@ viewScreen model =
                         [ id "answer-input"
                         , type_ "text"
                         , value answer
+                        , disabled model.awaitingAnswerResult
                         , onInput AnswerChanged
                         , on "keydown"
                             (Decode.field "key" Decode.string
@@ -303,6 +376,7 @@ viewScreen model =
                         []
                     , button
                         [ onClick AnswerSubmitted
+                        , disabled model.awaitingAnswerResult
                         , style "padding" "16px 48px"
                         , style "font-size" "22px"
                         , style "cursor" "pointer"
@@ -316,18 +390,7 @@ viewScreen model =
                     ]
                 ]
 
-        WrongAnswerScreen idx ->
-            let
-                correctAnswer =
-                    case getQuestion model.questions idx of
-                        Just q ->
-                            List.head q.answers
-                                |> Maybe.map capitalize
-                                |> Maybe.withDefault "Unknown"
-
-                        Nothing ->
-                            "Unknown"
-            in
+        WrongAnswerScreen _ revealAnswer ->
             screen
                 [ p
                     [ style "font-size" "26px"
@@ -337,7 +400,7 @@ viewScreen model =
                     , style "max-width" "560px"
                     , style "line-height" "1.5"
                     ]
-                    [ text ("The song was \"" ++ correctAnswer ++ "\".") ]
+                    [ text ("The song was \"" ++ revealAnswer ++ "\".") ]
                 , button
                     [ onClick ContinuePressed
                     , style "padding" "16px 48px"

@@ -85,23 +85,40 @@ cp localhost+2-key.pem certs/key.pem
 > accepts the cert regardless. mkcert here is just a fast way to generate a valid
 > cert/key pair; a plain `openssl` self‑signed pair works too.
 
+### 1c. App config
+
+Copy the example and edit it. `config/app-config.json` is git‑ignored — it holds
+the real trivia answers and win‑screen text, both spoilers for the birthday recipient
+(see §4/§5), plus the app's display name. It is read only by the **server** and by
+build‑time scripts; nothing under `config/` is ever bundled into a client build (see
+§2) — the client instead discovers songs by listing `assets/songs/` directly, in
+numeric filename order (see §4/§6).
+
+```bash
+cp config/app-config.example.json config/app-config.json
+```
+
 ---
 
 ## 2. Project layout you'll edit
 
 ```
 config/
-  quiz-questions.json   ← trivia questions & answers   (§4)
-  win-screen.json       ← reward / win‑screen text      (§5)
+  app-config.json           ← app name, trivia questions & answers, win‑screen text — git‑ignored, server‑only (§1c, §4, §5)
+  app-config.example.json   ← template for the above, tracked in git
 assets/
-  songs/                ← all quiz songs (§6)
+  songs/                ← all quiz songs, numbered 0.ext, 1.ext, ... (§4, §6)
   jeopardy-theme.mp3  airpods.png  ding.mp3  loud.mp4  icon.icns  icon.ico   ← other media (stay at root)
 .env                    ← ports, prod host, cert paths   (§1a)
 ```
 
-`config/*.json` and everything under `assets/` are loaded at client **startup** and
-bundled into distributed builds. Editing them changes the game **without touching Elm
-source** — but already‑distributed builds must be rebuilt/redeployed to pick up changes.
+Nothing under `config/` is ever bundled into a client build or read by the client —
+it's all server‑side (`config/app-config.json`'s `quizQuestions` answers and
+`winScreen` reward text). Everything under `assets/` (§6) is loaded at client
+**startup** and bundled into distributed builds; editing it changes the game
+**without touching Elm source** — but already‑distributed builds must be
+rebuilt/redeployed to pick up changes. `config/app-config.example.json` is a
+dev‑only template (§1c), neither loaded at runtime nor bundled into builds.
 
 ---
 
@@ -126,21 +143,30 @@ Production equivalent (port 443, `DEV=false`): `npm run start:server`.
 
 ## 4. Add / edit trivia questions & answers
 
-Edit **`config/quiz-questions.json`**. It is a JSON array; questions are asked in order.
+`config/app-config.json` is git‑ignored (see §1c). If you don't have it yet:
+
+```bash
+cp config/app-config.example.json config/app-config.json
+```
+
+Then edit **`config/app-config.json`**'s `quizQuestions` field. It is a JSON array of
+`{ "answers": [...] }` objects — no `song` field. Questions are asked in order, and a
+question's position in this array **is** its song's index: the 1st entry (index 0) is
+answered by whichever file in `assets/songs/` starts with `0.` (see §6), the 2nd entry
+(index 1) by `1.`, and so on. The client never reads this file at all — it discovers
+songs purely by listing `assets/songs/` and sorting by that leading number
+(`songOrder` in `src/Game/Quiz.elm`), so keeping the array order and the filename
+numbers in sync is what ties a question to its song.
 
 ```jsonc
 [
-  { "song": "baby-shark.mp3", "answers": ["Baby Shark Hip Hop", "Baby Shark (Hip Hip Version)"] },
-  { "song": "revenge.mp4",    "answers": ["Revenge", "Revenge a Minecraft Parody"] }
+  { "answers": ["Baby Shark Hip Hop", "Baby Shark (Hip Hop Version)"] },
+  { "answers": ["Manchild"] }
 ]
 ```
 
-Each entry:
-
-- **`song`** — a filename that must exist in **`assets/songs/`** (see §6). A `.mp4`
-  value is played as a fullscreen video; anything else plays as audio.
-- **`answers`** — a list of accepted answers. A player's guess is correct if it matches
-  **any** entry in the list.
+`answers` — a list of accepted answers for that position. A player's guess is correct
+if it matches **any** entry in the list.
 
 **Answer matching is fuzzy.** Guesses are normalized before comparison
 (`normalize` in `src/Game/Quiz.elm`): lower‑cased, hyphens → spaces, punctuation
@@ -149,36 +175,49 @@ Write answers in their natural form; you don't need to add punctuation variants.
 
 ### Adding a new question
 
-1. Put the media file in `assets/songs/` (e.g. `assets/songs/my-song.mp3`).
-2. Append an entry:
+1. Put the media file in `assets/songs/`, named with the next number in sequence and
+   a generic (spoiler‑free) extension — e.g. if `assets/songs/` currently goes up to
+   `9.mp3`, add `assets/songs/10.mp3` (or `.mp4` for a video).
+2. Append the matching entry to the **end** of `config/app-config.json`'s
+   `quizQuestions` array, so its array position lines up with the new filename's
+   number:
 
 ```jsonc
-  { "song": "my-song.mp3", "answers": ["My Song", "My Song (Live)"] }
+  { "answers": ["My Song", "My Song (Live)"] }
 ```
 
 ---
 
 ## 5. Edit the winning‑screen text
 
-Edit **`config/win-screen.json`**:
+Edit **`config/app-config.json`**'s `winScreen` field:
 
 ```json
 {
-  "text": "Text \"creeper... awwww man\" to Max to claim your reward!"
+  "winScreen": "Text \"creeper... awwww man\" to Max to claim your reward!"
 }
 ```
 
-Whatever you put in `text` is shown on the win screen. If the file is missing or
-malformed, the app falls back to a built‑in default (`defaultWinText` in `src/Main.elm`),
-so it never breaks the game.
+Whatever you put in `winScreen` is read by `scripts/deploy.js` at deploy time (§7c)
+and sent to the server along with that build, which stores it per‑build in
+`app-builds/builds.json` and delivers it to that player at win time. If
+`config/app-config.json` is missing or `winScreen` is empty, the deploy fails
+outright rather than shipping a build with no win text.
 
 ---
 
 ## 6. Song assets
 
-All quiz `song` files live under **`assets/songs/`**. The following stay at the
-`assets/` root and are **not** quiz songs: `jeopardy-theme.mp3`, `airpods.png`,
-`ding.mp3`, `loud.mp4`, `icon.icns`, `icon.ico`.
+All quiz song files live under **`assets/songs/`**, named `0.<ext>`, `1.<ext>`,
+`2.<ext>`, ... — a generic, spoiler‑free number, not the song's real name (the whole
+point is that opening the packaged app or `assets/songs/` shouldn't reveal any
+answer). `.mp4` files play as a fullscreen video; anything else plays as audio. The
+following stay at the `assets/` root and are **not** quiz songs: `jeopardy-theme.mp3`,
+`airpods.png`, `ding.mp3`, `loud.mp4`, `icon.icns`, `icon.ico`.
+
+The client lists `assets/songs/` itself at startup (`client/bridge.js`'s `readDir`
+port) and orders the results by each filename's leading number — it never reads
+`config/app-config.json` or any other config file to know what to play (see §4).
 
 `assets/` is git‑ignored (large binaries are distributed separately), but the whole
 folder — including `assets/songs/` — is bundled into builds via `assets/**/*` in
@@ -194,7 +233,7 @@ it so a player can download and connect. It requires an admin account.
 ### 7a. One‑time: create an admin
 
 ```bash
-npm run add-admin      # prompts for a username + password → .auth/users.jsonl (level 2)
+npm run add-admin      # prompts for a username + password → .auth/users.json (level 2)
 ```
 
 The first deploy prompts for these credentials, then stores an Ed25519 keypair under
@@ -218,7 +257,7 @@ npm run deploy:mac     # or: deploy:win / deploy:linux
 This will: generate a fresh per‑build UUID into `app-uuid.json`, authenticate to the
 server, run `electron-builder`, and upload the artifact (a single HTTPS `POST /upload`
 with a one‑time token). The server saves the binary under `app-builds/` and records it in
-`app-builds/builds.jsonl`, keyed by that UUID.
+`app-builds/builds.json`, keyed by that UUID.
 
 ### Manage deployed builds
 
@@ -235,7 +274,7 @@ npm run deploy:replacement:mac -- <old-uuid>
 ## 8. Access the app from a client
 
 A client is identified to the server by the **UUID** baked into its build
-(`app-uuid.json`); that UUID must have a matching row in `app-builds/builds.jsonl` or the
+(`app-uuid.json`); that UUID must have a matching row in `app-builds/builds.json` or the
 connection is refused.
 
 ### 8a. Same computer (development)
@@ -274,7 +313,7 @@ have to be right:
    https://<PROD_SERVER_HOST>/<uuid>
    ```
 
-   (The server streams the file for any UUID present in `builds.jsonl`; unknown UUIDs get
+   (The server streams the file for any UUID present in `builds.json`; unknown UUIDs get
    a 404.) They install and launch — the bundled `.env` sends them to your server and the
    bundled `app-uuid.json` identifies them.
 

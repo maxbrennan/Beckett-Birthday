@@ -31,6 +31,14 @@ iqOfferMinDings =
     5
 
 
+-- Hard cap on totalDings after fake-flash catches double it. Bounds both the
+-- server's authoritative count and the client's display copy so they agree, and
+-- stops a client spamming catches from blowing the count up unboundedly.
+maxTotalDings : Int
+maxTotalDings =
+    iqQuestionCount * 8
+
+
 -- Lower bound (as a fraction of iqQuestionCount) for the fake-flash trap position.
 -- Debug: 0.65  |  Production: 0.85
 fakeFlashRangeLo : Float
@@ -107,33 +115,16 @@ counterTickMs =
     80
 
 
--- Total time allowed to complete the quiz.
--- Debug: 10 minutes  |  Production: 7 days
-timeLimitMs : Float
-timeLimitMs =
-    if debug then
-        600000
-
-    else
-        7 * 24 * 60 * 60 * 1000
-
-
 -- ── Types ─────────────────────────────────────────────────────────────────────
 
 
-type alias DingSchedule =
-    { delay : Float, nextRandom : Bool }
-
-
-type alias IQTestInit =
-    { delay : Float, nextRandom : Bool, fakeFlashPoint : Int }
-
-
+-- The IQ test is now driven by the server (all timing, the ding/question count,
+-- and the real/fake decision). These client screen states hold only what the UI
+-- renders plus what the client needs to react to a raw key press; `totalDings`
+-- here is a display copy synced from the server, not the source of truth.
 type alias IQTestScreenState =
     { questionIdx : Int
     , totalDings : Int
-    , fakeFlashUsed : Bool
-    , in50PercentPhase : Bool
     }
 
 
@@ -141,10 +132,7 @@ type alias IQTestScreenState =
 type alias IQTestCountdownState =
     { questionIdx : Int
     , totalDings : Int
-    , fakeFlashUsed : Bool
-    , in50PercentPhase : Bool
     , countdown : Int
-    , initData : IQTestInit
     }
 
 
@@ -155,11 +143,8 @@ type alias IQTestState =
     , isFlashing : Bool
     , dingActive : Bool
     , fakeFlashActive : Bool
+    , fakeIsTrap : Bool -- when fakeFlashActive: pressing catches (cutscene) vs fails
     , loudPlaying : Bool
-    , fakeFlashUsed : Bool
-    , fakeFlashPoint : Int
-    , nextRandom : Bool
-    , in50PercentPhase : Bool
     }
 
 
@@ -207,15 +192,11 @@ type alias IQSkipAnimState =
 -- ── Generators ────────────────────────────────────────────────────────────────
 
 
-dingScheduleGen : Random.Generator DingSchedule
-dingScheduleGen =
-    Random.map2 (\d r -> { delay = d, nextRandom = r })
-        (Random.float minDingDelay maxDingDelay)
-        (Random.map (\n -> n < 0.5) (Random.float 0 1))
-
-
-iqTestInitGen : Int -> Random.Generator IQTestInit
-iqTestInitGen total =
+-- The trap position (which real-ding index secretly becomes a fake flash),
+-- picked in [fakeFlashRangeLo, fakeFlashRangeHi] × total. Shared by the server,
+-- which now owns the trap decision, so both sides agree on the range.
+fakeFlashPointGen : Int -> Random.Generator Int
+fakeFlashPointGen total =
     let
         lo =
             Basics.max 0 (floor (fakeFlashRangeLo * toFloat total))
@@ -223,10 +204,20 @@ iqTestInitGen total =
         hi =
             Basics.max lo (Basics.min (total - 1) (floor (fakeFlashRangeHi * toFloat total)))
     in
-    Random.map3 (\d r fp -> { delay = d, nextRandom = r, fakeFlashPoint = fp })
-        (Random.float minDingDelay maxDingDelay)
-        (Random.map (\n -> n < 0.5) (Random.float 0 1))
-        (Random.int lo hi)
+    Random.int lo hi
+
+
+-- Delay (ms) before the next ding. The server draws this to enforce the wait,
+-- so the client can no longer fast-forward the gap between dings.
+dingDelayGen : Random.Generator Float
+dingDelayGen =
+    Random.float minDingDelay maxDingDelay
+
+
+-- A fair coin; drives the 50%-phase fake/real choice.
+coinFlipGen : Random.Generator Bool
+coinFlipGen =
+    Random.map (\n -> n < 0.5) (Random.float 0 1)
 
 
 -- ── Pure Helpers ──────────────────────────────────────────────────────────────
@@ -263,3 +254,82 @@ lastTriggerForSlot slotIndex dingKey =
 
     else
         dingKey - modBy dingSlotCount (dingKey - 1 - slotIndex)
+
+
+-- The client's optimistic guess at how a cleared ding advances the count, sent
+-- alongside the report so the UI updates immediately rather than waiting on the
+-- server's authoritative ServerIqDing/ServerIqTestComplete. Mirrors the server's
+-- own `advanceOnClear` rule (see Server.elm) so the guess is actually right, not
+-- just eventually corrected.
+type SpaceBarOutcome
+    = CaughtTrap FakeFlashCaughtState
+    | SpaceBarFailed
+    | OptimisticClear IQTestState
+
+
+decideSpaceBar : IQTestState -> SpaceBarOutcome
+decideSpaceBar state =
+    if state.fakeFlashActive then
+        if state.fakeIsTrap then
+            CaughtTrap
+                { questionIdx = state.questionIdx
+                , originalTotal = state.totalDings
+                , displayNumerator = state.dingCount
+                , displayDenominator = state.totalDings
+                , phase = FfDelay
+                }
+
+        else
+            SpaceBarFailed
+
+    else if state.dingActive then
+        if state.totalDings > iqQuestionCount then
+            OptimisticClear { state | dingActive = False, totalDings = state.totalDings - 1 }
+
+        else
+            OptimisticClear { state | dingActive = False, dingCount = state.dingCount + 1 }
+
+    else
+        SpaceBarFailed
+
+
+-- Table for the fake-flash-caught cutscene's simple linear phase progression
+-- (each phase just waits `delay` ms then advances to the next). The two phases
+-- that instead kick off the ticking counter (FfCounterIn, FfTickDelay) and the
+-- terminal FfCounterOut don't fit this shape and are handled separately by the
+-- caller.
+nextFfPhase : FakeFlashPhase -> Maybe ( FakeFlashPhase, Float )
+nextFfPhase phase =
+    case phase of
+        FfDelay ->
+            Just ( FfText1In, 1000 )
+
+        FfText1In ->
+            Just ( FfText1Hold, 2500 )
+
+        FfText1Hold ->
+            Just ( FfText1Out, 1000 )
+
+        FfText1Out ->
+            Just ( FfText2In, 800 )
+
+        FfText2In ->
+            Just ( FfText2Hold, 2500 )
+
+        FfText2Hold ->
+            Just ( FfText2Out, 1000 )
+
+        FfText2Out ->
+            Just ( FfCounterIn, 700 )
+
+        _ ->
+            Nothing
+
+
+-- The fake-flash-caught cutscene's exit: back to the IQ Begin screen with the
+-- doubled display count, capped to agree with the server's own doubling.
+exitFakeFlash : FakeFlashCaughtState -> IQTestScreenState
+exitFakeFlash state =
+    { questionIdx = state.questionIdx
+    , totalDings = Basics.min (state.originalTotal * 2) maxTotalDings
+    }

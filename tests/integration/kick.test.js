@@ -1,7 +1,6 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const registryHelper = require('../helpers/registry');
 const { startTestServer } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
@@ -15,9 +14,7 @@ let server;
 let admin;
 
 function readRegistry() {
-    const file = path.join(server.tempDir, 'app-builds', 'builds.jsonl');
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    return registryHelper.readRegistry(server.tempDir);
 }
 
 // The registry writeFile port and the WebSocket reply are independent Cmds in the same
@@ -74,7 +71,7 @@ describe('kick behavior', () => {
 
         const newState = { jeopardyPlaying: false, screen: 'BeginScreen' };
         const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(newState));
-        expect(saveResult.payload).toBe('ack');
+        expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 
         // after the save completes, reconnecting delivers the edited state.
@@ -95,7 +92,7 @@ describe('kick behavior', () => {
         const midGameState = { screen: { tag: 'QuizScreen' }, pending: [], now: 1234, jeopardyPlaying: false, savedState: null };
         const { conn: adminConn } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
         const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(midGameState));
-        expect(saveResult.payload).toBe('ack');
+        expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 
         // The edited screen isn't BeginScreen, so the reconnect snapshots it: reset to
@@ -125,7 +122,7 @@ describe('kick behavior', () => {
         };
         const { conn: adminConn } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
         const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(beginState));
-        expect(saveResult.payload).toBe('ack');
+        expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 
         // Already on BeginScreen, so the reconnect delivers it untouched — no re-snapshot,
@@ -170,7 +167,7 @@ describe('kick behavior', () => {
         // Advance the player past BeginScreen and persist that mid-game state.
         const midGameState = { screen: { tag: 'IQTestActiveScreen' }, pending: [], now: 1234, jeopardyPlaying: false, savedState: null };
         playerConn.send({ stateUpdate: { json: JSON.stringify(midGameState) } });
-        await playerConn.waitFor((m) => m.payload === 'ack');
+        await playerConn.waitFor((m) => m.payload === 'stateUpdateAck');
 
         // On disk the state is left exactly as the player saved it: still IQTest, no
         // savedState. Nothing snapshots it — not on the update, and (below) not on the way down.

@@ -1,10 +1,10 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const registryHelper = require('../helpers/registry');
 const { startTestServer } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
+const { connectAsPlayer } = require('../helpers/playerClient');
 const { waitUntil } = require('../helpers/waitUntil');
 
 const TEST_PORT = 19449;
@@ -16,9 +16,7 @@ let admin;
 let build;
 
 function readRegistry() {
-    const file = path.join(server.tempDir, 'app-builds', 'builds.jsonl');
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    return registryHelper.readRegistry(server.tempDir);
 }
 
 // One deployed build (registry entry starts with state: null) is shared across this
@@ -59,7 +57,7 @@ describe('edit state', () => {
 
         const newState = { jeopardyPlaying: false, screen: 'BeginScreen' };
         const resultMsg = await distClient.saveStateEdit(conn, build.uuid, JSON.stringify(newState));
-        expect(resultMsg.payload).toBe('ack');
+        expect(resultMsg.payload).toBe('distStateEditSaveAck');
         await conn.close();
 
         // the ack and the registry write are dispatched in the same Elm Cmd.batch, so
@@ -81,7 +79,7 @@ describe('edit state', () => {
         {
             const { conn } = await distClient.requestStateEdit(TEST_PORT, admin, invalidJsonBuild.uuid);
             const saveResult = await distClient.saveStateEdit(conn, invalidJsonBuild.uuid, JSON.stringify(goodState));
-            expect(saveResult.payload).toBe('ack');
+            expect(saveResult.payload).toBe('distStateEditSaveAck');
             await conn.close();
         }
 
@@ -100,4 +98,37 @@ describe('edit state', () => {
         const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === invalidJsonBuild.uuid));
         expect(entry.state).toEqual(goodState); // unchanged — no write happened
     });
+
+    // Issue #74: an edit onto a quiz-slide screen must also move the server's own
+    // quizProgress (Server.elm's reconcileQuizProgressAfterEdit), or acceptQuizAdvance
+    // keeps expecting the pre-edit question and silently rejects every answer the
+    // edited-onto screen produces, stranding the player.
+    test('an edit onto a quiz-slide screen reconciles quizProgress so the player can answer that question', async () => {
+        const quizEditBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'Ryan Birthday-3.0.2-universal.dmg',
+        });
+
+        const editedState = { screen: { tag: 'QuestionScreen', idx: 1, s: '' } };
+        {
+            const { conn } = await distClient.requestStateEdit(TEST_PORT, admin, quizEditBuild.uuid);
+            const saveResult = await distClient.saveStateEdit(conn, quizEditBuild.uuid, JSON.stringify(editedState));
+            expect(saveResult.payload).toBe('distStateEditSaveAck');
+            await conn.close();
+        }
+
+        // The edited idx is now the authoritative progress: question 1's answer (see
+        // testServer.js's TEST_QUIZ_QUESTIONS) must be accepted, not silently dropped.
+        const { conn } = await connectAsPlayer(TEST_PORT, quizEditBuild.uuid);
+        conn.send({ quizAnswerSubmitted: { idx: 1, answer: 'answer one' } });
+        const result = await conn.waitFor((m) => m.payload === 'quizAnswerResult');
+        expect(result.quizAnswerResult.correct).toBe(true);
+        await conn.close();
+
+        const entry = await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === quizEditBuild.uuid);
+            return e && e.quizProgress === 2 ? e : undefined;
+        });
+        expect(entry.quizProgress).toBe(2);
+    }, 10000);
 });

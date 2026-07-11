@@ -11,6 +11,21 @@ const auth = require('../../server/auth.js');
 const SERVER_SCRIPT = path.join(PROJECT_ROOT, 'server', 'index.js');
 const ELM_SERVER_JS = path.join(PROJECT_ROOT, 'elm-server.js');
 
+// quizQuestions is per-build now (see #77): the server no longer reads config/
+// app-config.json at startup at all, it resolves each connecting player's own
+// questions from their RegistryEntry.quizQuestions (sent at deploy time on
+// distComplete/distReplaceComplete -- see Server.elm's questionsForUuid). Tests
+// deploy builds with this fixture via distClient.js's deployBuild/replaceBuild
+// (which default to it) rather than a shared startup config file. Kept tiny so
+// tests don't need to drive many quizAdvanced events to reach a win. No `song`
+// field (see #70's review) -- a question's array position alone ties it to a
+// numbered file in assets/songs/.
+const TEST_QUIZ_QUESTION_COUNT = 2;
+const TEST_QUIZ_QUESTIONS = [
+    { answers: ['answer zero'] },
+    { answers: ['answer one'] },
+];
+
 // Mirrors the row shape scripts/add-admin.js writes, reusing the same hashPassword the
 // server verifies against (server/auth.js's findUser/verifyPassword), rather than a
 // second reimplementation of the password hashing scheme.
@@ -18,7 +33,7 @@ function seedUser(authDir, { username, password, level }) {
     const saltHex = crypto.randomBytes(16).toString('hex');
     const hash = auth._internals.hashPassword(password, saltHex);
     const row = { username, salt: saltHex, hash, level };
-    fs.appendFileSync(path.join(authDir, 'users.jsonl'), JSON.stringify(row) + '\n');
+    auth._internals.appendJsonRow(path.join(authDir, 'users.json'), 'users', row);
 }
 
 // Spawns a real `server/index.js` in production mode (DEV unset/false) against an
@@ -98,4 +113,4 @@ async function startTestServer({ port, seedUsers = [], existingTempDir } = {}) {
     return { tempDir, stop };
 }
 
-module.exports = { startTestServer, PROJECT_ROOT, ELM_SERVER_JS };
+module.exports = { startTestServer, PROJECT_ROOT, ELM_SERVER_JS, TEST_QUIZ_QUESTION_COUNT, TEST_QUIZ_QUESTIONS };

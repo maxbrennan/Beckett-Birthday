@@ -10,8 +10,8 @@ const CHALLENGE_LEVEL = 2; // AUTH_LEVEL_ADMIN
 const AUTH_LEVEL_NONE = 0;
 
 const SERVER_DIR = path.join(process.cwd(), '.auth');
-const USERS_FILE = path.join(SERVER_DIR, 'users.jsonl');
-const UUIDS_FILE = path.join(SERVER_DIR, 'uuids.jsonl');
+const USERS_FILE = path.join(SERVER_DIR, 'users.json');
+const UUIDS_FILE = path.join(SERVER_DIR, 'uuids.json');
 
 const CLIENT_DIR = path.join(os.homedir(), '.birthday-auth');
 
@@ -149,31 +149,38 @@ function ensureDir(dir) {
     fs.mkdirSync(dir, { recursive: true });
 }
 
+// Reads a JSON file shaped like `{ [key]: [...] }`, returning [] if the file
+// is missing or malformed.
+function readJsonRows(filePath, key) {
+    if (!fs.existsSync(filePath)) return [];
+    try {
+        const doc = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return doc[key] || [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function appendJsonRow(filePath, key, row) {
+    ensureDir(path.dirname(filePath));
+    const rows = readJsonRows(filePath, key);
+    rows.push(row);
+    fs.writeFileSync(filePath, JSON.stringify({ [key]: rows }, null, 2) + '\n');
+}
+
 // Server-side
 
 function findUser(username) {
-    if (!fs.existsSync(USERS_FILE)) return null;
-    const lines = fs.readFileSync(USERS_FILE, 'utf8').split('\n').filter(Boolean);
-    for (const line of lines) {
-        const row = JSON.parse(line);
-        if (row.username === username) return row;
-    }
-    return null;
+    return readJsonRows(USERS_FILE, 'users').find((row) => row.username === username) || null;
 }
 
 function appendUuid(row) {
-    ensureDir(SERVER_DIR);
-    fs.appendFileSync(UUIDS_FILE, JSON.stringify(row) + '\n');
+    appendJsonRow(UUIDS_FILE, 'uuids', row);
 }
 
 function findUuidRow(uuid) {
-    if (!uuid || !fs.existsSync(UUIDS_FILE)) return null;
-    const lines = fs.readFileSync(UUIDS_FILE, 'utf8').split('\n').filter(Boolean);
-    for (const line of lines) {
-        const row = JSON.parse(line);
-        if (row.uuid === uuid) return row;
-    }
-    return null;
+    if (!uuid) return null;
+    return readJsonRows(UUIDS_FILE, 'uuids').find((row) => row.uuid === uuid) || null;
 }
 
 function hashPassword(password, saltHex) {
@@ -304,7 +311,10 @@ module.exports = {
         privateKeyPath,
         publicKeyPath,
         hasKeys,
+        readJsonRows,
+        appendJsonRow,
         USERS_FILE,
+        UUIDS_FILE,
         SERVER_DIR,
         CLIENT_DIR,
     },

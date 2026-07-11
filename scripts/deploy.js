@@ -51,7 +51,7 @@ if (require.main === module) {
     const port = process.env.PROD_SERVER_PORT || '443';
     const SERVER_URL = port === '443' ? `wss://${host}` : `wss://${host}:${port}`;
     const UUID_FILE = path.join(__dirname, '..', 'app-uuid.json');
-    const WIN_SCREEN_FILE = path.join(__dirname, '..', 'config', 'win-screen.json');
+    const APP_CONFIG_FILE = path.join(__dirname, '..', 'config', 'app-config.json');
     const DIST_DIR = path.join(__dirname, '..', 'dist');
     const EXTENSION = PLATFORM === 'mac' ? '.dmg' : PLATFORM === 'win' ? '.exe' : '.AppImage';
 
@@ -60,26 +60,58 @@ if (require.main === module) {
         process.exit(1);
     };
 
-    // The win text lives only on the server (stored per-build in builds.jsonl), so it is
+    // The win text lives only on the server (stored per-build in builds.json), so it is
     // read here at deploy time and sent with distComplete rather than bundled into the
-    // client. config/win-screen.json is excluded from the electron-builder files list.
+    // client. config/app-config.json is excluded from the electron-builder files list.
     function readWinText() {
         let raw;
         try {
-            raw = fs.readFileSync(WIN_SCREEN_FILE, 'utf8');
+            raw = fs.readFileSync(APP_CONFIG_FILE, 'utf8');
         } catch (err) {
-            fail(`could not read ${WIN_SCREEN_FILE}: ${err.message}`);
+            fail(`could not read ${APP_CONFIG_FILE}: ${err.message}`);
         }
         let text;
         try {
-            text = JSON.parse(raw).text;
+            text = JSON.parse(raw).winScreen;
         } catch (err) {
-            fail(`could not parse ${WIN_SCREEN_FILE}: ${err.message}`);
+            fail(`could not parse ${APP_CONFIG_FILE}: ${err.message}`);
         }
         if (typeof text !== 'string' || text === '') {
-            fail(`${WIN_SCREEN_FILE} must contain a non-empty "text" string`);
+            fail(`${APP_CONFIG_FILE} must contain a non-empty "winScreen" string`);
         }
         return text;
+    }
+
+    // The quiz questions/answers live only on the server (stored per-build in
+    // builds.json, see #77), so -- like winText -- they're read here at deploy time and
+    // sent with distComplete rather than bundled into the client.
+    function readQuizQuestions() {
+        let raw;
+        try {
+            raw = fs.readFileSync(APP_CONFIG_FILE, 'utf8');
+        } catch (err) {
+            fail(`could not read ${APP_CONFIG_FILE}: ${err.message}`);
+        }
+        let questions;
+        try {
+            questions = JSON.parse(raw).quizQuestions;
+        } catch (err) {
+            fail(`could not parse ${APP_CONFIG_FILE}: ${err.message}`);
+        }
+        const isValid =
+            Array.isArray(questions) &&
+            questions.length > 0 &&
+            questions.every(
+                (q) =>
+                    q &&
+                    Array.isArray(q.answers) &&
+                    q.answers.length > 0 &&
+                    q.answers.every((a) => typeof a === 'string' && a !== '')
+            );
+        if (!isValid) {
+            fail(`${APP_CONFIG_FILE} must contain a non-empty "quizQuestions" array of { answers: [non-empty strings] }`);
+        }
+        return questions;
     }
 
     function generateUuid() {
@@ -195,16 +227,18 @@ if (require.main === module) {
                 const isKeyFailure = !!(msg.authResult.key && !msg.authResult.key.success);
                 if (isKeyFailure) { pendingRetry = true; }
                 else if (!variant.success) { fail('authentication failed'); }
-            } else if (msg.payload === 'ack') {
-                uploadToken = msg.ack.uploadToken;
+            } else if (msg.payload === 'distRegisterAck') {
+                uploadToken = msg.distRegisterAck.uploadToken;
                 break;
             }
         }
         if (!uploadToken) fail('server did not issue an upload token');
 
-        // Read (and validate) the win text before the slow electron-builder run so a
-        // missing/malformed config fails fast rather than after a full build.
+        // Read (and validate) the win text and quiz questions before the slow
+        // electron-builder run so a missing/malformed config fails fast rather than
+        // after a full build.
         const winText = readWinText();
+        const quizQuestions = readQuizQuestions();
 
         console.log('[dist] auth complete; running electron-builder');
         await runElectronBuilder().catch((err) => fail(err.message));
@@ -217,12 +251,12 @@ if (require.main === module) {
         await uploadBuild({ host, port, token: uploadToken, filename: built.name, contents });
         console.log('[dist] upload complete');
 
-        send(ws, { distComplete: { uuid, filename: built.name, winText } });
+        send(ws, { distComplete: { uuid, filename: built.name, winText, quizQuestions } });
 
         while (true) {
             const msg = await nextMessage();
             if (msg.payload === '_closed') fail('connection closed before upload acknowledged');
-            if (msg.payload === 'ack') break;
+            if (msg.payload === 'distCompleteAck') break;
         }
 
         console.log('[dist] upload acknowledged, done');

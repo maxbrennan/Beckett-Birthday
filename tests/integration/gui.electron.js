@@ -128,6 +128,20 @@ async function main() {
         await waitUntil(async () => (await bodyText(window)).includes('Connecting to server...'), GUI_WAIT_OPTS);
         console.log('  ✓ client shows "Connecting to server..." after the server stops');
 
+        // Regression guard for #51: while the server stays down, the client should hold a
+        // stable "Connecting..." message rather than flash through the error screen (an
+        // unthrottled reconnect-retry loop previously caused rapid cycling between
+        // "Connecting...", "Loading...", and this error message before the server came back).
+        const flapCheckDeadline = Date.now() + 2000;
+        while (Date.now() < flapCheckDeadline) {
+            const text = await bodyText(window);
+            if (text.includes('Something is wrong with the internet connection')) {
+                throw new Error('client flashed the error screen while the server was cleanly stopped (issue #51 regression)');
+            }
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        console.log('  ✓ client holds a stable "Connecting..." message without flashing the error screen');
+
         server = await startTestServer({ port: TEST_PORT, existingTempDir: tempDir });
 
         await window.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });

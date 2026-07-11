@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -72,9 +70,11 @@ jobs:
         with:
           name: js-coverage-data
           path: coverage/js
-      # Interim floor, not the 95% target from issue #26 — see the follow-up issue
-      # tracking the refactor-for-testability work needed to close the gap.
-      - run: node ci/check-js-coverage.js 5
+      # Interim floor, not the 95% target from issue #26 — raised from 5% after #48's
+      # testability refactor of bridge.js/server/index.js/scripts, and from 15% after
+      # #74 added auth.js/codec.js unit coverage. The remaining gap is mostly
+      # server/index.js's live-server block and the interactive scripts.
+      - run: node ci/check-js-coverage.js 20
 
   elm-coverage:
     name: Elm Coverage
@@ -91,6 +91,11 @@ jobs:
         with:
           name: elm-coverage-data
           path: .coverage
-      # Interim floor, not the 95% target from issue #26 — see the follow-up issue
-      # tracking the refactor-for-testability work needed to close the gap.
-      - run: node ci/check-elm-coverage.js 9
+      # Meets the 95% target from issue #26 — raised from 50% after #57 also closed
+      # out Server.elm/Sync.elm/Game.IQTest's remaining gaps (measured ~98% with
+      # View.elm's Html-rendering functions excluded, see ci/check-elm-coverage.js).
+      # The residual ~2% is genuinely unreachable via elm-test: Task.perform/port
+      # callbacks only invoked by the real runtime, Platform.worker/Browser.element
+      # program wiring (init/subscriptions/main), and one provably-dead decode
+      # fallback branch — see the comments at each site in Main.elm/Server.elm.
+      - run: node ci/check-elm-coverage.js 95

@@ -1,0 +1,54 @@
+name: Version Bump
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    # Only run if PR was merged (not just closed)
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.merged == true
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BYPASS_APP_ID }}
+          private-key: ${{ secrets.BYPASS_APP_PRIVATE_KEY }}
+          
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+
+      - name: Bump version
+        run: |
+          BUMP="${{ github.event.inputs.bump || 'patch' }}"
+          npm version "$BUMP" --no-git-tag-version
+
+      - name: Commit and push
+        run: |
+          git config user.name "maxbrennan[bot]"
+          git config user.email "maxbrennan[bot]@users.noreply.github.com"
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          git add package.json package-lock.json
+          git commit -m "Bump version to $NEW_VERSION [skip ci]"
+          git push
