@@ -70,8 +70,28 @@ npm test                   # runs all tests (Elm + JS)
    git push origin <branch-name>
    git worktree remove .claude/worktrees/<branch-name>
    ```
-4. Follow the plan implementation workflow:
-   1. Create branch and worktree manually 
-   2. Implement changes and commit
-   3. Create draft PR with `gh pr create --draft`
-   4. Exit worktree with `ExitWorktree action: "keep"` then remove it
+4. ** never make changes to the locally checked out branch. ALWAYS make a new worktree when making changes, then commit to the PR (or make a new one), then delete the worktree**
+
+## Implementation and PR Process
+
+When implementing changes or creating a pull request:
+
+1. **Create a new worktree** for your changes:
+   ```bash
+   git worktree add .claude/worktrees/<branch-name> -b <branch-name> origin/main
+   ```
+2. **Make your changes** in the appropriate files within your existing worktree
+3. **Test your changes locally** by running `npm run test` to ensure no regressions
+4. **Commit your changes** with clear commit messages following conventional commits format
+5. **Push to your branch** using `git push origin <branch-name>`
+6. **Create a draft pull request** using:
+   ```bash
+   gh pr create --draft --title "<PR title>" --body "<PR description>"
+   ```
+   **Important:** When providing content for the PR body, use actual newlines (`\n`) rather than escaped newlines (`\\n`) to avoid parsing issues.
+
+7. **Submit your PR** and ensure all checks pass before merging
+8. **Delete the worktree** when finished:
+   ```bash
+   git worktree remove .claude/worktrees/<branch-name>
+   ```
