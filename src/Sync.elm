@@ -21,6 +21,7 @@ type ServerEnvelope
     | ServerIqStartLoud
     | ServerIqTestComplete
     | ServerQuizAnswerResult { idx : Int, correct : Bool, revealAnswer : String }
+    | ServerQuizSongEndedAck Int
     | ServerTimerSync Float
     | ServerTimedOut
     | ServerUnknown
@@ -84,6 +85,10 @@ decodeServerEnvelope =
                             -- correct may be absent; treat a missing flag as false.
                             (Decode.oneOf [ Decode.at [ "quizAnswerResult", "correct" ] Decode.bool, Decode.succeed False ])
                             (Decode.oneOf [ Decode.at [ "quizAnswerResult", "revealAnswer" ] Decode.string, Decode.succeed "" ])
+
+                    "quizSongEndedAck" ->
+                        Decode.at [ "quizSongEndedAck", "idx" ] Decode.int
+                            |> Decode.map ServerQuizSongEndedAck
 
                     "timerSync" ->
                         -- protobufjs omits a scalar field left at its zero value, but
@@ -168,6 +173,17 @@ quizAnswerSubmittedEnvelope { idx, answer } =
     Encode.object
         [ ( "payload", Encode.string "quizAnswerSubmitted" )
         , ( "quizAnswerSubmitted", Encode.object [ ( "idx", Encode.int idx ), ( "answer", Encode.string answer ) ] )
+        ]
+
+
+-- "The song/video for question idx just finished playing." The server tracks
+-- this and requires it before accepting a submitted answer for the same idx --
+-- see ServerQuizSongEndedAck above / Server.elm's ClientQuizSongEnded.
+quizSongEndedEnvelope : Int -> Encode.Value
+quizSongEndedEnvelope idx =
+    Encode.object
+        [ ( "payload", Encode.string "quizSongEnded" )
+        , ( "quizSongEnded", Encode.object [ ( "idx", Encode.int idx ) ] )
         ]
 
 
@@ -594,6 +610,8 @@ decodeModel =
             , wsUrl = ""
             , questions = []
             , awaitingAnswerResult = False
+            , songTimerElapsed = False
+            , songEndAcked = False
             }
         )
         (Decode.oneOf [ decodeScreen, Decode.succeed (BeginScreen (BlankScreen 0)) ])
