@@ -3,7 +3,8 @@ module MainTest exposing (..)
 import Expect
 import Game.IQTest exposing (FakeFlashPhase(..), IQTestState, iqQuestionCount)
 import Json.Encode as Encode
-import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, resumePlaySongTarget, subscriptions, tickFromPosix, update)
+import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
+import Sync
 import Test exposing (Test, describe, test)
 import Time
 import Types exposing (Model, Msg(..), PausedState, Screen(..))
@@ -44,6 +45,8 @@ baseModel =
     , wsUrl = "wss://example.test"
     , questions = [ "song0.mp3", "video1.mp4" ]
     , awaitingAnswerResult = False
+    , songTimerElapsed = False
+    , songEndAcked = False
     }
 
 
@@ -117,6 +120,7 @@ tickSuite =
                     model =
                         { baseModel
                             | screen = BlankScreen 0
+                            , songEndAcked = True
                             , pending = [ { fireAt = 900, msg = ShowQuestion 0 } ]
                         }
 
@@ -168,6 +172,48 @@ beginPressedSuite =
                     , \m -> m.pending |> List.map .fireAt |> Expect.equal [ 6500 ]
                     ]
                     result
+
+        -- Regression coverage: a saved QuestionScreen resumes directly onto the
+        -- answer input (no BlankScreen, no song replay, no fresh TrackEnded), so
+        -- without this the server's quizSongEnded confirmation for this idx --
+        -- cleared on every connect -- would never be re-established, and the
+        -- player could never submit an answer again. See resumeCmd.
+        , test "with saved state on a QuestionScreen, re-reports quizSongEnded so the answer gate stays satisfied" <|
+            \_ ->
+                let
+                    saved : PausedState
+                    saved =
+                        { screen = QuestionScreen 1 "half-typed"
+                        , pending = []
+                        , savedAt = 5000
+                        , songResumeTime = Nothing
+                        , videoResumeTime = Nothing
+                        }
+
+                    input =
+                        { baseModel | now = 6000, savedState = Just saved }
+
+                    ( result, cmd ) =
+                        update BeginPressed input
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal (QuestionScreen 1 "half-typed")
+                    , \_ -> cmd |> Expect.equal (Cmd.batch [ pauseMusic "jeopardy-audio", Cmd.none, sendWs input (Sync.quizSongEndedEnvelope 1) ])
+                    ]
+                    result
+        ]
+
+
+resumeCmdSuite : Test
+resumeCmdSuite =
+    describe "resumeCmd"
+        [ test "a saved QuestionScreen re-reports quizSongEnded for its idx" <|
+            \_ ->
+                resumeCmd baseModel (QuestionScreen 3 "")
+                    |> Expect.equal (sendWs baseModel (Sync.quizSongEndedEnvelope 3))
+        , test "a saved BlankScreen sends nothing (the song replays and re-triggers TrackEnded)" <|
+            \_ ->
+                resumeCmd baseModel (BlankScreen 0) |> Expect.equal Cmd.none
         ]
 
 
@@ -201,15 +247,19 @@ playSongSuite =
 trackEndedSuite : Test
 trackEndedSuite =
     describe "TrackEnded"
-        [ test "matching the current blank screen's song schedules ShowQuestion" <|
+        [ test "matching the current blank screen's song schedules ShowQuestion, resets the rendezvous flags, and reports to the server" <|
             \_ ->
                 let
-                    ( result, _ ) =
-                        update (TrackEnded "song0.mp3") { baseModel | screen = BlankScreen 0 }
+                    ( result, cmd ) =
+                        update (TrackEnded "song0.mp3")
+                            { baseModel | screen = BlankScreen 0, songTimerElapsed = True, songEndAcked = True }
                 in
                 Expect.all
                     [ \m -> m.screen |> Expect.equal (BlankScreen 0)
                     , \m -> m.pending |> List.map .msg |> Expect.equal [ ShowQuestion 0 ]
+                    , \m -> m.songTimerElapsed |> Expect.equal False
+                    , \m -> m.songEndAcked |> Expect.equal False
+                    , \_ -> cmd |> Expect.equal (sendWs baseModel (Sync.quizSongEndedEnvelope 0))
                     ]
                     result
         , test "a video's own track ending advances to its blank screen" <|
@@ -588,13 +638,24 @@ trackEndedMoreSuite =
 showQuestionSuite : Test
 showQuestionSuite =
     describe "ShowQuestion"
-        [ test "matching BlankScreen shows the question" <|
+        [ test "matching BlankScreen with the ack already in reveals the question immediately" <|
             \_ ->
                 let
                     ( result, _ ) =
-                        update (ShowQuestion 0) { baseModel | screen = BlankScreen 0 }
+                        update (ShowQuestion 0) { baseModel | screen = BlankScreen 0, songEndAcked = True }
                 in
                 result.screen |> Expect.equal (QuestionScreen 0 "")
+        , test "matching BlankScreen without the ack yet only records that the timer elapsed" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (ShowQuestion 0) { baseModel | screen = BlankScreen 0, songEndAcked = False }
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal (BlankScreen 0)
+                    , \m -> m.songTimerElapsed |> Expect.equal True
+                    ]
+                    result
         , test "a stale ShowQuestion for a different index is ignored" <|
             \_ ->
                 let
@@ -607,6 +668,61 @@ showQuestionSuite =
                 let
                     ( result, _ ) =
                         update (ShowQuestion 0) { baseModel | screen = BeginScreen }
+                in
+                result.screen |> Expect.equal BeginScreen
+        ]
+
+
+serverQuizSongEndedAckSuite : Test
+serverQuizSongEndedAckSuite =
+    let
+        ackEnvelope : Int -> String
+        ackEnvelope idx =
+            Encode.encode 0
+                (Encode.object
+                    [ ( "payload", Encode.string "quizSongEndedAck" )
+                    , ( "quizSongEndedAck", Encode.object [ ( "idx", Encode.int idx ) ] )
+                    ]
+                )
+    in
+    describe "ServerQuizSongEndedAck (via WsDataReceived)"
+        [ test "arriving after the local timer already elapsed reveals the question immediately" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (ackEnvelope 0))
+                            { baseModel | screen = BlankScreen 0, songTimerElapsed = True }
+                in
+                result.screen |> Expect.equal (QuestionScreen 0 "")
+        , test "arriving before the local timer elapses just records the ack" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (ackEnvelope 0))
+                            { baseModel | screen = BlankScreen 0, songTimerElapsed = False }
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal (BlankScreen 0)
+                    , \m -> m.songEndAcked |> Expect.equal True
+                    ]
+                    result
+        , test "a stale ack for a different index is ignored" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (ackEnvelope 1))
+                            { baseModel | screen = BlankScreen 0, songTimerElapsed = True }
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal (BlankScreen 0)
+                    , \m -> m.songEndAcked |> Expect.equal False
+                    ]
+                    result
+        , test "ignored off a blank screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (ackEnvelope 0)) { baseModel | screen = BeginScreen }
                 in
                 result.screen |> Expect.equal BeginScreen
         ]

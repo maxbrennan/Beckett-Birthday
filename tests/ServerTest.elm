@@ -39,6 +39,7 @@ import Server
         , reconcileIqTimerAfterEdit
         , reconcileQuizProgressAfterEdit
         , resumeIqTimer
+        , sendToClient
         , setIqTimer
         , update
         )
@@ -51,6 +52,7 @@ import Server.Protocol
         , iqDingEnvelope
         , distRegisterAckEnvelope
         , quizAnswerResultEnvelope
+        , quizSongEndedAckEnvelope
         , stateEnvelope
         , stateUpdateAckEnvelope
         , timedOutEnvelope
@@ -509,6 +511,7 @@ baseModel =
     , iqTimers = Dict.empty
     , seed = Random.initialSeed 0
     , quizProgress = Dict.empty
+    , quizSongEnded = Dict.empty
     }
 
 
@@ -1772,6 +1775,23 @@ stateRequestSuite =
                     , \_ -> Expect.equal (Just "QuestionScreen") savedTag
                     ]
                     ()
+
+        -- A stale quizSongEnded confirmation from before a disconnect must not let a
+        -- reconnecting player skip the song replay -- see the ClientQuizAnswerSubmitted
+        -- gate in quizAnswerRoutingSuite above.
+        , test "clears any stale quizSongEnded confirmation for the uuid on connect" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Nothing, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ]
+                            , quizSongEnded = Dict.singleton "uuid1" 0
+                        }
+
+                    ( m, _ ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+                in
+                Dict.get "uuid1" m.quizSongEnded |> Expect.equal Nothing
         ]
 
 
@@ -2788,6 +2808,92 @@ quizProgressRoutingSuite =
         ]
 
 
+-- ── quizSongEnded server-side tracking ───────────────────────────────────────
+-- "The song/video for question idx just finished playing" -- recorded in memory
+-- only (Model.quizSongEnded), and required by ClientQuizAnswerSubmitted (see
+-- quizAnswerRoutingSuite below) before it accepts an answer for the same idx.
+
+
+quizSongEndedMsg : String -> Int -> Msg
+quizSongEndedMsg clientId idx =
+    MessageReceived
+        { clientId = clientId
+        , payload = clientEnvelope "quizSongEnded" [ ( "idx", Encode.int idx ) ]
+        , now = 0
+        }
+
+
+quizSongEndedRoutingSuite : Test
+quizSongEndedRoutingSuite =
+    describe "quizSongEnded message routing in Server.update"
+        [ test "decodeClientEnvelope decodes quizSongEnded into ClientQuizSongEnded idx" <|
+            \_ ->
+                Decode.decodeValue decodeClientEnvelope (clientEnvelope "quizSongEnded" [ ( "idx", Encode.int 2 ) ])
+                    |> Expect.equal (Ok (ClientQuizSongEnded 2))
+        , test "quizSongEndedAckEnvelope carries idx" <|
+            \_ ->
+                quizSongEndedAckEnvelope 2
+                    |> Encode.encode 0
+                    |> Expect.equal """{"payload":"quizSongEndedAck","quizSongEndedAck":{"idx":2}}"""
+        , test "a report matching the player's current expected question is tracked and acked" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, cmd ) =
+                        update (quizSongEndedMsg "c1" 0) connected
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizSongEnded |> Expect.equal (Just 0)
+                    , \_ -> cmd |> Expect.equal (sendToClient { clientId = "c1", payload = quizSongEndedAckEnvelope 0 })
+                    ]
+                    ()
+        , test "a mismatched (out-of-order) idx is ignored, nothing tracked" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, cmd ) =
+                        update (quizSongEndedMsg "c1" 1) connected
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizSongEnded |> Expect.equal Nothing
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
+        , test "ignored while the player has a live IQ-timer entry" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , iqTimers = Dict.singleton "uuid1" iqState
+                        }
+
+                    ( m, cmd ) =
+                        update (quizSongEndedMsg "c1" 0) connected
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizSongEnded |> Expect.equal Nothing
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
+        , test "quizSongEnded with no clientId->uuid mapping is a no-op" <|
+            \_ ->
+                let
+                    ( m, cmd ) =
+                        update (quizSongEndedMsg "c1" 0) baseModel
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizSongEnded |> Expect.equal Nothing
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
+        ]
+
+
 -- ── Quiz-answer server-side validation ───────────────────────────────────────
 -- The server, not the client, holds the answers (see questionsForUuid, resolved
 -- per connecting player's own RegistryEntry.quizQuestions -- see #77) and decides
@@ -2832,7 +2938,10 @@ quizAnswerRoutingSuite =
             \_ ->
                 let
                     connected =
-                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizSongEnded = Dict.singleton "uuid1" 0
+                        }
 
                     ( m, _ ) =
                         update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected
@@ -2842,7 +2951,10 @@ quizAnswerRoutingSuite =
             \_ ->
                 let
                     connected =
-                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizSongEnded = Dict.singleton "uuid1" 0
+                        }
 
                     ( m, _ ) =
                         update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "  ALPHA!! " }) connected
@@ -2852,7 +2964,10 @@ quizAnswerRoutingSuite =
             \_ ->
                 let
                     connected =
-                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizSongEnded = Dict.singleton "uuid1" 0
+                        }
 
                     ( m, _ ) =
                         update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "nope" }) connected
@@ -2865,6 +2980,7 @@ quizAnswerRoutingSuite =
                         { baseModel
                             | connectedPlayers = Dict.singleton "uuid1" "c1"
                             , quizProgress = Dict.singleton "uuid1" 2
+                            , quizSongEnded = Dict.singleton "uuid1" 2
                         }
 
                     ( _, cmd ) =
@@ -2905,7 +3021,10 @@ quizAnswerRoutingSuite =
             \_ ->
                 let
                     connected =
-                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizSongEnded = Dict.singleton "uuid1" 0
+                        }
 
                     ( m, _ ) =
                         update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected
@@ -2938,6 +3057,41 @@ quizAnswerRoutingSuite =
                         { baseModel
                             | connectedPlayers = Dict.singleton "uuid1" "c1"
                             , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdle }
+                        }
+
+                    ( m, cmd ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
+
+        -- Issue: a crafted client could otherwise submit an answer before any
+        -- song ever played -- see Model.quizSongEnded / the ClientQuizSongEnded
+        -- handler above.
+        , test "a correct answer with no matching quizSongEnded confirmation on file is ignored" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+
+                    ( m, cmd ) =
+                        update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizProgress |> Expect.equal Nothing
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
+        , test "a correct answer with a stale quizSongEnded confirmation for a different idx is ignored" <|
+            \_ ->
+                let
+                    connected =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizSongEnded = Dict.singleton "uuid1" 1
                         }
 
                     ( m, cmd ) =
@@ -3231,7 +3385,10 @@ quizScreenOverrideRoutingSuite =
             \_ ->
                 let
                     connected =
-                        { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , quizSongEnded = Dict.singleton "uuid1" 0
+                        }
 
                     ( m, _ ) =
                         update (quizAnswerSubmittedMsg "c1" { idx = 0, answer = "alpha" }) connected

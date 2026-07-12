@@ -198,6 +198,8 @@ modelWithSavedStateRoundTripTests =
             , wsUrl = ""
             , questions = []
             , awaitingAnswerResult = False
+            , songTimerElapsed = False
+            , songEndAcked = False
             }
     in
     describe "encodeModel / decodeModel round-trip with a saved state"
@@ -254,6 +256,8 @@ modelRoundTripTests =
             , wsUrl = "wss://example.com"
             , questions = []
             , awaitingAnswerResult = True
+            , songTimerElapsed = False
+            , songEndAcked = False
             }
 
         decoded =
@@ -380,6 +384,8 @@ envelopeBuilderTests =
                         , wsUrl = ""
                         , questions = []
                         , awaitingAnswerResult = False
+                        , songTimerElapsed = False
+                        , songEndAcked = False
                         }
                 in
                 clientStateEnvelope model

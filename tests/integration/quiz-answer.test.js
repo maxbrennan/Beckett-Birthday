@@ -46,6 +46,8 @@ describe('server-side quiz answer validation', () => {
         await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
 
         const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        conn.send({ quizSongEnded: { idx: 0 } });
+        await conn.waitFor((m) => m.payload === 'quizSongEndedAck');
         conn.send({ quizAnswerSubmitted: { idx: 0, answer: '  Answer Zero!! ' } });
         const result = await conn.waitFor((m) => m.payload === 'quizAnswerResult');
         expect(result.quizAnswerResult.idx).toBe(0);
@@ -69,6 +71,8 @@ describe('server-side quiz answer validation', () => {
         await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
 
         const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        conn.send({ quizSongEnded: { idx: 0 } });
+        await conn.waitFor((m) => m.payload === 'quizSongEndedAck');
         conn.send({ quizAnswerSubmitted: { idx: 0, answer: 'not even close' } });
         const result = await conn.waitFor((m) => m.payload === 'quizAnswerResult');
         expect(result.quizAnswerResult.idx).toBe(0);
@@ -114,6 +118,8 @@ describe('server-side quiz answer validation', () => {
         expect(answers.length).toBe(TEST_QUIZ_QUESTION_COUNT);
 
         for (let idx = 0; idx < answers.length; idx += 1) {
+            conn.send({ quizSongEnded: { idx } });
+            await conn.waitFor((m) => m.payload === 'quizSongEndedAck');
             conn.send({ quizAnswerSubmitted: { idx, answer: answers[idx] } });
             const result = await conn.waitFor((m) => m.payload === 'quizAnswerResult');
             expect(result.quizAnswerResult.correct).toBe(true);

@@ -32,6 +32,16 @@ type alias Model =
     -- each uuid's own RegistryEntry.quizQuestions (see questionsForUuid), not
     -- here -- see #77.
     , quizProgress : Dict String Int
+
+    -- Per-uuid confirmation that the song/video for this idx has actually
+    -- finished playing (see ClientQuizSongEnded), required before
+    -- ClientQuizAnswerSubmitted accepts an answer for the same idx -- a
+    -- crafted client can no longer submit before any song plays. In memory
+    -- only, deliberately never persisted to RegistryEntry/builds.json: a
+    -- reconnect always re-derives BlankScreen and replays the song from
+    -- scratch anyway (see ClientStateRequest clearing this on connect), so
+    -- there is nothing worth surviving a restart for.
+    , quizSongEnded : Dict String Int
     }
 
 
@@ -1113,6 +1123,7 @@ init () =
       , iqTimers = Dict.empty
       , seed = Random.initialSeed 0
       , quizProgress = Dict.empty
+      , quizSongEnded = Dict.empty
       }
     , Cmd.batch
         [ readFile registryFilePath
@@ -1212,7 +1223,14 @@ update msg model =
                                             |> Result.withDefault ""
 
                                     connectedModel =
-                                        { model | connectedPlayers = Dict.insert uuid clientId model.connectedPlayers }
+                                        { model
+                                            | connectedPlayers = Dict.insert uuid clientId model.connectedPlayers
+                                            -- Force a fresh song-ended confirmation after every
+                                            -- reconnect, since the song replays from scratch
+                                            -- client-side -- a stale entry from before the
+                                            -- disconnect must not let a submit skip the replay.
+                                            , quizSongEnded = Dict.remove uuid model.quizSongEnded
+                                        }
 
                                     -- Establish the session deadline on this player's very
                                     -- first stateRequest ever; every later one just reuses
@@ -1682,6 +1700,34 @@ update msg model =
                         Nothing ->
                             ( model, Cmd.none )
 
+                Ok (ClientQuizSongEnded idx) ->
+                    -- "The song/video for question idx just finished playing." Accepted
+                    -- only if idx is exactly the player's current expected question --
+                    -- a stale/out-of-order report is silently ignored, same as a
+                    -- mismatched ClientQuizAdvanced/ClientQuizAnswerSubmitted idx.
+                    -- Recorded in memory only (see Model.quizSongEnded); required by
+                    -- ClientQuizAnswerSubmitted below before it accepts an answer.
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just uuid ->
+                            if quizBlockedByLiveIqTimer uuid model then
+                                ( model, Cmd.none )
+
+                            else
+                                let
+                                    current =
+                                        Dict.get uuid model.quizProgress |> Maybe.withDefault 0
+                                in
+                                if idx == current then
+                                    ( { model | quizSongEnded = Dict.insert uuid idx model.quizSongEnded }
+                                    , sendToClient { clientId = clientId, payload = quizSongEndedAckEnvelope idx }
+                                    )
+
+                                else
+                                    ( model, Cmd.none )
+
                 Ok (ClientQuizAdvanced idx) ->
                     -- "The player just passed question idx" -- accepted only if it's
                     -- exactly the next one expected (see acceptQuizAdvance), so a
@@ -1738,13 +1784,16 @@ update msg model =
                     -- (see #54/#32). idx must still be exactly the player's next
                     -- expected question (same acceptQuizAdvance gate as
                     -- ClientQuizAdvanced above), so a correct answer for a later idx
-                    -- can't be used to skip ahead.
+                    -- can't be used to skip ahead. It must also have a matching
+                    -- ClientQuizSongEnded confirmation on file for the same idx --
+                    -- otherwise a crafted client could submit before any song ever
+                    -- played (see Model.quizSongEnded).
                     case findUuidByClient clientId model.connectedPlayers of
                         Nothing ->
                             ( model, Cmd.none )
 
                         Just uuid ->
-                            if quizBlockedByLiveIqTimer uuid model then
+                            if quizBlockedByLiveIqTimer uuid model || Dict.get uuid model.quizSongEnded /= Just idx then
                                 ( model, Cmd.none )
 
                             else

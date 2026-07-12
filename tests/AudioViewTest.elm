@@ -22,6 +22,8 @@ baseModel =
     , wsUrl = ""
     , questions = [ "song0.mp3", "video1.mp4", "song2.mp3" ]
     , awaitingAnswerResult = False
+    , songTimerElapsed = False
+    , songEndAcked = False
     }
 
 

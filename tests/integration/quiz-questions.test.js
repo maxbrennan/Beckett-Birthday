@@ -66,6 +66,8 @@ describe('per-build quiz questions', () => {
         await waitUntil(() => readRegistry().find((e) => e.uuid === buildB.uuid));
 
         const { conn: connA } = await connectAsPlayer(TEST_PORT, buildA.uuid);
+        connA.send({ quizSongEnded: { idx: 0 } });
+        await connA.waitFor((m) => m.payload === 'quizSongEndedAck');
         // Build B's own correct answer is wrong for build A's question 0.
         connA.send({ quizAnswerSubmitted: { idx: 0, answer: 'beta answer' } });
         const resultA = await connA.waitFor((m) => m.payload === 'quizAnswerResult');
@@ -73,6 +75,8 @@ describe('per-build quiz questions', () => {
         await connA.close();
 
         const { conn: connB } = await connectAsPlayer(TEST_PORT, buildB.uuid);
+        connB.send({ quizSongEnded: { idx: 0 } });
+        await connB.waitFor((m) => m.payload === 'quizSongEndedAck');
         connB.send({ quizAnswerSubmitted: { idx: 0, answer: 'beta answer' } });
         const resultB = await connB.waitFor((m) => m.payload === 'quizAnswerResult');
         expect(resultB.quizAnswerResult.correct).toBe(true);
@@ -112,6 +116,8 @@ describe('per-build quiz questions', () => {
         });
 
         const { conn } = await connectAsPlayer(TEST_PORT, replacement.uuid);
+        conn.send({ quizSongEnded: { idx: 0 } });
+        await conn.waitFor((m) => m.payload === 'quizSongEndedAck');
         conn.send({ quizAnswerSubmitted: { idx: 0, answer: 'original answer' } });
         const rejected = await conn.waitFor((m) => m.payload === 'quizAnswerResult');
         expect(rejected.quizAnswerResult.correct).toBe(false);
