@@ -143,21 +143,24 @@ decodeRegistry contents =
 -- ── State Helpers ─────────────────────────────────────────────────────────────
 
 
-{-| Mark a player as parked on the neutral begin screen. Unlike the old
-BeginScreen/savedState scheme, the persisted `screen` itself is left untouched
--- it's already whatever the IQ/quiz/timeout override chain last derived (or
-the client's own report, for the families that stay self-reported), so
-there's nothing to stash: the derived screen already *is* the correct resume
-target. That also makes this trivially idempotent no matter how many times
-it's applied (e.g. a player who reconnects then immediately disconnects again
-before ever pressing Begin).
+{-| Mark a player as parked on the neutral begin screen by wrapping the
+persisted screen in `BeginScreen` -- the wrapped inner value is already
+whatever the IQ/quiz/timeout override chain last derived (or the client's own
+report, for the families that stay self-reported), so there's nothing to
+stash separately: the wrapped screen already *is* the correct resume target,
+and unwrapping it (see Main.elm's BeginPressed) is what removes any round-trip
+latency from pressing Begin. Idempotent: a screen already wrapped in
+BeginScreen is returned unchanged, so a player who reconnects then immediately
+disconnects again before ever pressing Begin doesn't get double-wrapped.
 -}
 snapshotForJeopardy : Encode.Value -> Encode.Value
-snapshotForJeopardy state =
-    Decode.decodeValue (Decode.dict Decode.value) state
-        |> Result.withDefault Dict.empty
-        |> Dict.insert "isBeginScreen" (Encode.bool True)
-        |> Encode.dict identity identity
+snapshotForJeopardy screen =
+    case Decode.decodeValue (Decode.field "tag" Decode.string) screen of
+        Ok "BeginScreen" ->
+            screen
+
+        _ ->
+            Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", screen ) ]
 
 
 findUuidByClient : String -> Dict.Dict String String -> Maybe String
@@ -239,25 +242,16 @@ isExpired now entry =
             False
 
 
--- Replace a single top-level key of a JSON object, leaving every other key
--- untouched. Used to overwrite just the `screen` field of a persisted state
--- blob while preserving pending/now/etc. exactly as last reported.
-overwriteField : String -> Encode.Value -> Encode.Value -> Encode.Value
-overwriteField key newValue original =
-    Decode.decodeValue (Decode.dict Decode.value) original
-        |> Result.withDefault Dict.empty
-        |> Dict.insert key newValue
-        |> Encode.dict identity identity
-
-
--- Overwrite just the `screen` of one entry's persisted state blob with a
--- server-derived value, preserving pending/now/etc. exactly as last reported.
+-- Overwrite one entry's persisted state with a server-derived screen value.
+-- The persisted state *is* the screen's own JSON directly (see Sync.elm's
+-- encodeModel), so this is a straight replacement -- no key-within-object
+-- indirection needed.
 overwriteEntryScreen : String -> Encode.Value -> List RegistryEntry -> List RegistryEntry
 overwriteEntryScreen uuid screen =
     List.map
         (\e ->
             if e.uuid == uuid then
-                { e | state = Just (overwriteField "screen" screen (Maybe.withDefault (Encode.object []) e.state)) }
+                { e | state = Just screen }
 
             else
                 e

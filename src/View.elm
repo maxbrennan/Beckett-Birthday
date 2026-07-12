@@ -25,17 +25,18 @@ viewAudio : Model -> Html Msg
 viewAudio model =
     let
         jeopardyAudio =
-            if model.isBeginScreen then
-                audio
-                    [ id "jeopardy-audio"
-                    , src "assets/jeopardy-theme.mp3"
-                    , autoplay True
-                    , loop True
-                    ]
-                    []
+            case model.screen of
+                BeginScreen _ ->
+                    audio
+                        [ id "jeopardy-audio"
+                        , src "assets/jeopardy-theme.mp3"
+                        , autoplay True
+                        , loop True
+                        ]
+                        []
 
-            else
-                text ""
+                _ ->
+                    text ""
 
         quizAudio =
             case currentQuizSong model of
@@ -198,11 +199,10 @@ view model =
 
 viewScreen : Model -> Html Msg
 viewScreen model =
-    -- Connection-status screens always win, regardless of isBeginScreen: a disconnect
-    -- can happen while sitting on the begin screen (isBeginScreen stays True across
-    -- WsDisconnected -- it's an orthogonal concern, not reset until real state arrives),
-    -- and "Connecting..."/the error screen must still be visible in that window rather
-    -- than getting masked by the begin-screen gate.
+    -- Connection-status screens always win, regardless of BeginScreen: a disconnect
+    -- can happen while sitting on the begin screen, and "Connecting..."/the error
+    -- screen must still be visible in that window rather than getting masked by
+    -- the begin-screen gate.
     case model.screen of
         WsConnectingScreen ->
             viewWsScreen "Connecting to server..." "#2c4a5a"
@@ -213,35 +213,34 @@ viewScreen model =
         WsLoadingScreen ->
             viewWsScreen "Loading..." "#2c4a5a"
 
-        _ ->
-            if model.isBeginScreen then
-                screen
-                    [ headphones
-                    , p
-                        [ style "font-size" "26px"
-                        , style "color" "#2c4a5a"
-                        , style "text-align" "center"
-                        , style "margin" "0"
-                        , style "max-width" "480px"
-                        , style "line-height" "1.5"
-                        ]
-                        [ text "Press Begin once you can hear the music." ]
-                    , button
-                        [ onClick BeginPressed
-                        , style "padding" "20px 64px"
-                        , style "font-size" "24px"
-                        , style "cursor" "pointer"
-                        , style "border-radius" "12px"
-                        , style "border" "none"
-                        , style "background-color" "#4a9eca"
-                        , style "color" "white"
-                        , style "font-weight" "bold"
-                        ]
-                        [ text "Begin" ]
+        BeginScreen _ ->
+            screen
+                [ headphones
+                , p
+                    [ style "font-size" "26px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    , style "max-width" "480px"
+                    , style "line-height" "1.5"
                     ]
+                    [ text "Press Begin once you can hear the music." ]
+                , button
+                    [ onClick BeginPressed
+                    , style "padding" "20px 64px"
+                    , style "font-size" "24px"
+                    , style "cursor" "pointer"
+                    , style "border-radius" "12px"
+                    , style "border" "none"
+                    , style "background-color" "#4a9eca"
+                    , style "color" "white"
+                    , style "font-weight" "bold"
+                    ]
+                    [ text "Begin" ]
+                ]
 
-            else
-                viewNonBeginScreen model
+        _ ->
+            viewNonBeginScreen model
 
 
 viewWsScreen : String -> String -> Html Msg
@@ -262,8 +261,8 @@ viewWsScreen message color =
 viewNonBeginScreen : Model -> Html Msg
 viewNonBeginScreen model =
     case model.screen of
-        -- Unreachable here: viewScreen already handles all three above the isBeginScreen
-        -- gate, before ever calling this function.
+        -- Unreachable here: viewScreen already handles all four above the
+        -- BeginScreen gate, before ever calling this function.
         WsConnectingScreen ->
             text ""
 
@@ -271,6 +270,9 @@ viewNonBeginScreen model =
             text ""
 
         WsLoadingScreen ->
+            text ""
+
+        BeginScreen _ ->
             text ""
 
         BlankScreen idx ->

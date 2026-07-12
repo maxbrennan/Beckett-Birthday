@@ -329,16 +329,18 @@ deriveTimedOutScreen now entry =
 
 
 {-| Project quiz completion onto the exact JSON shape `Sync.elm`'s `encodeScreen`
-produces for a bare `WinScreen` (its text is never persisted -- see
-`encodeScreen`'s `WinScreen` case -- so this is always the empty-text shape;
-the reveal is delivered separately via `winTextEnvelope`, see
-`ClientStateRequest`'s reconnect-time re-send). Reuses `quizJustCompleted`, the
-same fact the server already computes to gate the win reveal.
+produces for `WinScreen`, embedding the real, already-verified win text
+directly -- safe because this only ever derives once `quizJustCompleted` is
+independently confirmed server-side. This is what makes the value persisted
+here (and delivered on reconnect via `ClientStateRequest`) correct without any
+separate re-send message; the *live* win moment is a different, untouched code
+path that still uses the standalone `winTextEnvelope` (see Server.elm's
+`ClientQuizAdvanced`/`ClientQuizAnswerSubmitted` handlers).
 -}
-deriveWinScreen : { progress : Int, total : Int } -> Maybe Encode.Value
-deriveWinScreen { progress, total } =
+deriveWinScreen : String -> { progress : Int, total : Int } -> Maybe Encode.Value
+deriveWinScreen winText { progress, total } =
     if quizJustCompleted { next = progress, total = total } then
-        Just (Encode.object [ ( "tag", Encode.string "WinScreen" ) ])
+        Just (Encode.object [ ( "tag", Encode.string "WinScreen" ), ( "text", Encode.string winText ) ])
 
     else
         Nothing
@@ -348,14 +350,14 @@ deriveWinScreen { progress, total } =
 reached the end -- the one combined function that covers every derivable state
 of the quiz-progress family, from the first slide through the win screen.
 -}
-deriveQuizOrWinScreen : { progress : Int, total : Int } -> Maybe Encode.Value
-deriveQuizOrWinScreen args =
+deriveQuizOrWinScreen : String -> { progress : Int, total : Int } -> Maybe Encode.Value
+deriveQuizOrWinScreen winText args =
     case deriveQuizScreen args of
         Just screen ->
             Just screen
 
         Nothing ->
-            deriveWinScreen args
+            deriveWinScreen winText args
 
 
 {-| The screen tags whose persisted value is server-derived via
@@ -368,23 +370,23 @@ quizSlideTags =
     [ "BlankScreen", "VideoScreen", "QuestionScreen", "WrongAnswerScreen" ]
 
 
-{-| The reported `screen.tag`, unwrapped through any
-`CheckingAnswerScreen`/`ConfirmingAnswerScreen` `nextScreen` nesting (the
-serialized mirror of `Main.elm`'s `innerBlankIdx`). "" when there's no
-decodable tag, which no screen family matches.
+{-| The reported screen's tag, unwrapped through any
+`CheckingAnswerScreen`/`ConfirmingAnswerScreen`/`BeginScreen` `nextScreen`
+nesting (the serialized mirror of `Main.elm`'s `innerBlankIdx`). "" when
+there's no decodable tag, which no screen family matches. The persisted/
+self-reported state *is* the screen's own JSON directly (see Sync.elm's
+encodeModel), so this operates on `stateValue` with no indirection.
 -}
 innermostScreenTag : Encode.Value -> String
 innermostScreenTag stateValue =
-    Decode.decodeValue (Decode.field "screen" Decode.value) stateValue
-        |> Result.map unwrapScreenTag
-        |> Result.withDefault ""
+    unwrapScreenTag stateValue
 
 
 unwrapScreenTag : Encode.Value -> String
 unwrapScreenTag screenValue =
     case Decode.decodeValue (Decode.field "tag" Decode.string) screenValue of
         Ok tag ->
-            if tag == "CheckingAnswerScreen" || tag == "ConfirmingAnswerScreen" then
+            if tag == "CheckingAnswerScreen" || tag == "ConfirmingAnswerScreen" || tag == "BeginScreen" then
                 Decode.decodeValue (Decode.field "nextScreen" Decode.value) screenValue
                     |> Result.map unwrapScreenTag
                     |> Result.withDefault ""
@@ -408,8 +410,11 @@ persistQuizScreenInRegistry uuid { next, total } registry =
     let
         withProgress =
             updateEntryQuizProgress uuid next registry
+
+        winText =
+            registry |> List.filter (\e -> e.uuid == uuid) |> List.head |> Maybe.map .winText |> Maybe.withDefault ""
     in
-    case deriveQuizOrWinScreen { progress = next, total = total } of
+    case deriveQuizOrWinScreen winText { progress = next, total = total } of
         Nothing ->
             withProgress
 
@@ -438,9 +443,12 @@ applyQuizScreenOverride uuid inner model registry =
         reportedTag =
             innermostScreenTag inner
 
+        winText =
+            registry |> List.filter (\e -> e.uuid == uuid) |> List.head |> Maybe.map .winText |> Maybe.withDefault ""
+
         derived =
             if List.member reportedTag quizSlideTags || reportedTag == "WinScreen" then
-                deriveQuizOrWinScreen
+                deriveQuizOrWinScreen winText
                     { progress = Dict.get uuid model.quizProgress |> Maybe.withDefault 0
                     , total = List.length (questionsForUuid uuid registry)
                     }
@@ -485,17 +493,17 @@ reconcileQuizProgressAfterEdit uuid parsedState model =
 persisted for this player. Not a cheat vector (unlike dingCount/totalDings) --
 it only needs to be *some* reasonable value for display continuity, so it's
 safe to source from the client/registry rather than tracking it as a real
-anti-cheat field. Tries both shapes the registry can hold it in: the
-IQTestScreen family nests it under `screen.state.questionIdx`, while
+anti-cheat field. Tries both shapes the screen can hold it in: the
+IQTestScreen family nests it under `state.questionIdx`, while
 `WrongAnswerScreen`/`BlankScreen`/`QuestionScreen`/`VideoScreen` (see
-`Sync.elm`'s `encodeScreen`) carry it as a top-level `screen.idx`.
+`Sync.elm`'s `encodeScreen`) carry it as a top-level `idx`.
 -}
 extractQuestionIdx : Encode.Value -> Int
 extractQuestionIdx stateValue =
     Decode.decodeValue
         (Decode.oneOf
-            [ Decode.at [ "screen", "state", "questionIdx" ] Decode.int
-            , Decode.at [ "screen", "idx" ] Decode.int
+            [ Decode.at [ "state", "questionIdx" ] Decode.int
+            , Decode.field "idx" Decode.int
             ]
         )
         stateValue
@@ -763,11 +771,10 @@ decodeIqTimerStateFull =
 
 {-| Projects one player's authoritative IqTimerState onto their registry row:
 stores the full state (so `init`/`FileRead` can rehydrate `iqTimers` after a
-restart) and, where derivable, overwrites just the `screen` key -- `pending`/
-`now`/etc. stay exactly as the client last reported them. `Nothing` clears
-`iqTimer` and leaves `.state` untouched entirely -- the client's own report
-becomes authoritative again from that point on (e.g. once the test completes).
-Every other screen/player passes through unaffected;
+restart) and, where derivable, overwrites the persisted state with the derived
+screen. `Nothing` clears `iqTimer` and leaves `.state` untouched entirely --
+the client's own report becomes authoritative again from that point on (e.g.
+once the test completes). Every other screen/player passes through unaffected;
 `persistQuizScreenInRegistry` is the quiz-slide counterpart.
 -}
 persistIqTimerInRegistry : String -> Maybe IqTimerState -> List RegistryEntry -> List RegistryEntry
@@ -827,23 +834,23 @@ type EditedIqScreen
 decodeEditedIqScreen : Decode.Decoder EditedIqScreen
 decodeEditedIqScreen =
     Decode.oneOf
-        [ Decode.at [ "screen", "tag" ] Decode.string
+        [ Decode.field "tag" Decode.string
             |> Decode.andThen
                 (\tag ->
                     case tag of
                         "IQTestScreen" ->
                             Decode.map (\td -> EditedIqBegin { totalDings = td })
-                                (Decode.at [ "screen", "state", "totalDings" ] Decode.int)
+                                (Decode.at [ "state", "totalDings" ] Decode.int)
 
                         "IQTestCountdownScreen" ->
                             Decode.map2 (\cd td -> EditedIqCountdown { countdown = cd, totalDings = td })
-                                (Decode.at [ "screen", "state", "countdown" ] Decode.int)
-                                (Decode.at [ "screen", "state", "totalDings" ] Decode.int)
+                                (Decode.at [ "state", "countdown" ] Decode.int)
+                                (Decode.at [ "state", "totalDings" ] Decode.int)
 
                         "IQTestActiveScreen" ->
                             Decode.map2 (\dc td -> EditedIqActive { dingCount = dc, totalDings = td })
-                                (Decode.at [ "screen", "state", "dingCount" ] Decode.int)
-                                (Decode.at [ "screen", "state", "totalDings" ] Decode.int)
+                                (Decode.at [ "state", "dingCount" ] Decode.int)
+                                (Decode.at [ "state", "totalDings" ] Decode.int)
 
                         _ ->
                             Decode.succeed EditedIqOther
@@ -1307,16 +1314,19 @@ update msg model =
                                     storedState =
                                         Maybe.withDefault (Encode.object []) entry.state
 
-                                    -- If the player left mid-game (isBeginScreen false),
-                                    -- snapshot them onto the neutral begin screen so they
-                                    -- resume via the jeopardy Start flow -- the underlying
-                                    -- `screen` is left alone (it's already whatever the
-                                    -- override chain derived), not stashed anywhere. A
-                                    -- player already on the begin screen -- or one who never
-                                    -- started (empty state, no isBeginScreen key) -- is
+                                    -- If the player left mid-game (not wrapped in
+                                    -- BeginScreen), snapshot them onto the neutral begin
+                                    -- screen so they resume via the jeopardy Start flow --
+                                    -- the underlying screen is wrapped as-is (it's already
+                                    -- whatever the override chain derived, including the
+                                    -- real win text if they'd completed the quiz -- see
+                                    -- deriveWinScreen), not stashed anywhere separate. A
+                                    -- player already wrapped in BeginScreen -- or one who
+                                    -- never started (empty state, no tag at all) -- is
                                     -- delivered as-is.
                                     isAlreadyBegin =
-                                        Decode.decodeValue (Decode.field "isBeginScreen" Decode.bool) storedState
+                                        Decode.decodeValue (Decode.field "tag" Decode.string) storedState
+                                            |> Result.map (\tag -> tag == "BeginScreen")
                                             |> Result.withDefault True
 
                                     connectedModel =
@@ -1330,21 +1340,6 @@ update msg model =
 
                                     registryWithTimer =
                                         updateEntryTimer uuid deadline model.registry
-
-                                    -- If a completed player reconnects (whether they never saw
-                                    -- the reveal, or it's simply been a while), the derived
-                                    -- WinScreen alone carries no text -- re-send it alongside
-                                    -- the normal delivery so the client doesn't sit on a blank
-                                    -- reveal. Safe to always combine with stateEnvelope (unlike
-                                    -- timedOutEnvelope): the client's WinScreen handling only
-                                    -- ever waits for this message, never races another one that
-                                    -- also assigns `screen`.
-                                    winTextCmd delivered =
-                                        if innermostScreenTag delivered == "WinScreen" then
-                                            sendToClient { clientId = clientId, payload = winTextEnvelope entry.winText }
-
-                                        else
-                                            Cmd.none
                                 in
                                 if isExpired now { entry | timerEndsAt = Just deadline } then
                                     -- The server's own clock says this session is already over.
@@ -1379,7 +1374,6 @@ update msg model =
                                         [ writeRegistry registryWithTimer
                                         , sendToClient { clientId = clientId, payload = stateEnvelope storedState }
                                         , sendToClient { clientId = clientId, payload = timerSyncEnvelope deadline }
-                                        , winTextCmd storedState
                                         ]
                                     )
 
@@ -1396,7 +1390,6 @@ update msg model =
                                         [ writeRegistry newRegistry
                                         , sendToClient { clientId = clientId, payload = stateEnvelope snapshotted }
                                         , sendToClient { clientId = clientId, payload = timerSyncEnvelope deadline }
-                                        , winTextCmd snapshotted
                                         ]
                                     )
 

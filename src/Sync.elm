@@ -281,10 +281,11 @@ encodeScreen scr =
         FakeFlashCaughtScreen state ->
             Encode.object [ ( "tag", Encode.string "FakeFlashCaughtScreen" ), ( "state", encodeFakeFlashCaughtState state ) ]
 
-        WinScreen _ ->
-            -- Deliberately drop the win text: it must never be written into persisted
-            -- state (builds.json). The server re-delivers it at win time via winText.
-            Encode.object [ ( "tag", Encode.string "WinScreen" ) ]
+        WinScreen text ->
+            -- Round-trips normally now: the server only ever derives/persists this
+            -- with the real, already-verified win text embedded (see Server.elm's
+            -- deriveWinScreen), so there's nothing unsafe about it surviving a resume.
+            Encode.object [ ( "tag", Encode.string "WinScreen" ), ( "text", Encode.string text ) ]
 
         TimedOutScreen ->
             Encode.object [ ( "tag", Encode.string "TimedOutScreen" ) ]
@@ -294,6 +295,9 @@ encodeScreen scr =
 
         ConfirmingAnswerScreen nextScreen ->
             Encode.object [ ( "tag", Encode.string "ConfirmingAnswerScreen" ), ( "nextScreen", encodeScreen nextScreen ) ]
+
+        BeginScreen nextScreen ->
+            Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", encodeScreen nextScreen ) ]
 
 
 encodeMsg : Msg -> Encode.Value
@@ -352,22 +356,20 @@ clientStateEnvelope model =
         ]
 
 
-{-| Only two keys ever round-trip through the server's persisted state
-(`builds.json`): whether the player is parked on the neutral begin screen, and
-the screen itself (now always reconstructable from the server's own
-authoritative state -- see Server.elm's deriveIqScreen/deriveQuizScreen/
-deriveTimedOutScreen). Every other Model field is either session-local
-(`wsClientId`, `myUuid`, `wsUrl`, `questions`, `timerEndsAt`,
-`awaitingAnswerResult`) or purely local live/animation state (`now`, `pending`,
-`dingKey`) that's never read by the server and always resets fresh on
-connect -- see decodeModel.
+{-| The only thing that ever round-trips through the server's persisted state
+(`builds.json`) is the screen itself (now always reconstructable from the
+server's own authoritative state -- see Server.elm's deriveIqScreen/
+deriveQuizScreen/deriveTimedOutScreen -- and, while the player hasn't pressed
+Begin yet, wrapped in `BeginScreen`). There's no separate wrapper object: the
+persisted/wire value *is* `encodeScreen model.screen` directly. Every other
+Model field is either session-local (`wsClientId`, `myUuid`, `wsUrl`,
+`questions`, `timerEndsAt`, `awaitingAnswerResult`) or purely local
+live/animation state (`now`, `pending`, `dingKey`) that's never read by the
+server and always resets fresh on connect -- see decodeModel.
 -}
 encodeModel : Model -> Encode.Value
 encodeModel model =
-    Encode.object
-        [ ( "isBeginScreen", Encode.bool model.isBeginScreen )
-        , ( "screen", encodeScreen model.screen )
-        ]
+    encodeScreen model.screen
 
 
 -- ── JSON Decoders ─────────────────────────────────────────────────────────────
@@ -489,9 +491,7 @@ decodeScreen =
                         Decode.map FakeFlashCaughtScreen (Decode.field "state" decodeFakeFlashCaughtState)
 
                     "WinScreen" ->
-                        -- Text is not persisted (see encodeScreen); it arrives separately
-                        -- via the winText message at win time.
-                        Decode.succeed (WinScreen "")
+                        Decode.map WinScreen (Decode.field "text" Decode.string)
 
                     "TimedOutScreen" ->
                         Decode.succeed TimedOutScreen
@@ -501,6 +501,9 @@ decodeScreen =
 
                     "ConfirmingAnswerScreen" ->
                         Decode.map ConfirmingAnswerScreen (Decode.field "nextScreen" decodeScreen)
+
+                    "BeginScreen" ->
+                        Decode.map BeginScreen (Decode.field "nextScreen" decodeScreen)
 
                     _ ->
                         Decode.fail ("Unknown screen: " ++ tag)
@@ -560,9 +563,12 @@ decodePendingEvent =
 
 {-| Tolerant of both a genuinely brand-new player's `entry.state == Nothing`
 (the server sends `{}` -- see Server.elm's ClientStateRequest) and any
-older-shape row that predates this field: `isBeginScreen` defaults to `True`
-and `screen` defaults to `BlankScreen 0` when absent, rather than requiring the
-server to synthesize a full default state for the empty case.
+older-shape row that predates this field: `screen` defaults to
+`BeginScreen (BlankScreen 0)` when the value can't be decoded as a `Screen` at
+all, rather than requiring the server to synthesize a full default state for
+the empty case. This single default is what makes the fresh-player double-audio
+bug structurally impossible -- there's no separate `isBeginScreen` flag that
+could independently disagree with `screen`.
 
 `now`/`pending`/`dingKey` reset to their fresh-connection defaults here rather
 than round-tripping: they're purely local live/animation state, same as
@@ -575,10 +581,9 @@ decode (see Main.elm's ServerStateUpdate handler).
 -}
 decodeModel : Decoder Model
 decodeModel =
-    Decode.map2
-        (\ibs scr ->
-            { isBeginScreen = ibs
-            , screen = scr
+    Decode.map
+        (\scr ->
+            { screen = scr
             , now = 0
             , pending = []
             , dingKey = 0
@@ -590,5 +595,4 @@ decodeModel =
             , awaitingAnswerResult = False
             }
         )
-        (Decode.oneOf [ Decode.field "isBeginScreen" Decode.bool, Decode.succeed True ])
-        (Decode.oneOf [ Decode.field "screen" decodeScreen, Decode.succeed (BlankScreen 0) ])
+        (Decode.oneOf [ decodeScreen, Decode.succeed (BeginScreen (BlankScreen 0)) ])

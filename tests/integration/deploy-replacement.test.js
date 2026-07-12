@@ -328,7 +328,7 @@ describe('deploy-replacement', () => {
             expect(editAuth.success).toBe(true);
             expect(JSON.parse(json)).toEqual({});
 
-            const newState = { screen: 'BeginScreen', jeopardyPlaying: false };
+            const newState = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
             const saveResult = await distClient.saveStateEdit(conn, replacement.uuid, JSON.stringify(newState));
             expect(saveResult.payload).toBe('distStateEditSaveAck');
             await conn.close();

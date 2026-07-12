@@ -16,9 +16,10 @@ let server;
 let admin;
 
 // Minimal player state whose screen is the win-confirming screen the client syncs right
-// before revealing WinScreen (see src/Main.elm WsSyncTick / src/Server/Protocol.elm stateIsWin).
+// before revealing WinScreen. The persisted/self-reported state *is* the screen's own
+// JSON directly (see Sync.elm's encodeModel) -- no wrapping object.
 function stateWithScreen(screen) {
-    return JSON.stringify({ isBeginScreen: false, screen });
+    return JSON.stringify(screen);
 }
 
 function readRegistry() {
@@ -118,9 +119,12 @@ describe('win text delivery', () => {
     // Once WinScreen is derivable (see Server.elm's deriveWinScreen), a player who
     // reconnects after already completing the quiz -- whether they closed the app right
     // at the moment they won, before ever seeing the reveal, or reconnect much later --
-    // gets a bare derived WinScreen with no text. The reconnect must re-send winText
-    // alongside it rather than leaving the reveal blank forever.
-    test('reconnecting after a win re-delivers winText, even though the derived screen carries no text', async () => {
+    // gets the derived WinScreen with the real text embedded directly, wrapped in
+    // BeginScreen (the reconnect snapshot). No separate winText message is needed for
+    // this path -- that mechanism is reserved for the live win moment (see the
+    // "does not trigger winText" tests above, and Server.elm's ClientQuizAdvanced/
+    // ClientQuizAnswerSubmitted handlers).
+    test('reconnecting after a win delivers the real winText embedded in the derived WinScreen', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'win-reconnect.dmg',
@@ -137,9 +141,9 @@ describe('win text delivery', () => {
 
         const { conn: reconn, result } = await connectAsPlayer(TEST_PORT, build.uuid);
         const delivered = JSON.parse(result.stateUpdate.json);
-        expect(delivered.screen.tag).toBe('WinScreen');
-        const winTextMsg = await reconn.waitFor((m) => m.payload === 'winText');
-        expect(winTextMsg.winText.text).toBe(WIN_TEXT);
+        expect(delivered.tag).toBe('BeginScreen');
+        expect(delivered.nextScreen.tag).toBe('WinScreen');
+        expect(delivered.nextScreen.text).toBe(WIN_TEXT);
         await reconn.close();
     }, 10000);
 });

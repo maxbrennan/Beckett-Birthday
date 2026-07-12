@@ -55,7 +55,7 @@ describe('edit state', () => {
         expect(authResult.success).toBe(true);
         expect(JSON.parse(json)).toEqual({}); // freshly deployed build starts with no saved state
 
-        const newState = { jeopardyPlaying: false, screen: 'BeginScreen' };
+        const newState = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
         const resultMsg = await distClient.saveStateEdit(conn, build.uuid, JSON.stringify(newState));
         expect(resultMsg.payload).toBe('distStateEditSaveAck');
         await conn.close();
@@ -64,7 +64,7 @@ describe('edit state', () => {
         // they aren't guaranteed to land in order — poll rather than read once.
         const entry = await waitUntil(() => {
             const found = readRegistry().find((e) => e.uuid === build.uuid);
-            return found && found.state && found.state.screen === newState.screen ? found : null;
+            return found && found.state && found.state.tag === newState.tag ? found : null;
         });
         expect(entry.state).toEqual(newState);
     });
@@ -74,7 +74,7 @@ describe('edit state', () => {
             platform: 'mac',
             filename: 'Ryan Birthday-3.0.1-universal.dmg',
         });
-        const goodState = { jeopardyPlaying: true };
+        const goodState = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
 
         {
             const { conn } = await distClient.requestStateEdit(TEST_PORT, admin, invalidJsonBuild.uuid);
@@ -109,7 +109,7 @@ describe('edit state', () => {
             filename: 'Ryan Birthday-3.0.2-universal.dmg',
         });
 
-        const editedState = { screen: { tag: 'QuestionScreen', idx: 1, s: '' } };
+        const editedState = { tag: 'QuestionScreen', idx: 1, s: '' };
         {
             const { conn } = await distClient.requestStateEdit(TEST_PORT, admin, quizEditBuild.uuid);
             const saveResult = await distClient.saveStateEdit(conn, quizEditBuild.uuid, JSON.stringify(editedState));

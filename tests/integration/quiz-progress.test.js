@@ -21,8 +21,10 @@ function readRegistry() {
 
 // Minimal player state; a raw stateUpdate the fabricated-exploit test uses to simulate a
 // modified client bypassing the Elm client's Msg system entirely (see win-text.test.js).
+// The persisted/self-reported state *is* the screen's own JSON directly (see Sync.elm's
+// encodeModel) -- no wrapping object.
 function stateWithScreen(screen) {
-    return JSON.stringify({ isBeginScreen: false, screen });
+    return JSON.stringify(screen);
 }
 
 describe('server-side quiz-progress win gating', () => {
@@ -180,19 +182,19 @@ describe('server-side quiz-progress win gating', () => {
         // with the crafted screen (and its typed text) gone entirely.
         const entry = await waitUntil(() => {
             const e = readRegistry().find((row) => row.uuid === build.uuid);
-            return e && e.state && e.state.screen && e.state.screen.tag === 'BlankScreen' ? e : undefined;
+            return e && e.state && e.state.tag === 'BlankScreen' ? e : undefined;
         });
-        expect(entry.state.screen).toEqual({ tag: 'BlankScreen', idx: 1 });
+        expect(entry.state).toEqual({ tag: 'BlankScreen', idx: 1 });
         expect(JSON.stringify(entry)).not.toContain('stolen-answer-peek');
         await conn.close();
 
-        // Reconnect: mid-game states deliver via the jeopardy snapshot, marking the
-        // player as on the begin screen while leaving the corrected screen itself in
+        // Reconnect: mid-game states deliver via the jeopardy snapshot, wrapping the
+        // player in BeginScreen while leaving the corrected screen itself in
         // place (see kick.test.js).
         const { conn: reconn, result } = await connectAsPlayer(TEST_PORT, build.uuid);
         const delivered = JSON.parse(result.stateUpdate.json);
-        expect(delivered.isBeginScreen).toBe(true);
-        expect(delivered.screen).toEqual({ tag: 'BlankScreen', idx: 1 });
+        expect(delivered.tag).toBe('BeginScreen');
+        expect(delivered.nextScreen).toEqual({ tag: 'BlankScreen', idx: 1 });
         await reconn.close();
     }, 10000);
 });

@@ -9,8 +9,7 @@ import View exposing (formatTimer)
 
 baseModel : Model
 baseModel =
-    { isBeginScreen = True
-    , screen = WsConnectingScreen
+    { screen = WsConnectingScreen
     , now = 0
     , pending = []
     , dingKey = 0
@@ -52,6 +51,8 @@ currentQuizSongTests =
             \_ -> Expect.equal Nothing (currentQuizSong { baseModel | screen = WsConnectingScreen })
         , test "returns Nothing when the index is out of range" <|
             \_ -> Expect.equal Nothing (currentQuizSong { baseModel | screen = BlankScreen 99 })
+        , test "returns Nothing while parked on the begin screen, even for an audio slide (the double-audio bug fix)" <|
+            \_ -> Expect.equal Nothing (currentQuizSong { baseModel | screen = BeginScreen (BlankScreen 0) })
         ]
 
 

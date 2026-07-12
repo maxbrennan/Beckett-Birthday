@@ -49,8 +49,8 @@ screenRoundTripTests =
             \_ -> Expect.equal TimedOutScreen (roundTripScreen TimedOutScreen)
         , test "CheckingAnswerScreen nests the next screen" <|
             \_ -> Expect.equal (CheckingAnswerScreen (QuestionScreen 4 "x")) (roundTripScreen (CheckingAnswerScreen (QuestionScreen 4 "x")))
-        , test "WinScreen deliberately drops its text on encode (never persisted)" <|
-            \_ -> Expect.equal (WinScreen "") (roundTripScreen (WinScreen "top secret win text"))
+        , test "WinScreen round-trips its text (safe: only ever derived once server-verified)" <|
+            \_ -> Expect.equal (WinScreen "hello reward") (roundTripScreen (WinScreen "hello reward"))
         , test "WsConnectingScreen" <|
             \_ -> Expect.equal WsConnectingScreen (roundTripScreen WsConnectingScreen)
         , test "WsErrorScreen" <|
@@ -82,6 +82,8 @@ screenRoundTripTests =
                 Expect.equal (FakeFlashCaughtScreen state) (roundTripScreen (FakeFlashCaughtScreen state))
         , test "ConfirmingAnswerScreen nests the next screen" <|
             \_ -> Expect.equal (ConfirmingAnswerScreen (BlankScreen 4)) (roundTripScreen (ConfirmingAnswerScreen (BlankScreen 4)))
+        , test "BeginScreen nests the next screen" <|
+            \_ -> Expect.equal (BeginScreen (BlankScreen 2)) (roundTripScreen (BeginScreen (BlankScreen 2)))
         , test "an unrecognized tag fails to decode" <|
             \_ ->
                 Decode.decodeString decodeScreen """{"tag":"NotAScreen"}"""
@@ -176,8 +178,7 @@ modelRoundTripTests =
     let
         model : Model
         model =
-            { isBeginScreen = False
-            , screen = BlankScreen 2
+            { screen = BlankScreen 2
             , now = 12345
             , pending = [ { fireAt = 1500, msg = ShowQuestion 1 } ]
             , dingKey = 7
@@ -194,16 +195,16 @@ modelRoundTripTests =
                 |> Decode.decodeValue decodeModel
     in
     describe "encodeModel / decodeModel round-trip"
-        [ test "round-trips the two persisted fields" <|
+        [ test "round-trips the one persisted field (screen), with no wrapping object" <|
             \_ ->
                 case decoded of
                     Ok m ->
-                        Expect.equal
-                            { isBeginScreen = model.isBeginScreen, screen = model.screen }
-                            { isBeginScreen = m.isBeginScreen, screen = m.screen }
+                        Expect.equal model.screen m.screen
 
                     Err err ->
                         Expect.fail (Decode.errorToString err)
+        , test "encodeModel is exactly encodeScreen, no extra key" <|
+            \_ -> Encode.encode 0 (encodeModel model) |> Expect.equal (Encode.encode 0 (encodeScreen model.screen))
         , test "everything else is session/live-local -- decodeModel always resets it to a fresh-connection default" <|
             \_ ->
                 -- wsClientId/myUuid/wsUrl/questions/awaitingAnswerResult/timerEndsAt are
@@ -226,21 +227,16 @@ modelRoundTripTests =
 decodeModelDefaultsTests : Test
 decodeModelDefaultsTests =
     describe "decodeModel tolerates the brand-new-player/older-row shape"
-        [ test "isBeginScreen defaults to True when absent" <|
-            \_ ->
-                Decode.decodeString decodeModel """{"screen":{"tag":"BlankScreen","idx":0}}"""
-                    |> Result.map .isBeginScreen
-                    |> Expect.equal (Ok True)
-        , test "screen defaults to BlankScreen 0 when absent" <|
-            \_ ->
-                Decode.decodeString decodeModel """{"isBeginScreen":true}"""
-                    |> Result.map .screen
-                    |> Expect.equal (Ok (BlankScreen 0))
-        , test "a genuinely brand-new player's \"{}\" decodes to isBeginScreen True at BlankScreen 0" <|
+        [ test "a genuinely brand-new player's \"{}\" decodes to BeginScreen (BlankScreen 0)" <|
             \_ ->
                 Decode.decodeString decodeModel "{}"
-                    |> Result.map (\m -> ( m.isBeginScreen, m.screen ))
-                    |> Expect.equal (Ok ( True, BlankScreen 0 ))
+                    |> Result.map .screen
+                    |> Expect.equal (Ok (BeginScreen (BlankScreen 0)))
+        , test "a real screen decodes as itself (no wrapping needed)" <|
+            \_ ->
+                Decode.decodeString decodeModel """{"tag":"BlankScreen","idx":0}"""
+                    |> Result.map .screen
+                    |> Expect.equal (Ok (BlankScreen 0))
         ]
 
 
@@ -323,8 +319,7 @@ envelopeBuilderTests =
                 let
                     model : Model
                     model =
-                        { isBeginScreen = True
-                        , screen = BlankScreen 0
+                        { screen = BeginScreen (BlankScreen 0)
                         , now = 0
                         , pending = []
                         , dingKey = 0

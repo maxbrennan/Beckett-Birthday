@@ -140,7 +140,7 @@ describe('server-side 7-day session timer (issue #50)', () => {
         expect(connectMsg.payload).toBe('timedOut');
 
         // The periodic sync loop (ClientStateUpdate) independently re-checks expiry too.
-        conn.send({ stateUpdate: { json: JSON.stringify({ isBeginScreen: false, screen: { tag: 'IQTestActiveScreen' } }) } });
+        conn.send({ stateUpdate: { json: JSON.stringify({ tag: 'IQTestActiveScreen' }) } });
         const syncMsg = await conn.waitFor((m) => m.payload === 'timedOut' || m.payload === 'stateUpdateAck');
         expect(syncMsg.payload).toBe('timedOut');
 
@@ -150,9 +150,9 @@ describe('server-side 7-day session timer (issue #50)', () => {
         // reconnect to deliver the right screen.
         const persisted = await waitUntil(() => {
             const e = readRegistry().find((row) => row.uuid === build.uuid);
-            return e && e.state && e.state.screen && e.state.screen.tag === 'TimedOutScreen' ? e : undefined;
+            return e && e.state && e.state.tag === 'TimedOutScreen' ? e : undefined;
         });
-        expect(persisted.state.screen).toEqual({ tag: 'TimedOutScreen' });
+        expect(persisted.state).toEqual({ tag: 'TimedOutScreen' });
 
         await conn.close();
     }, 15000);
@@ -180,9 +180,9 @@ describe('server-side 7-day session timer (issue #50)', () => {
         // persists the derived TimedOutScreen at rest.
         const persisted = await waitUntil(() => {
             const e = readRegistry().find((row) => row.uuid === build.uuid);
-            return e && e.state && e.state.screen && e.state.screen.tag === 'TimedOutScreen' ? e : undefined;
+            return e && e.state && e.state.tag === 'TimedOutScreen' ? e : undefined;
         });
-        expect(persisted.state.screen).toEqual({ tag: 'TimedOutScreen' });
+        expect(persisted.state).toEqual({ tag: 'TimedOutScreen' });
     }, 15000);
 
     test("a replacement build inherits the original build's deadline rather than starting a fresh one", async () => {

@@ -82,22 +82,15 @@ import Types exposing (Screen(..))
 
 screenTag : Encode.Value -> Maybe String
 screenTag value =
-    Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) value
+    Decode.decodeValue (Decode.field "tag" Decode.string) value
         |> Result.toMaybe
 
 
-isBeginScreenOf : Encode.Value -> Maybe Bool
-isBeginScreenOf value =
-    Decode.decodeValue (Decode.field "isBeginScreen" Decode.bool) value
-        |> Result.toMaybe
-
-
-makeState : String -> Bool -> Encode.Value
-makeState tag isBeginScreen =
-    Encode.object
-        [ ( "screen", Encode.object [ ( "tag", Encode.string tag ) ] )
-        , ( "isBeginScreen", Encode.bool isBeginScreen )
-        ]
+-- A bare screen value with just a tag (the persisted/self-reported state *is*
+-- the screen's own JSON directly -- see Sync.elm's encodeModel).
+makeScreen : String -> Encode.Value
+makeScreen tag =
+    Encode.object [ ( "tag", Encode.string tag ) ]
 
 
 winTextOf : Encode.Value -> Maybe String
@@ -125,7 +118,7 @@ registrySuite =
                     |> Expect.equal (Ok "")
         , test "decodes a real (non-null) state value" <|
             \_ ->
-                """{"uuid":"u","filename":"f","platform":"mac","state":{"screen":{"tag":"BeginScreen"}},"pendingStateEdit":false}"""
+                """{"uuid":"u","filename":"f","platform":"mac","state":{"tag":"BeginScreen","nextScreen":{"tag":"BlankScreen","idx":0}},"pendingStateEdit":false}"""
                     |> Decode.decodeString decodeRegistryEntry
                     |> Result.map (\e -> e.state /= Nothing)
                     |> Expect.equal (Ok True)
@@ -423,27 +416,30 @@ clientEnvelopeSuite =
 suite : Test
 suite =
     describe "snapshotForJeopardy"
-        [ test "rejoin mid-game: marks the player as on the begin screen" <|
+        [ test "rejoin mid-game: wraps the screen in BeginScreen" <|
             \_ ->
-                makeState "QuizScreen" False
-                    |> snapshotForJeopardy
-                    |> isBeginScreenOf
-                    |> Expect.equal (Just True)
-        , test "rejoin mid-game: leaves the persisted screen itself untouched -- it's already whatever was derived" <|
-            \_ ->
-                makeState "QuizScreen" False
+                makeScreen "QuizScreen"
                     |> snapshotForJeopardy
                     |> screenTag
-                    |> Expect.equal (Just "QuizScreen")
+                    |> Expect.equal (Just "BeginScreen")
+        , test "rejoin mid-game: the wrapped nextScreen is the persisted screen untouched -- it's already whatever was derived" <|
+            \_ ->
+                makeScreen "QuizScreen"
+                    |> snapshotForJeopardy
+                    |> Decode.decodeValue (Decode.at [ "nextScreen", "tag" ] Decode.string)
+                    |> Expect.equal (Ok "QuizScreen")
         , test "rejoin already on the begin screen: idempotent, changes nothing" <|
             \_ ->
                 let
+                    alreadyWrapped =
+                        Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", makeScreen "BlankScreen" ) ]
+
                     result =
-                        makeState "BlankScreen" True |> snapshotForJeopardy
+                        snapshotForJeopardy alreadyWrapped
                 in
                 Expect.all
-                    [ \_ -> isBeginScreenOf result |> Expect.equal (Just True)
-                    , \_ -> screenTag result |> Expect.equal (Just "BlankScreen")
+                    [ \_ -> screenTag result |> Expect.equal (Just "BeginScreen")
+                    , \_ -> Decode.decodeValue (Decode.at [ "nextScreen", "tag" ] Decode.string) result |> Expect.equal (Ok "BlankScreen")
                     ]
                     ()
         ]
@@ -1152,11 +1148,7 @@ iqUpdateSuite =
 
 editedScreenState : String -> List ( String, Encode.Value ) -> Encode.Value
 editedScreenState tag fields =
-    Encode.object
-        [ ( "screen"
-          , Encode.object [ ( "tag", Encode.string tag ), ( "state", Encode.object fields ) ]
-          )
-        ]
+    Encode.object [ ( "tag", Encode.string tag ), ( "state", Encode.object fields ) ]
 
 
 iqEditSuite : Test
@@ -1184,7 +1176,7 @@ iqEditSuite =
                         |> Expect.equal (Ok (EditedIqBegin { totalDings = 200 }))
             , test "a non-IQ screen decodes to EditedIqOther" <|
                 \_ ->
-                    Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ] ) ]
+                    Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ]
                         |> Decode.decodeValue decodeEditedIqScreen
                         |> Expect.equal (Ok EditedIqOther)
             , test "malformed JSON (no screen field) decodes to EditedIqOther rather than failing" <|
@@ -1232,7 +1224,7 @@ iqEditSuite =
                         { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | dingCount = 7 } }
 
                     edited =
-                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ] ) ]
+                        Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ]
 
                     reconciled =
                         reconcileIqTimerAfterEdit "uuid1" edited staged
@@ -1271,7 +1263,7 @@ iqEditSuite =
                     , \_ ->
                         entryOf "uuid1"
                             |> Maybe.andThen .state
-                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "state", "countdown" ] Decode.int) >> Result.toMaybe)
+                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "state", "countdown" ] Decode.int) >> Result.toMaybe)
                             |> Expect.equal (Just 5)
                     ]
                     ()
@@ -1431,22 +1423,17 @@ deriveIqScreenSuite =
 extractQuestionIdxSuite : Test
 extractQuestionIdxSuite =
     describe "extractQuestionIdx"
-        [ test "reads questionIdx from the IQTestScreen-family shape (screen.state.questionIdx)" <|
+        [ test "reads questionIdx from the IQTestScreen-family shape (state.questionIdx)" <|
             \_ ->
                 Encode.object
-                    [ ( "screen"
-                      , Encode.object
-                            [ ( "tag", Encode.string "IQTestCountdownScreen" )
-                            , ( "state", Encode.object [ ( "questionIdx", Encode.int 4 ) ] )
-                            ]
-                      )
+                    [ ( "tag", Encode.string "IQTestCountdownScreen" )
+                    , ( "state", Encode.object [ ( "questionIdx", Encode.int 4 ) ] )
                     ]
                     |> extractQuestionIdx
                     |> Expect.equal 4
-        , test "reads idx from the top-level screen.idx shape (WrongAnswerScreen/BlankScreen/etc.)" <|
+        , test "reads idx from the top-level idx shape (WrongAnswerScreen/BlankScreen/etc.)" <|
             \_ ->
-                Encode.object
-                    [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 7 ) ] ) ]
+                Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 7 ) ]
                     |> extractQuestionIdx
                     |> Expect.equal 7
         , test "defaults to 0 when neither shape is present" <|
@@ -1457,21 +1444,14 @@ extractQuestionIdxSuite =
 persistIqTimerInRegistrySuite : Test
 persistIqTimerInRegistrySuite =
     describe "persistIqTimerInRegistry"
-        [ test "sets a decodable iqTimer and overwrites only the screen key, preserving the rest of state" <|
+        [ test "sets a decodable iqTimer and overwrites the persisted state with the derived screen" <|
             \_ ->
                 let
                     existing =
                         [ { uuid = "uuid1"
                           , filename = "f.dmg"
                           , platform = "mac"
-                          , state =
-                                Just
-                                    (Encode.object
-                                        [ ( "screen", Encode.object [ ( "tag", Encode.string "IQTestScreen" ) ] )
-                                        , ( "pending", Encode.list identity [] )
-                                        , ( "now", Encode.float 42 )
-                                        ]
-                                    )
+                          , state = Just (Encode.object [ ( "tag", Encode.string "IQTestScreen" ) ])
                           , pendingStateEdit = False
                           , winText = ""
                           , iqTimer = Nothing
@@ -1491,15 +1471,11 @@ persistIqTimerInRegistrySuite =
                         updated |> Maybe.andThen .iqTimer |> Maybe.andThen (Decode.decodeValue decodeIqTimerStateFull >> Result.toMaybe)
 
                     screenTagOf =
-                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
-
-                    nowOf =
-                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.field "now" Decode.float) >> Result.toMaybe)
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
                 in
                 Expect.all
                     [ \_ -> Expect.equal (Just state) decodedIqTimer
                     , \_ -> Expect.equal (Just "IQTestCountdownScreen") screenTagOf
-                    , \_ -> Expect.equal (Just 42) nowOf
                     ]
                     ()
         , test "Nothing clears iqTimer and leaves state untouched entirely" <|
@@ -1509,7 +1485,7 @@ persistIqTimerInRegistrySuite =
                         [ { uuid = "uuid1"
                           , filename = "f.dmg"
                           , platform = "mac"
-                          , state = Just (Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "BlankScreen" ) ] ) ])
+                          , state = Just (Encode.object [ ( "tag", Encode.string "BlankScreen" ) ])
                           , pendingStateEdit = False
                           , winText = ""
                           , iqTimer = Just (Encode.object [ ( "epoch", Encode.int 1 ) ])
@@ -1523,7 +1499,7 @@ persistIqTimerInRegistrySuite =
                         persistIqTimerInRegistry "uuid1" Nothing existing |> List.head
 
                     screenTagOf =
-                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
                 in
                 Expect.all
                     [ \_ -> Expect.equal Nothing (updated |> Maybe.andThen .iqTimer)
@@ -1537,7 +1513,7 @@ persistIqTimerInRegistrySuite =
                         [ { uuid = "uuid1"
                           , filename = "f.dmg"
                           , platform = "mac"
-                          , state = Just (Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "IQTestActiveScreen" ) ] ) ])
+                          , state = Just (Encode.object [ ( "tag", Encode.string "IQTestActiveScreen" ) ])
                           , pendingStateEdit = False
                           , winText = ""
                           , iqTimer = Nothing
@@ -1551,7 +1527,7 @@ persistIqTimerInRegistrySuite =
                         persistIqTimerInRegistry "uuid1" (Just { iqState | phase = IqIdleCaught, totalDings = 200 }) existing |> List.head
 
                     screenTagOf =
-                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
                 in
                 Expect.all
                     [ \_ -> updated |> Maybe.andThen .iqTimer |> Expect.notEqual Nothing
@@ -1565,7 +1541,7 @@ persistIqTimerInRegistrySuite =
                         [ { uuid = "uuid1"
                           , filename = "f.dmg"
                           , platform = "mac"
-                          , state = Just (Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "IQTestActiveScreen" ) ] ) ])
+                          , state = Just (Encode.object [ ( "tag", Encode.string "IQTestActiveScreen" ) ])
                           , pendingStateEdit = False
                           , winText = ""
                           , iqTimer = Nothing
@@ -1579,7 +1555,7 @@ persistIqTimerInRegistrySuite =
                         persistIqTimerInRegistry "uuid1" (Just { iqState | phase = IqIdleNotStarted }) existing |> List.head
 
                     screenTagOf =
-                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
                 in
                 Expect.all
                     [ \_ -> updated |> Maybe.andThen .iqTimer |> Expect.notEqual Nothing
@@ -1609,7 +1585,7 @@ iqPersistenceRoutingSuite =
                     , \_ ->
                         entryOf
                             |> Maybe.andThen .state
-                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                            |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
                             |> Expect.equal (Just "IQTestCountdownScreen")
                     ]
                     ()
@@ -1635,7 +1611,7 @@ iqPersistenceRoutingSuite =
                 in
                 entryOf
                     |> Maybe.andThen .state
-                    |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "state", "countdown" ] Decode.int) >> Result.toMaybe)
+                    |> Maybe.andThen (Decode.decodeValue (Decode.at [ "state", "countdown" ] Decode.int) >> Result.toMaybe)
                     |> Expect.equal (Just 5)
         , test "test completion clears a previously-set registry iqTimer (via clearIqTimer)" <|
             \_ ->
@@ -1668,7 +1644,7 @@ iqPersistenceRoutingSuite =
                     , \_ ->
                         entryOf
                             |> Maybe.andThen .state
-                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "state", "countdown" ] Decode.int) >> Result.toMaybe)
+                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "state", "countdown" ] Decode.int) >> Result.toMaybe)
                             |> Expect.equal (Just 11)
                     ]
                     ()
@@ -1780,11 +1756,11 @@ stateRequestSuite =
                     , \mm -> mm.registry |> List.head |> Maybe.andThen .state |> Expect.equal Nothing
                     ]
                     m
-        , test "delivers an isBeginScreen state as-is (no snapshot)" <|
+        , test "delivers a state already wrapped in BeginScreen as-is (no re-wrap)" <|
             \_ ->
                 let
                     beginState =
-                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 0 ) ] ), ( "isBeginScreen", Encode.bool True ) ]
+                        Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 0 ) ] ) ]
 
                     staged =
                         { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just beginState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ] }
@@ -1793,14 +1769,11 @@ stateRequestSuite =
                         update (stateRequestMsg "c1" "uuid1") staged
                 in
                 m.registry |> List.head |> Maybe.andThen .state |> Expect.equal (Just beginState)
-        , test "marks a mid-game state (isBeginScreen false) as on the begin screen, leaving the screen itself untouched" <|
+        , test "wraps a mid-game state (not BeginScreen) in BeginScreen, leaving the wrapped screen itself untouched" <|
             \_ ->
                 let
                     midGameState =
-                        Encode.object
-                            [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ] )
-                            , ( "isBeginScreen", Encode.bool False )
-                            ]
+                        Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ]
 
                     staged =
                         { baseModel | registry = [ { uuid = "uuid1", filename = "f.dmg", platform = "mac", state = Just midGameState, pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing } ] }
@@ -1809,14 +1782,14 @@ stateRequestSuite =
                         update (stateRequestMsg "c1" "uuid1") staged
 
                     newTag =
-                        m.registry |> List.head |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                        m.registry |> List.head |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
 
-                    newIsBeginScreen =
-                        m.registry |> List.head |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.field "isBeginScreen" Decode.bool) >> Result.toMaybe)
+                    wrappedTag =
+                        m.registry |> List.head |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at [ "nextScreen", "tag" ] Decode.string) >> Result.toMaybe)
                 in
                 Expect.all
-                    [ \_ -> Expect.equal (Just "QuestionScreen") newTag
-                    , \_ -> Expect.equal (Just True) newIsBeginScreen
+                    [ \_ -> Expect.equal (Just "BeginScreen") newTag
+                    , \_ -> Expect.equal (Just "QuestionScreen") wrappedTag
                     ]
                     ()
         ]
@@ -1842,7 +1815,7 @@ stateUpdateSuite =
                 let
                     -- A non-IQ, non-quiz-slide screen: neither override family claims it.
                     reported =
-                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "FakeFlashCaughtScreen" ), ( "idx", Encode.int 2 ) ] ) ]
+                        Encode.object [ ( "tag", Encode.string "FakeFlashCaughtScreen" ), ( "idx", Encode.int 2 ) ]
 
                     staged =
                         { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
@@ -1852,14 +1825,14 @@ stateUpdateSuite =
 
                     tagOf =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head |> Maybe.andThen .state
-                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                            |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
                 in
                 tagOf |> Expect.equal (Just "FakeFlashCaughtScreen")
-        , test "a genuine win report (quizProgress has reached total) persists the derived WinScreen (winText is sent separately)" <|
+        , test "a genuine win report (quizProgress has reached total) persists the derived WinScreen with the real text embedded" <|
             \_ ->
                 let
                     winningReport =
-                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] ) ]
+                        Encode.object [ ( "tag", Encode.string "WinScreen" ), ( "text", Encode.string "" ) ]
 
                     staged =
                         { baseModel
@@ -1870,16 +1843,27 @@ stateUpdateSuite =
                     ( m, _ ) =
                         update (stateUpdateMsg "c1" winningReport) staged
 
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+
                     tagOf =
-                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head |> Maybe.andThen .state
-                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                        entryOf |> Maybe.andThen .state
+                            |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
+
+                    textOf =
+                        entryOf |> Maybe.andThen .state
+                            |> Maybe.andThen (Decode.decodeValue (Decode.field "text" Decode.string) >> Result.toMaybe)
                 in
-                tagOf |> Expect.equal (Just "WinScreen")
+                Expect.all
+                    [ \_ -> tagOf |> Expect.equal (Just "WinScreen")
+                    , \_ -> textOf |> Expect.equal (entryOf |> Maybe.map .winText)
+                    ]
+                    ()
         , test "a WinScreen report before quizProgress has actually reached total is overridden back to the earned slide" <|
             \_ ->
                 let
                     prematureWinReport =
-                        Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] ) ]
+                        Encode.object [ ( "tag", Encode.string "WinScreen" ), ( "text", Encode.string "" ) ]
 
                     staged =
                         { baseModel | connectedPlayers = Dict.singleton "uuid1" "c1" }
@@ -1889,7 +1873,7 @@ stateUpdateSuite =
 
                     tagOf =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head |> Maybe.andThen .state
-                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                            |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
                 in
                 tagOf |> Expect.equal (Just "BlankScreen")
         ]
@@ -3049,10 +3033,7 @@ quizAnswerRoutingSuite =
 
 quizSlideReport : String -> Int -> Encode.Value
 quizSlideReport tag idx =
-    Encode.object
-        [ ( "screen", Encode.object [ ( "tag", Encode.string tag ), ( "idx", Encode.int idx ) ] )
-        , ( "now", Encode.float 42 )
-        ]
+    Encode.object [ ( "tag", Encode.string tag ), ( "idx", Encode.int idx ) ]
 
 
 persistedScreenField : String -> Decode.Decoder a -> Model -> Maybe a
@@ -3061,7 +3042,7 @@ persistedScreenField field decoder m =
         |> List.filter (\e -> e.uuid == "uuid1")
         |> List.head
         |> Maybe.andThen .state
-        |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", field ] decoder) >> Result.toMaybe)
+        |> Maybe.andThen (Decode.decodeValue (Decode.field field decoder) >> Result.toMaybe)
 
 
 deriveQuizScreenSuite : Test
@@ -3086,15 +3067,15 @@ deriveQuizScreenSuite =
 deriveWinScreenSuite : Test
 deriveWinScreenSuite =
     describe "deriveWinScreen"
-        [ test "derives a bare WinScreen once progress has reached total" <|
+        [ test "derives a WinScreen with the real, already-verified text embedded once progress has reached total" <|
             \_ ->
-                deriveWinScreen { progress = 3, total = 3 }
+                deriveWinScreen "hello reward" { progress = 3, total = 3 }
                     |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
-                    |> Expect.equal (Just (WinScreen ""))
+                    |> Expect.equal (Just (WinScreen "hello reward"))
         , test "not derivable while progress is short of total" <|
-            \_ -> deriveWinScreen { progress = 2, total = 3 } |> Expect.equal Nothing
+            \_ -> deriveWinScreen "hello reward" { progress = 2, total = 3 } |> Expect.equal Nothing
         , test "total 0 (config unread) is never derivable, even at progress 0" <|
-            \_ -> deriveWinScreen { progress = 0, total = 0 } |> Expect.equal Nothing
+            \_ -> deriveWinScreen "hello reward" { progress = 0, total = 0 } |> Expect.equal Nothing
         ]
 
 
@@ -3103,14 +3084,14 @@ deriveQuizOrWinScreenSuite =
     describe "deriveQuizOrWinScreen"
         [ test "derives the earned slide while progress is in range" <|
             \_ ->
-                deriveQuizOrWinScreen { progress = 1, total = 3 }
+                deriveQuizOrWinScreen "hello reward" { progress = 1, total = 3 }
                     |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
                     |> Expect.equal (Just (BlankScreen 1))
-        , test "falls back to the derived WinScreen once progress reaches total" <|
+        , test "falls back to the derived WinScreen (with the real text embedded) once progress reaches total" <|
             \_ ->
-                deriveQuizOrWinScreen { progress = 3, total = 3 }
+                deriveQuizOrWinScreen "hello reward" { progress = 3, total = 3 }
                     |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
-                    |> Expect.equal (Just (WinScreen ""))
+                    |> Expect.equal (Just (WinScreen "hello reward"))
         ]
 
 
@@ -3141,23 +3122,27 @@ innermostScreenTagSuite =
         , test "unwraps CheckingAnswerScreen/ConfirmingAnswerScreen nesting to the innermost tag" <|
             \_ ->
                 Encode.object
-                    [ ( "screen"
+                    [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
+                    , ( "nextScreen"
                       , Encode.object
-                            [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
-                            , ( "nextScreen"
-                              , Encode.object
-                                    [ ( "tag", Encode.string "CheckingAnswerScreen" )
-                                    , ( "nextScreen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 1 ) ] )
-                                    ]
-                              )
+                            [ ( "tag", Encode.string "CheckingAnswerScreen" )
+                            , ( "nextScreen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 1 ) ] )
                             ]
                       )
                     ]
                     |> innermostScreenTag
                     |> Expect.equal "BlankScreen"
+        , test "unwraps BeginScreen nesting too, so a paused player's self-report can't dodge verification" <|
+            \_ ->
+                Encode.object
+                    [ ( "tag", Encode.string "BeginScreen" )
+                    , ( "nextScreen", Encode.object [ ( "tag", Encode.string "WinScreen" ), ( "text", Encode.string "" ) ] )
+                    ]
+                    |> innermostScreenTag
+                    |> Expect.equal "WinScreen"
         , test "a wrapper with no nextScreen yields \"\" (matches no family)" <|
             \_ ->
-                Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "CheckingAnswerScreen" ) ] ) ]
+                Encode.object [ ( "tag", Encode.string "CheckingAnswerScreen" ) ]
                     |> innermostScreenTag
                     |> Expect.equal ""
         , test "a state with no decodable screen tag yields \"\"" <|
@@ -3168,20 +3153,14 @@ innermostScreenTagSuite =
 persistQuizScreenInRegistrySuite : Test
 persistQuizScreenInRegistrySuite =
     describe "persistQuizScreenInRegistry"
-        [ test "writes the progress counter and overwrites only the screen key, preserving the rest of state" <|
+        [ test "writes the progress counter and overwrites the persisted state with the derived screen" <|
             \_ ->
                 let
                     existing =
                         [ { uuid = "uuid1"
                           , filename = "f.dmg"
                           , platform = "mac"
-                          , state =
-                                Just
-                                    (Encode.object
-                                        [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 0 ), ( "s", Encode.string "typed" ) ] )
-                                        , ( "now", Encode.float 42 )
-                                        ]
-                                    )
+                          , state = Just (Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 0 ), ( "s", Encode.string "typed" ) ])
                           , pendingStateEdit = False
                           , winText = ""
                           , iqTimer = Nothing
@@ -3194,15 +3173,14 @@ persistQuizScreenInRegistrySuite =
                     updated =
                         persistQuizScreenInRegistry "uuid1" { next = 1, total = 3 } existing |> List.head
 
-                    stateField at decoder =
-                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue (Decode.at at decoder) >> Result.toMaybe)
+                    stateField decoder =
+                        updated |> Maybe.andThen .state |> Maybe.andThen (Decode.decodeValue decoder >> Result.toMaybe)
                 in
                 Expect.all
                     [ \_ -> updated |> Maybe.map .quizProgress |> Expect.equal (Just 1)
-                    , \_ -> stateField [ "screen", "tag" ] Decode.string |> Expect.equal (Just "BlankScreen")
-                    , \_ -> stateField [ "screen", "idx" ] Decode.int |> Expect.equal (Just 1)
-                    , \_ -> stateField [ "screen", "s" ] Decode.string |> Expect.equal Nothing
-                    , \_ -> stateField [ "now" ] Decode.float |> Expect.equal (Just 42)
+                    , \_ -> stateField (Decode.field "tag" Decode.string) |> Expect.equal (Just "BlankScreen")
+                    , \_ -> stateField (Decode.field "idx" Decode.int) |> Expect.equal (Just 1)
+                    , \_ -> stateField (Decode.field "s" Decode.string) |> Expect.equal Nothing
                     ]
                     ()
         , test "the final advance (next == total) writes the counter and overwrites the screen with the derived WinScreen" <|
@@ -3212,7 +3190,7 @@ persistQuizScreenInRegistrySuite =
                         entry "uuid1"
 
                     existing =
-                        [ { base | state = Just (Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 2 ) ] ) ]) } ]
+                        [ { base | state = Just (Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 2 ) ]) } ]
 
                     updated =
                         persistQuizScreenInRegistry "uuid1" { next = 3, total = 3 } existing |> List.head
@@ -3222,7 +3200,7 @@ persistQuizScreenInRegistrySuite =
                     , \_ ->
                         updated
                             |> Maybe.andThen .state
-                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "screen", "tag" ] Decode.string) >> Result.toMaybe)
+                            |> Maybe.andThen (Decode.decodeValue (Decode.field "tag" Decode.string) >> Result.toMaybe)
                             |> Expect.equal (Just "WinScreen")
                     ]
                     ()
@@ -3247,10 +3225,7 @@ quizScreenOverrideRoutingSuite =
                         }
 
                     crafted =
-                        Encode.object
-                            [ ( "screen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 9 ), ( "s", Encode.string "peeked" ) ] )
-                            , ( "now", Encode.float 42 )
-                            ]
+                        Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 9 ), ( "s", Encode.string "peeked" ) ]
 
                     ( m, _ ) =
                         update (stateUpdateMsg "c1" crafted) staged
@@ -3272,12 +3247,8 @@ quizScreenOverrideRoutingSuite =
 
                     wrapped =
                         Encode.object
-                            [ ( "screen"
-                              , Encode.object
-                                    [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
-                                    , ( "nextScreen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 9 ), ( "s", Encode.string "" ) ] )
-                                    ]
-                              )
+                            [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
+                            , ( "nextScreen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 9 ), ( "s", Encode.string "" ) ] )
                             ]
 
                     ( m, _ ) =
@@ -3296,12 +3267,8 @@ quizScreenOverrideRoutingSuite =
 
                     wrappedWin =
                         Encode.object
-                            [ ( "screen"
-                              , Encode.object
-                                    [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
-                                    , ( "nextScreen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] )
-                                    ]
-                              )
+                            [ ( "tag", Encode.string "ConfirmingAnswerScreen" )
+                            , ( "nextScreen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] )
                             ]
 
                     ( m, _ ) =
@@ -3439,7 +3406,7 @@ quizEditSuite =
                     |> Expect.equal (Just 0)
         , test "an edit onto a non-quiz screen reconciles nothing" <|
             \_ ->
-                reconcileQuizProgressAfterEdit "uuid1" (Encode.object [ ( "screen", Encode.object [ ( "tag", Encode.string "WinScreen" ) ] ) ]) baseModel
+                reconcileQuizProgressAfterEdit "uuid1" (Encode.object [ ( "tag", Encode.string "WinScreen" ) ]) baseModel
                     |> Expect.equal baseModel
         , test "a state-edit save routes through the reconciliation (wired into Server.update)" <|
             \_ ->

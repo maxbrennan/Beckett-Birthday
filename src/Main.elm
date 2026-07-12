@@ -55,8 +55,7 @@ port readDirResult : ({ path : String, files : List String, error : Maybe String
 
 init : String -> ( Model, Cmd Msg )
 init wsUrl =
-    ( { isBeginScreen = False
-      , screen = WsConnectingScreen
+    ( { screen = WsConnectingScreen
       , now = 0
       , pending = []
       , dingKey = 0
@@ -283,27 +282,33 @@ update msg model =
 
         
         BeginPressed ->
-            -- model.screen is already whatever the server derived (or, for the
-            -- families that stay self-reported, the client's own last report) --
-            -- there's no separate saved snapshot to restore from. Clear any
-            -- stray leftover local scheduling defensively (there shouldn't be
-            -- any live while parked on the begin screen), then kick off
-            -- whatever this screen needs to actually start running.
-            let
-                cleared =
-                    { model | isBeginScreen = False } |> clearPending
+            case model.screen of
+                BeginScreen inner ->
+                    -- inner is already whatever the server derived (or, for the
+                    -- families that stay self-reported, the client's own last
+                    -- report) -- unwrapping it is the whole resume, no separate
+                    -- round-trip needed. Clear any stray leftover local
+                    -- scheduling defensively (there shouldn't be any live while
+                    -- parked on the begin screen), then kick off whatever this
+                    -- screen needs to actually start running.
+                    let
+                        cleared =
+                            { model | screen = inner } |> clearPending
 
-                kicked =
-                    case resumePlaySongTarget cleared.questions cleared.pending cleared.screen of
-                        Just idx ->
-                            schedule 1000 (PlaySong idx) cleared
+                        kicked =
+                            case resumePlaySongTarget cleared.questions cleared.pending cleared.screen of
+                                Just idx ->
+                                    schedule 1000 (PlaySong idx) cleared
 
-                        Nothing ->
-                            cleared
-            in
-            ( kicked
-            , Cmd.batch [ pauseMusic "jeopardy-audio", resumeCmd model model.screen ]
-            )
+                                Nothing ->
+                                    cleared
+                    in
+                    ( kicked
+                    , Cmd.batch [ pauseMusic "jeopardy-audio", resumeCmd model inner ]
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
 
         PlaySong idx ->
             case innerBlankIdx model.screen of
@@ -328,11 +333,7 @@ update msg model =
 
         TrackEnded name ->
             if name == "jeopardy-theme.mp3" then
-                if model.isBeginScreen then
-                    ( model, Cmd.none )
-
-                else
-                    ( { model | isBeginScreen = False }, Cmd.none )
+                ( model, Cmd.none )
 
             else
                 case trackEndedTarget model.questions model.screen name of
@@ -548,9 +549,9 @@ update msg model =
                     case model.screen of
                         WsLoadingScreen ->
                             -- decodeModel is tolerant of the brand-new-player "{}" shape
-                            -- (isBeginScreen defaults True, screen defaults BlankScreen 0),
-                            -- so every case -- fresh player or resume -- goes through the
-                            -- same decode; there's no separate empty-object sentinel branch.
+                            -- (screen defaults to BeginScreen (BlankScreen 0)), so every
+                            -- case -- fresh player or resume -- goes through the same
+                            -- decode; there's no separate empty-object sentinel branch.
                             case Decode.decodeString decodeModel inner of
                                 Ok newModel ->
                                     -- Session/connection-local facts decodeModel can't know
