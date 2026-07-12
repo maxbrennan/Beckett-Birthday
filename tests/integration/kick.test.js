@@ -46,7 +46,7 @@ describe('kick behavior', () => {
         if (server) await server.stop();
     }, 10000);
 
-    test('starting a state edit kicks the live player, and a successful save delivers the edited state on reconnect', async () => {
+    test('starting a state edit kicks the live player, and a successful save delivers the edited quizProgress on reconnect', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'Ryan Birthday-kick-edit.dmg',
@@ -54,11 +54,17 @@ describe('kick behavior', () => {
 
         const { conn: playerConn, result: initialResult } = await connectAsPlayer(TEST_PORT, build.uuid);
         expect(initialResult.payload).toBe('stateUpdate');
-        expect(JSON.parse(initialResult.stateUpdate.json)).toEqual({});
+        // A fresh player has no live iqTimer and no confirmed quiz progress, so the
+        // screen is synthesized fresh as BlankScreen 0, always wrapped in BeginScreen.
+        expect(JSON.parse(initialResult.stateUpdate.json)).toEqual({ tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } });
 
         const { authResult, conn: adminConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
         expect(authResult.success).toBe(true);
-        expect(JSON.parse(json)).toEqual({});
+        // the fetched document is the merged server-state blob (winText, iqTimer,
+        // quizProgress, timerEndsAt, quizQuestions) -- there is no separate screen
+        // field at all; the screen is always derived fresh from these.
+        const fetched = JSON.parse(json);
+        expect(fetched.quizProgress).toBe(0);
 
         // starting the edit kicks the live player — its connection closes without any
         // further message from the server.
@@ -69,67 +75,53 @@ describe('kick behavior', () => {
         expect(duringEditResult.payload).toBe('stateRequestRejected');
         expect(duringEditResult.stateRequestRejected.reason).toBe('state is being edited by admin');
 
-        const newState = { jeopardyPlaying: false, screen: 'BeginScreen' };
+        const newState = { ...fetched, quizProgress: 1 };
         const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(newState));
         expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 
-        // after the save completes, reconnecting delivers the edited state.
+        // after the save completes, reconnecting derives the screen from the edited
+        // quizProgress directly.
         const { result: afterSaveResult } = await connectAsPlayer(TEST_PORT, build.uuid);
         expect(afterSaveResult.payload).toBe('stateUpdate');
-        expect(JSON.parse(afterSaveResult.stateUpdate.json)).toEqual(newState);
+        expect(JSON.parse(afterSaveResult.stateUpdate.json)).toEqual({ tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 1 } });
     });
 
-    // The two tests below pin the intended rejoin behavior for admin-edited state, using the
-    // real `{ tag: … }` screen shape (the reconnect test above uses an opaque string screen,
-    // which sidesteps the BeginScreen-vs-mid-game branch this behavior actually turns on).
-    test('editing a player onto a mid-game screen: the reconnect resumes via BeginScreen with that screen stowed in savedState', async () => {
+    test('editing a player\'s iqTimer directly: the reconnect wraps the derived IQ screen in BeginScreen', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'Ryan Birthday-edit-midgame.dmg',
         });
 
-        const midGameState = { screen: { tag: 'QuizScreen' }, pending: [], now: 1234, jeopardyPlaying: false, savedState: null };
-        const { conn: adminConn } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
-        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(midGameState));
+        const { conn: adminConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
+        const fetched = JSON.parse(json);
+        const editedIqTimer = {
+            epoch: 0,
+            phase: 'IqCounting',
+            questionIdx: 0,
+            countdownRemaining: 5,
+            dingCount: 0,
+            totalDings: 5,
+            fakeFlashPoint: 2,
+            fakeFlashUsed: false,
+            in50PercentPhase: false,
+            lastDing: 'RealDing',
+            dingDelay: null,
+        };
+        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify({ ...fetched, iqTimer: editedIqTimer }));
         expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 
-        // The edited screen isn't BeginScreen, so the reconnect snapshots it: reset to
-        // BeginScreen and stow the mid-game screen under savedState, so the player resumes
-        // via the jeopardy Start flow rather than being dropped straight into the quiz.
+        // There's no "already BeginScreen" case anymore -- every connect derives the
+        // screen fresh from iqTimer/quizProgress and wraps it unconditionally, so a
+        // mid-game IQ screen resumes via the jeopardy Start flow rather than being
+        // dropped straight into the countdown.
         const { result } = await connectAsPlayer(TEST_PORT, build.uuid);
         expect(result.payload).toBe('stateUpdate');
         const delivered = JSON.parse(result.stateUpdate.json);
-        expect(delivered.screen.tag).toBe('BeginScreen');
-        expect(delivered.jeopardyPlaying).toBe(true);
-        expect(delivered.savedState.screen.tag).toBe('QuizScreen');
-    });
-
-    test('editing a player onto a BeginScreen state: the reconnect delivers it verbatim, savedState preserved', async () => {
-        const build = await distClient.deployBuild(TEST_PORT, admin, {
-            platform: 'mac',
-            filename: 'Ryan Birthday-edit-begin.dmg',
-        });
-
-        // A BeginScreen state that already carries a savedState (e.g. an admin parking a
-        // player at the resume prompt for a specific screen).
-        const beginState = {
-            screen: { tag: 'BeginScreen' },
-            jeopardyPlaying: true,
-            pending: [],
-            savedState: { screen: { tag: 'QuizScreen' }, pending: [], savedAt: 500, songResumeTime: null, videoResumeTime: null },
-        };
-        const { conn: adminConn } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
-        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(beginState));
-        expect(saveResult.payload).toBe('distStateEditSaveAck');
-        await adminConn.close();
-
-        // Already on BeginScreen, so the reconnect delivers it untouched — no re-snapshot,
-        // and the existing savedState is carried through rather than clobbered.
-        const { result } = await connectAsPlayer(TEST_PORT, build.uuid);
-        expect(result.payload).toBe('stateUpdate');
-        expect(JSON.parse(result.stateUpdate.json)).toEqual(beginState);
+        expect(delivered.tag).toBe('BeginScreen');
+        expect(delivered.nextScreen.tag).toBe('IQTestCountdownScreen');
+        expect(delivered.nextScreen.state).toEqual({ questionIdx: 0, totalDings: 5, countdown: 5 });
     });
 
     test('undeploying kicks the live player, and reconnecting with the now-unregistered uuid is rejected', async () => {
@@ -155,7 +147,7 @@ describe('kick behavior', () => {
         expect(reconnectResult.stateRequestRejected.reason).toBe('unknown uuid');
     });
 
-    test('a player mid-game is left untouched on server stop, then snapshotted to resume on rejoin after restart', async () => {
+    test('a player mid-IQ-test is left untouched on server stop, rehydrated from iqTimer, and snapshotted to resume on rejoin after restart', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'Ryan Birthday-kick-serverstop.dmg',
@@ -164,36 +156,30 @@ describe('kick behavior', () => {
         const { conn: playerConn, result: initialResult } = await connectAsPlayer(TEST_PORT, build.uuid);
         expect(initialResult.payload).toBe('stateUpdate');
 
-        // Advance the player past BeginScreen and persist that mid-game state.
-        const midGameState = { screen: { tag: 'IQTestActiveScreen' }, pending: [], now: 1234, jeopardyPlaying: false, savedState: null };
-        playerConn.send({ stateUpdate: { json: JSON.stringify(midGameState) } });
-        await playerConn.waitFor((m) => m.payload === 'stateUpdateAck');
+        // Enter the real IQ-test flow (not a raw self-report -- ClientStateUpdate no
+        // longer persists anything at all) so the server genuinely owns a live
+        // iqTimer for this uuid.
+        playerConn.send({ iqStartCountdown: {} });
 
-        // On disk the state is left exactly as the player saved it: still IQTest, no
-        // savedState. Nothing snapshots it — not on the update, and (below) not on the way down.
-        const afterUpdate = await waitForRegistryEntry(build.uuid, (e) => e.state && e.state.screen);
-        expect(afterUpdate.state.screen.tag).toBe('IQTestActiveScreen');
-        expect(afterUpdate.state.savedState).toBeNull();
+        // The server-owned iqTimer snapshot lands in the registry as its own field,
+        // never as a persisted screen (there is no persisted screen at all anymore).
+        const afterUpdate = await waitForRegistryEntry(build.uuid, (e) => e.iqTimer && e.iqTimer.phase);
+        expect(afterUpdate.iqTimer.phase).toBe('IqCounting');
 
         // Stop the server (keeping the temp dir so the same registry survives the restart).
         // wss.close() doesn't tear down the live socket, so no disconnect fires — the point
-        // being that the mid-game state is NOT snapshotted at shutdown.
+        // being that the live iqTimer is NOT cleared at shutdown.
         await server.stop({ keepData: true });
         await playerConn.closed();
 
-        // Restart against the same registry and reconnect: the stateRequest lazily snapshots
-        // the mid-game screen into savedState and resets to BeginScreen, and delivers that.
+        // Restart against the same registry: FileRead rehydrates model.iqTimers from
+        // the persisted iqTimer field (see Server.elm's init/FileRead), and reconnecting
+        // derives the screen fresh from it, wrapped in BeginScreen.
         server = await startTestServer({ port: TEST_PORT, existingTempDir: server.tempDir });
         const { result: resumeResult } = await connectAsPlayer(TEST_PORT, build.uuid);
         expect(resumeResult.payload).toBe('stateUpdate');
         const resumed = JSON.parse(resumeResult.stateUpdate.json);
-        expect(resumed.screen.tag).toBe('BeginScreen');
-        expect(resumed.jeopardyPlaying).toBe(true);
-        expect(resumed.savedState.screen.tag).toBe('IQTestActiveScreen');
-
-        // …and the snapshot is now persisted, so it survives a further restart too.
-        const afterRejoin = await waitForRegistryEntry(build.uuid, (e) => e.state && e.state.screen.tag === 'BeginScreen');
-        expect(afterRejoin.state.screen.tag).toBe('BeginScreen');
-        expect(afterRejoin.state.savedState.screen.tag).toBe('IQTestActiveScreen');
+        expect(resumed.tag).toBe('BeginScreen');
+        expect(resumed.nextScreen.tag).toBe('IQTestCountdownScreen');
     }, 20000);
 });

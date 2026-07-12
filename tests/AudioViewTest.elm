@@ -9,13 +9,10 @@ import View exposing (formatTimer)
 
 baseModel : Model
 baseModel =
-    { screen = BeginScreen
-    , jeopardyPlaying = False
+    { screen = WsConnectingScreen
     , now = 0
     , pending = []
-    , savedState = Nothing
     , dingKey = 0
-    , pendingStartTime = Nothing
     , wsClientId = Nothing
     , timerEndsAt = 0
     , myUuid = Nothing
@@ -53,9 +50,11 @@ currentQuizSongTests =
                 Expect.equal Nothing
                     (currentQuizSong { baseModel | screen = BlankScreen 0, pending = [ PendingEvent 1000 (PlaySong 0) ] })
         , test "returns Nothing on non-BlankScreen screens" <|
-            \_ -> Expect.equal Nothing (currentQuizSong { baseModel | screen = BeginScreen })
+            \_ -> Expect.equal Nothing (currentQuizSong { baseModel | screen = WsConnectingScreen })
         , test "returns Nothing when the index is out of range" <|
             \_ -> Expect.equal Nothing (currentQuizSong { baseModel | screen = BlankScreen 99 })
+        , test "returns Nothing while parked on the begin screen, even for an audio slide (the double-audio bug fix)" <|
+            \_ -> Expect.equal Nothing (currentQuizSong { baseModel | screen = BeginScreen (BlankScreen 0) })
         ]
 
 

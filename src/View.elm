@@ -25,17 +25,18 @@ viewAudio : Model -> Html Msg
 viewAudio model =
     let
         jeopardyAudio =
-            if model.jeopardyPlaying then
-                audio
-                    [ id "jeopardy-audio"
-                    , src "assets/jeopardy-theme.mp3"
-                    , autoplay True
-                    , loop True
-                    ]
-                    []
+            case model.screen of
+                BeginScreen _ ->
+                    audio
+                        [ id "jeopardy-audio"
+                        , src "assets/jeopardy-theme.mp3"
+                        , autoplay True
+                        , loop True
+                        ]
+                        []
 
-            else
-                text ""
+                _ ->
+                    text ""
 
         quizAudio =
             case currentQuizSong model of
@@ -44,7 +45,6 @@ viewAudio model =
                         [ id "quiz-audio"
                         , src ("assets/songs/" ++ songSrc)
                         , autoplay True
-                        , on "loadedmetadata" (Decode.succeed SongMetadataLoaded)
                         , on "ended" (Decode.succeed (TrackEnded songSrc))
                         ]
                         []
@@ -199,43 +199,21 @@ view model =
 
 viewScreen : Model -> Html Msg
 viewScreen model =
+    -- Connection-status screens always win, regardless of BeginScreen: a disconnect
+    -- can happen while sitting on the begin screen, and "Connecting..."/the error
+    -- screen must still be visible in that window rather than getting masked by
+    -- the begin-screen gate.
     case model.screen of
         WsConnectingScreen ->
-            screen
-                [ p
-                    [ style "font-size" "26px"
-                    , style "color" "#2c4a5a"
-                    , style "text-align" "center"
-                    , style "margin" "0"
-                    ]
-                    [ text "Connecting to server..." ]
-                ]
+            viewWsScreen "Connecting to server..." "#2c4a5a"
 
         WsErrorScreen ->
-            screen
-                [ p
-                    [ style "font-size" "26px"
-                    , style "color" "#c0392b"
-                    , style "text-align" "center"
-                    , style "margin" "0"
-                    , style "max-width" "480px"
-                    , style "line-height" "1.5"
-                    ]
-                    [ text "Something is wrong with the internet connection. Reconnecting..." ]
-                ]
+            viewWsScreen "Something is wrong with the internet connection. Reconnecting..." "#c0392b"
 
         WsLoadingScreen ->
-            screen
-                [ p
-                    [ style "font-size" "26px"
-                    , style "color" "#2c4a5a"
-                    , style "text-align" "center"
-                    , style "margin" "0"
-                    ]
-                    [ text "Loading..." ]
-                ]
+            viewWsScreen "Loading..." "#2c4a5a"
 
-        BeginScreen ->
+        BeginScreen _ ->
             screen
                 [ headphones
                 , p
@@ -260,6 +238,42 @@ viewScreen model =
                     ]
                     [ text "Begin" ]
                 ]
+
+        _ ->
+            viewNonBeginScreen model
+
+
+viewWsScreen : String -> String -> Html Msg
+viewWsScreen message color =
+    screen
+        [ p
+            [ style "font-size" "26px"
+            , style "color" color
+            , style "text-align" "center"
+            , style "margin" "0"
+            , style "max-width" "480px"
+            , style "line-height" "1.5"
+            ]
+            [ text message ]
+        ]
+
+
+viewNonBeginScreen : Model -> Html Msg
+viewNonBeginScreen model =
+    case model.screen of
+        -- Unreachable here: viewScreen already handles all four above the
+        -- BeginScreen gate, before ever calling this function.
+        WsConnectingScreen ->
+            text ""
+
+        WsErrorScreen ->
+            text ""
+
+        WsLoadingScreen ->
+            text ""
+
+        BeginScreen _ ->
+            text ""
 
         BlankScreen idx ->
             let

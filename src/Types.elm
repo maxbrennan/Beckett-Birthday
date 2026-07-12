@@ -5,20 +5,10 @@ import Game.Quiz exposing (..)
 import Json.Decode as Decode
 
 
-type alias PausedState =
-    { screen : Screen
-    , pending : List PendingEvent
-    , savedAt : Float
-    , songResumeTime : Maybe Float
-    , videoResumeTime : Maybe Float
-    }
-
-
 type Screen
     = WsConnectingScreen
     | WsErrorScreen
     | WsLoadingScreen
-    | BeginScreen
     | BlankScreen Int
     | VideoScreen Int String
     | QuestionScreen Int String
@@ -31,13 +21,19 @@ type Screen
     | IQTestCountdownScreen IQTestCountdownState
     | IQTestActiveScreen IQTestState
     | FakeFlashCaughtScreen FakeFlashCaughtState
-      -- Carries the personalized win text, delivered by the server at win time (never
-      -- bundled into the client). The text is dropped on serialization so it never lands
-      -- in persisted state — see encodeScreen/decodeScreen in Sync.elm.
+      -- Carries the personalized win text, delivered live by the server via a
+      -- standalone winText message at win time. Also derived server-side
+      -- (embedding the real, already-verified text) so it persists/round-trips
+      -- normally through encodeScreen/decodeScreen for the reconnect path.
     | WinScreen String
     | TimedOutScreen
     | CheckingAnswerScreen Screen
     | ConfirmingAnswerScreen Screen
+      -- Wraps the real underlying screen the player will resume into. The server
+      -- derives and delivers this exact wrapping on connect/reconnect while the
+      -- player hasn't pressed Begin yet; pressing Begin unwraps it locally with
+      -- no additional round-trip (see Main.elm's BeginPressed).
+    | BeginScreen Screen
 
 
 -- A message scheduled to fire at an absolute timestamp (ms since Unix epoch).
@@ -49,12 +45,14 @@ type alias PendingEvent =
 
 type alias Model =
     { screen : Screen
-    , jeopardyPlaying : Bool
+
+    -- Local-only from here down: never encoded/decoded (see Sync.elm's
+    -- encodeModel/decodeModel). `pending`/`dingKey` drive live scheduling and
+    -- the ding-slot DOM-restart animation trick and reset fresh on every
+    -- connect/resume rather than surviving a disconnect with any precision.
     , now : Float
     , pending : List PendingEvent
-    , savedState : Maybe PausedState
     , dingKey : Int
-    , pendingStartTime : Maybe Float
     , wsClientId : Maybe String
     , timerEndsAt : Float
     , myUuid : Maybe String
@@ -89,7 +87,6 @@ type Msg
     | FakeFlashNextPhase
     | FakeFlashCounterTick
     | FakeFlashWindowExpired
-    | SongMetadataLoaded
     | DomPropertyReceived { elementId : String, property : String, value : Decode.Value }
     | DomPropertyError String
     | WsClientReady String

@@ -56,12 +56,9 @@ port readDirResult : ({ path : String, files : List String, error : Maybe String
 init : String -> ( Model, Cmd Msg )
 init wsUrl =
     ( { screen = WsConnectingScreen
-      , jeopardyPlaying = False
       , now = 0
       , pending = []
-      , savedState = Nothing
       , dingKey = 0
-      , pendingStartTime = Nothing
       , wsClientId = Nothing
       , timerEndsAt = 0
       , myUuid = Nothing
@@ -187,30 +184,6 @@ innerBlankIdx s =
             Nothing
 
 
--- Whether resuming a saved screen should seek the video/loud-loop audio back
--- to where it left off.
-videoSeekTime : PausedState -> Maybe Float
-videoSeekTime saved =
-    case saved.videoResumeTime of
-        Just t ->
-            case saved.screen of
-                VideoScreen _ _ ->
-                    Just t
-
-                IQTestActiveScreen state ->
-                    if state.loudPlaying then
-                        Just t
-
-                    else
-                        Nothing
-
-                _ ->
-                    Nothing
-
-        Nothing ->
-            Nothing
-
-
 -- Which BlankScreen index (if any) a TrackEnded event should advance to.
 -- VideoScreen always advances (its own end already gates on the right video);
 -- BlankScreen only advances if the reported track matches the song scheduled
@@ -247,14 +220,14 @@ revealQuestion idx model =
     )
 
 
--- Which PlaySong (if any) resuming from a jeopardy savedState must schedule.
--- Only a bare BlankScreen on a *video* slide with no PlaySong already pending
--- needs the kick: the server-derived resume screen (see Server.elm's
--- deriveQuizScreen) is a BlankScreen with whatever `pending` the client last
--- reported, and while an audio slide self-starts from there (the audio element
--- renders and plays -- see Audio.currentQuizSong), a video slide only ever
--- starts via PlaySong's transition into VideoScreen, so without this it would
--- sit on the blank screen forever.
+-- Which PlaySong (if any) pressing Begin must schedule to actually start the
+-- screen we're parked on. Only a bare BlankScreen on a *video* slide with no
+-- PlaySong already pending needs the kick: the server-derived resume screen
+-- (see Server.elm's deriveQuizScreen) is a BlankScreen, and while an audio
+-- slide self-starts from there (the audio element renders and plays -- see
+-- Audio.currentQuizSong), a video slide only ever starts via PlaySong's
+-- transition into VideoScreen, so without this it would sit on the blank
+-- screen forever.
 resumePlaySongTarget : List String -> List PendingEvent -> Screen -> Maybe Int
 resumePlaySongTarget questions pending screen =
     case screen of
@@ -331,47 +304,33 @@ update msg model =
 
         
         BeginPressed ->
-            case model.savedState of
-                Just saved ->
+            case model.screen of
+                BeginScreen inner ->
+                    -- inner is already whatever the server derived (or, for the
+                    -- families that stay self-reported, the client's own last
+                    -- report) -- unwrapping it is the whole resume, no separate
+                    -- round-trip needed. Clear any stray leftover local
+                    -- scheduling defensively (there shouldn't be any live while
+                    -- parked on the begin screen), then kick off whatever this
+                    -- screen needs to actually start running.
                     let
-                        -- Update pending events to fire at the same intervals from now as they would have from the savedAt time.
-                        rebasedPending =
-                            List.map
-                                (\e -> { e | fireAt = model.now + max 500 (e.fireAt - saved.savedAt) })
-                                saved.pending
-
-                        videoCmd =
-                            videoSeekTime saved
-                                |> Maybe.map (\t -> setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t })
-                                |> Maybe.withDefault Cmd.none
-
-                        resumed =
-                            { model
-                                | screen = saved.screen
-                                , pending = rebasedPending
-                                , savedState = Nothing
-                                , jeopardyPlaying = False
-                                , pendingStartTime = saved.songResumeTime
-                            }
+                        cleared =
+                            { model | screen = inner } |> clearPending
 
                         kicked =
-                            case resumePlaySongTarget model.questions rebasedPending saved.screen of
+                            case resumePlaySongTarget cleared.questions cleared.pending cleared.screen of
                                 Just idx ->
-                                    resumed |> schedule 1000 (PlaySong idx)
+                                    schedule 1000 (PlaySong idx) cleared
 
                                 Nothing ->
-                                    resumed
+                                    cleared
                     in
                     ( kicked
-                    , Cmd.batch [ pauseMusic "jeopardy-audio", videoCmd, resumeCmd model saved.screen ]
+                    , Cmd.batch [ pauseMusic "jeopardy-audio", resumeCmd model inner ]
                     )
 
-                Nothing ->
-                    ( { model | screen = BlankScreen 0, jeopardyPlaying = False, savedState = Nothing }
-                        |> clearPending
-                        |> schedule 1000 (PlaySong 0)
-                    , pauseMusic "jeopardy-audio"
-                    )
+                _ ->
+                    ( model, Cmd.none )
 
         PlaySong idx ->
             case innerBlankIdx model.screen of
@@ -396,12 +355,7 @@ update msg model =
 
         TrackEnded name ->
             if name == "jeopardy-theme.mp3" then
-                case model.screen of
-                    BeginScreen ->
-                        ( model, Cmd.none )
-
-                    _ ->
-                        ( { model | jeopardyPlaying = False }, Cmd.none )
+                ( model, Cmd.none )
 
             else
                 case trackEndedTarget model.questions model.screen name of
@@ -618,32 +572,29 @@ update msg model =
                 Ok (ServerStateUpdate inner) ->
                     case model.screen of
                         WsLoadingScreen ->
-                            if String.trim inner == "{}" then
-                                ( { model | screen = BeginScreen, jeopardyPlaying = True }, Cmd.none )
+                            -- decodeModel is tolerant of the brand-new-player "{}" shape
+                            -- (screen defaults to BeginScreen (BlankScreen 0)), so every
+                            -- case -- fresh player or resume -- goes through the same
+                            -- decode; there's no separate empty-object sentinel branch.
+                            case Decode.decodeString decodeModel inner of
+                                Ok newModel ->
+                                    -- Session/connection-local facts decodeModel can't know
+                                    -- (it always fills them with fresh-connection defaults)
+                                    -- carry forward from the live model instead. dingKey isn't
+                                    -- included: 0 is exactly correct for a freshly (re)connected
+                                    -- session, nothing ding-related survives a disconnect.
+                                    ( { newModel
+                                        | wsClientId = model.wsClientId
+                                        , myUuid = model.myUuid
+                                        , wsUrl = model.wsUrl
+                                        , questions = model.questions
+                                        , timerEndsAt = model.timerEndsAt
+                                      }
+                                    , Cmd.none
+                                    )
 
-                            else
-                                case Decode.decodeString decodeModel inner of
-                                    Ok newModel ->
-                                        let
-                                            videoCmd =
-                                                newModel.savedState
-                                                    |> Maybe.andThen .videoResumeTime
-                                                    |> Maybe.map (\t -> setDomProperty { elementId = "playing-video", property = "currentTime", value = Encode.float t })
-                                                    |> Maybe.withDefault Cmd.none
-                                        in
-                                        ( { newModel
-                                            | wsClientId = model.wsClientId
-                                            , dingKey = model.dingKey
-                                            , myUuid = model.myUuid
-                                            , wsUrl = model.wsUrl
-                                            , questions = model.questions
-                                            , timerEndsAt = model.timerEndsAt
-                                          }
-                                        , videoCmd
-                                        )
-
-                                    Err _ ->
-                                        ( model, Cmd.none )
+                                Err _ ->
+                                    ( model, Cmd.none )
 
                         _ ->
                             ( model, Cmd.none )
@@ -904,16 +855,6 @@ update msg model =
 
         NoOp ->
             ( model, Cmd.none )
-
-        SongMetadataLoaded ->
-            case model.pendingStartTime of
-                Just t ->
-                    ( { model | pendingStartTime = Nothing }
-                    , setDomProperty { elementId = "quiz-audio", property = "currentTime", value = Encode.float t }
-                    )
-
-                Nothing ->
-                    ( model, Cmd.none )
 
         DomPropertyReceived _ ->
             ( model, Cmd.none )

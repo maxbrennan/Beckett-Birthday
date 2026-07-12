@@ -1,7 +1,7 @@
 'use strict';
 
 const registryHelper = require('../helpers/registry');
-const { startTestServer } = require('../helpers/testServer');
+const { startTestServer, TEST_QUIZ_QUESTION_COUNT } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
 const { connectAsPlayer } = require('../helpers/playerClient');
@@ -16,19 +16,10 @@ let server;
 let admin;
 
 // Minimal player state whose screen is the win-confirming screen the client syncs right
-// before revealing WinScreen (see src/Main.elm WsSyncTick / src/Server/Protocol.elm stateIsWin).
+// before revealing WinScreen. The persisted/self-reported state *is* the screen's own
+// JSON directly (see Sync.elm's encodeModel) -- no wrapping object.
 function stateWithScreen(screen) {
-    return JSON.stringify({
-        screen,
-        jeopardyPlaying: false,
-        now: 0,
-        pending: [],
-        savedState: null,
-        dingKey: 0,
-        pendingStartTime: null,
-        wsClientId: null,
-        timerEndsAt: 0,
-    });
+    return JSON.stringify(screen);
 }
 
 function readRegistry() {
@@ -48,7 +39,7 @@ describe('win text delivery', () => {
         if (server) await server.stop();
     }, 10000);
 
-    test('deploy stores winText at top level of the registry entry, outside state', async () => {
+    test('deploy stores winText on the registry entry', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'win-store.dmg',
@@ -56,8 +47,6 @@ describe('win text delivery', () => {
         });
         const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
         expect(entry.winText).toBe(WIN_TEXT);
-        // winText is a sibling of uuid, not nested inside the (still empty) state.
-        expect(entry.state).toBeNull();
     });
 
     // Regression test for the fixed exploit (issue #33): the server used to grant
@@ -118,10 +107,41 @@ describe('win text delivery', () => {
         await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
 
         const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
-        conn.send({ stateUpdate: { json: stateWithScreen({ tag: 'BeginScreen' }) } });
+        conn.send({ stateUpdate: { json: stateWithScreen({ tag: 'BlankScreen', idx: 0 }) } });
         // The ack still comes back; a winText message must not.
         await conn.waitFor((m) => m.payload === 'stateUpdateAck');
         await expect(conn.waitFor((m) => m.payload === 'winText', 500)).rejects.toThrow();
         await conn.close();
+    }, 10000);
+
+    // Once WinScreen is derivable (see Server.elm's deriveWinScreen), a player who
+    // reconnects after already completing the quiz -- whether they closed the app right
+    // at the moment they won, before ever seeing the reveal, or reconnect much later --
+    // gets the derived WinScreen with the real text embedded directly, wrapped in
+    // BeginScreen (the reconnect snapshot). No separate winText message is needed for
+    // this path -- that mechanism is reserved for the live win moment (see the
+    // "does not trigger winText" tests above, and Server.elm's ClientQuizAdvanced/
+    // ClientQuizAnswerSubmitted handlers).
+    test('reconnecting after a win delivers the real winText embedded in the derived WinScreen', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'win-reconnect.dmg',
+            winText: WIN_TEXT,
+        });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        const { conn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        for (let idx = 0; idx < TEST_QUIZ_QUESTION_COUNT; idx += 1) {
+            conn.send({ quizAdvanced: { idx } });
+        }
+        await conn.waitFor((m) => m.payload === 'winText');
+        await conn.close();
+
+        const { conn: reconn, result } = await connectAsPlayer(TEST_PORT, build.uuid);
+        const delivered = JSON.parse(result.stateUpdate.json);
+        expect(delivered.tag).toBe('BeginScreen');
+        expect(delivered.nextScreen.tag).toBe('WinScreen');
+        expect(delivered.nextScreen.text).toBe(WIN_TEXT);
+        await reconn.close();
     }, 10000);
 });

@@ -140,11 +140,37 @@ describe('server-side 7-day session timer (issue #50)', () => {
         expect(connectMsg.payload).toBe('timedOut');
 
         // The periodic sync loop (ClientStateUpdate) independently re-checks expiry too.
-        conn.send({ stateUpdate: { json: JSON.stringify({ screen: { tag: 'BeginScreen' }, pending: [], now: 1, jeopardyPlaying: true, savedState: null }) } });
+        conn.send({ stateUpdate: { json: JSON.stringify({ tag: 'IQTestActiveScreen' }) } });
         const syncMsg = await conn.waitFor((m) => m.payload === 'timedOut' || m.payload === 'stateUpdateAck');
         expect(syncMsg.payload).toBe('timedOut');
 
         await conn.close();
+    }, 15000);
+
+    test('an expired session keeps delivering timedOut on a later reconnect too, re-derived fresh from timerEndsAt each time', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'timer-expired-reconnect.dmg',
+        });
+
+        const { conn: setupConn } = await connectAsPlayer(TEST_PORT, build.uuid);
+        await setupConn.close();
+
+        await server.stop({ keepData: true });
+        const entries = readRegistry();
+        const rewritten = entries.map((e) => (e.uuid === build.uuid ? { ...e, timerEndsAt: Date.now() - 1000 } : e));
+        writeRegistry(rewritten);
+        server = await startTestServer({ port: TEST_PORT, existingTempDir: server.tempDir });
+
+        const { conn, result: connectMsg } = await requestStateAfterRestart(TEST_PORT, build.uuid);
+        expect(connectMsg.payload).toBe('timedOut');
+        await conn.close();
+
+        // Nothing is cached for this -- expiry is re-derived fresh from timerEndsAt on
+        // every connect, so a second reconnect independently gets timedOut again too.
+        const { conn: secondConn, result: secondConnectMsg } = await requestStateAfterRestart(TEST_PORT, build.uuid);
+        expect(secondConnectMsg.payload).toBe('timedOut');
+        await secondConn.close();
     }, 15000);
 
     test("a replacement build inherits the original build's deadline rather than starting a fresh one", async () => {

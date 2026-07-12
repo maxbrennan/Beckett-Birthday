@@ -21,18 +21,10 @@ function readRegistry() {
 
 // Minimal player state; a raw stateUpdate the fabricated-exploit test uses to simulate a
 // modified client bypassing the Elm client's Msg system entirely (see win-text.test.js).
+// The persisted/self-reported state *is* the screen's own JSON directly (see Sync.elm's
+// encodeModel) -- no wrapping object.
 function stateWithScreen(screen) {
-    return JSON.stringify({
-        screen,
-        jeopardyPlaying: false,
-        now: 0,
-        pending: [],
-        savedState: null,
-        dingKey: 0,
-        pendingStartTime: null,
-        wsClientId: null,
-        timerEndsAt: 0,
-    });
+    return JSON.stringify(screen);
 }
 
 describe('server-side quiz-progress win gating', () => {
@@ -179,29 +171,24 @@ describe('server-side quiz-progress win gating', () => {
         });
 
         // Claim a question screen far past the earned one, with a typed answer in tow.
+        // ClientStateUpdate no longer inspects or persists this at all (see
+        // Server.elm's rewritten ClientStateUpdate) -- the screen is instead
+        // synthesized fresh from quizProgress at the next connect, below.
         conn.send({
             stateUpdate: {
                 json: stateWithScreen({ tag: 'QuestionScreen', idx: 9, s: 'stolen-answer-peek' }),
             },
         });
         await conn.waitFor((m) => m.payload === 'stateUpdateAck');
-
-        // The persisted screen must be the derived BlankScreen at the earned index,
-        // with the crafted screen (and its typed text) gone entirely.
-        const entry = await waitUntil(() => {
-            const e = readRegistry().find((row) => row.uuid === build.uuid);
-            return e && e.state && e.state.screen && e.state.screen.tag === 'BlankScreen' ? e : undefined;
-        });
-        expect(entry.state.screen).toEqual({ tag: 'BlankScreen', idx: 1 });
-        expect(JSON.stringify(entry)).not.toContain('stolen-answer-peek');
         await conn.close();
 
-        // Reconnect: mid-game states deliver via the jeopardy snapshot, so the
-        // corrected screen arrives stowed in savedState (see kick.test.js).
+        // Reconnect: mid-game states deliver via the jeopardy snapshot, wrapping the
+        // player in BeginScreen while leaving the corrected screen itself in
+        // place (see kick.test.js).
         const { conn: reconn, result } = await connectAsPlayer(TEST_PORT, build.uuid);
         const delivered = JSON.parse(result.stateUpdate.json);
-        expect(delivered.screen.tag).toBe('BeginScreen');
-        expect(delivered.savedState.screen).toEqual({ tag: 'BlankScreen', idx: 1 });
+        expect(delivered.tag).toBe('BeginScreen');
+        expect(delivered.nextScreen).toEqual({ tag: 'BlankScreen', idx: 1 });
         await reconn.close();
     }, 10000);
 });
