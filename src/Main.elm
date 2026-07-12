@@ -151,9 +151,8 @@ resumeCmd model screen =
 
 iqFail : Model -> IQTestState -> ( Model, Cmd Msg )
 iqFail model state =
-    -- Back to the IQ Begin screen. No server message: the server preserves its
-    -- own count/phase across a fail, and the next iqStartCountdown resets only the
-    -- run. totalDings here is the display copy the server last sent.
+    -- Back to the IQ Begin screen. Send a message to the server
+    -- that we failed the IQ test.
     ( clearPending
         { model
             | screen =
@@ -162,7 +161,7 @@ iqFail model state =
                     , totalDings = state.totalDings
                     }
         }
-    , Cmd.none
+    , sendWs model iqFailEnvelope
     )
 
 

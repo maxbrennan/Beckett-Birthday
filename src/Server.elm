@@ -1575,6 +1575,39 @@ update msg model =
                         Nothing ->
                             ( model, Cmd.none )
 
+                Ok ClientIqFail ->
+                    -- The client failed the IQ test (too many dings pressed too quickly).
+                    -- Reset the timer state to idle and send the client back to the IQ
+                    -- instruction screen.
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just uuid ->
+                            case Dict.get uuid model.iqTimers of
+                                Just state ->
+                                    -- Clear the timer state to reset it back to idle
+                                    let
+                                        clearedState =
+                                            { epoch = 0
+                                            , phase = IqIdleNotStarted
+                                            , questionIdx = state.questionIdx
+                                            , countdownRemaining = 0
+                                            , dingCount = 0
+                                            , totalDings = IQTest.iqQuestionCount
+                                            , fakeFlashPoint = 0
+                                            , fakeFlashUsed = False
+                                            , in50PercentPhase = False
+                                            , lastDing = RealDing
+                                            , dingDelay = Nothing
+                                            }
+                                    in
+                                    setIqTimer uuid clearedState model
+
+                                Nothing ->
+                                    -- No timer state to clear, but still need to return client to start screen
+                                    ( model, Cmd.none )
+
                 Ok (ClientQuizSongEnded idx) ->
                     -- "The song/video for question idx just finished playing." Accepted
                     -- only if idx is exactly the player's current expected question --

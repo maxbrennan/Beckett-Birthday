@@ -143,6 +143,14 @@ iqCaughtEnvelope =
         ]
 
 
+iqFailEnvelope : Encode.Value
+iqFailEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqFail" )
+        , ( "iqFail", Encode.object [] )
+        ]
+
+
 -- Sent right after restoring a saved IQ screen from a reconnect, so the server
 -- re-arms whatever it paused on disconnect (see Server.elm's resumeIqTimer).
 iqResumeEnvelope : Encode.Value

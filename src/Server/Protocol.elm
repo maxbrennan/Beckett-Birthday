@@ -21,6 +21,7 @@ type ClientEnvelope
     | ClientIqReadyForDing
     | ClientIqCaught
     | ClientIqResume
+    | ClientIqFail
     | ClientQuizAdvanced Int
     | ClientQuizAnswerSubmitted { idx : Int, answer : String }
     | ClientQuizSongEnded Int
@@ -130,6 +131,9 @@ decodeClientEnvelope =
 
                     "iqResume" ->
                         Decode.succeed ClientIqResume
+
+                    "iqFail" ->
+                        Decode.succeed ClientIqFail
 
                     "quizAdvanced" ->
                         Decode.map ClientQuizAdvanced
@@ -333,6 +337,14 @@ iqTestCompleteEnvelope =
     Encode.object
         [ ( "payload", Encode.string "iqTestComplete" )
         , ( "iqTestComplete", Encode.object [] )
+        ]
+
+
+iqTestFailEnvelope : Encode.Value
+iqTestFailEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqTestFail" )
+        , ( "iqTestFail", Encode.object [] )
         ]
 
 
