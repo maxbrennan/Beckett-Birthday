@@ -129,6 +129,13 @@ message QuizAnswerSubmitted { uint32 idx = 1; string answer = 2; }
 // display text, populated only when correct = false (see WrongAnswerScreen).
 message QuizAnswerResult { uint32 idx = 1; bool correct = 2; string reveal_answer = 3; }
 
+// "The song/video for question idx just finished playing." The server tracks this
+// per-uuid (in memory only) and requires it to match before accepting a submitted
+// answer for the same idx -- see Server.elm's ClientQuizSongEnded / the
+// ClientQuizAnswerSubmitted gate.
+message QuizSongEnded    { uint32 idx = 1; }
+message QuizSongEndedAck { uint32 idx = 1; }
+
 message ServerMessage {
   oneof payload {
     StateUpdate          state_update            = 1;
@@ -153,6 +160,7 @@ message ServerMessage {
     TimerSync               timer_sync                 = 21;
     TimedOut                timed_out                  = 22;
     QuizAnswerResult        quiz_answer_result         = 23;
+    QuizSongEndedAck        quiz_song_ended_ack        = 24;
   }
 }
 
@@ -175,5 +183,6 @@ message ClientMessage {
     IqResume             iq_resume             = 15;
     QuizAdvanced         quiz_advanced         = 16;
     QuizAnswerSubmitted  quiz_answer_submitted = 17;
+    QuizSongEnded        quiz_song_ended       = 18;
   }
 }

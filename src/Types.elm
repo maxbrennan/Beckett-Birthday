@@ -61,6 +61,14 @@ type alias Model =
     , wsUrl : String
     , questions : List String
     , awaitingAnswerResult : Bool
+
+    -- Rendezvous flags for the current BlankScreen: the answer screen is only
+    -- revealed once both the local 1s pause has elapsed and the server's
+    -- quizSongEndedAck has arrived, whichever comes second. Reset whenever a
+    -- new BlankScreen starts (see Main.elm's TrackEnded); not persisted, same
+    -- treatment as awaitingAnswerResult.
+    , songTimerElapsed : Bool
+    , songEndAcked : Bool
     }
 
 

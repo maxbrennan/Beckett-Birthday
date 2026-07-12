@@ -68,6 +68,8 @@ init wsUrl =
       , wsUrl = wsUrl
       , questions = []
       , awaitingAnswerResult = False
+      , songTimerElapsed = False
+      , songEndAcked = False
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
@@ -123,6 +125,13 @@ sendWs model payload =
 -- can re-arm whatever IQ timer it paused on disconnect (see Server.elm's
 -- resumeIqTimer). Harmless to send for FakeFlashCaughtScreen too -- the server
 -- has nothing scheduled for that phase, so it's just a no-op there.
+--
+-- A saved QuestionScreen resumes directly onto the answer input (see
+-- BeginPressed below) -- the song never replays, so TrackEnded never fires to
+-- re-report it. Without re-sending quizSongEnded here, the server's tracked
+-- confirmation for this idx (cleared on every connect, and lost on a server
+-- restart regardless -- see Model.quizSongEnded) would never be re-established,
+-- and ClientQuizAnswerSubmitted's gate would block the answer forever.
 resumeCmd : Model -> Screen -> Cmd Msg
 resumeCmd model screen =
     case screen of
@@ -134,6 +143,9 @@ resumeCmd model screen =
 
         FakeFlashCaughtScreen _ ->
             sendWs model iqResumeEnvelope
+
+        QuestionScreen idx _ ->
+            sendWs model (quizSongEndedEnvelope idx)
 
         _ ->
             Cmd.none
@@ -223,6 +235,16 @@ trackEndedTarget questions screen name =
 
         _ ->
             Nothing
+
+
+-- Actually reveals the answer input for idx, once both the local pause and
+-- the server's song-ended ack have each independently arrived (see
+-- ShowQuestion / the ServerQuizSongEndedAck case below).
+revealQuestion : Int -> Model -> ( Model, Cmd Msg )
+revealQuestion idx model =
+    ( { model | screen = QuestionScreen idx "" }
+    , Task.attempt (\_ -> NoOp) (Browser.Dom.focus "answer-input")
+    )
 
 
 -- Which PlaySong (if any) resuming from a jeopardy savedState must schedule.
@@ -384,9 +406,9 @@ update msg model =
             else
                 case trackEndedTarget model.questions model.screen name of
                     Just idx ->
-                        ( { model | screen = BlankScreen idx }
+                        ( { model | screen = BlankScreen idx, songTimerElapsed = False, songEndAcked = False }
                             |> schedule 1000 (ShowQuestion idx)
-                        , Cmd.none
+                        , sendWs model (quizSongEndedEnvelope idx)
                         )
 
                     Nothing ->
@@ -396,9 +418,11 @@ update msg model =
             case model.screen of
                 BlankScreen blankIdx ->
                     if blankIdx == idx then
-                        ( { model | screen = QuestionScreen idx "" }
-                        , Task.attempt (\_ -> NoOp) (Browser.Dom.focus "answer-input")
-                        )
+                        if model.songEndAcked then
+                            revealQuestion idx model
+
+                        else
+                            ( { model | songTimerElapsed = True }, Cmd.none )
 
                     else
                         ( model, Cmd.none )
@@ -787,6 +811,26 @@ update msg model =
 
                                 else
                                     ( { cleared | screen = WrongAnswerScreen idx r.revealAnswer }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok (ServerQuizSongEndedAck idx) ->
+                    -- The server confirmed it recorded this song/video as ended.
+                    -- Only meaningful while still on the matching BlankScreen (guards
+                    -- a stale/late ack after the screen already moved on). Reveals the
+                    -- answer input immediately if the local pause has already elapsed;
+                    -- otherwise just records the ack and waits for ShowQuestion.
+                    case model.screen of
+                        BlankScreen blankIdx ->
+                            if blankIdx /= idx then
+                                ( model, Cmd.none )
+
+                            else if model.songTimerElapsed then
+                                revealQuestion idx model
+
+                            else
+                                ( { model | songEndAcked = True }, Cmd.none )
 
                         _ ->
                             ( model, Cmd.none )

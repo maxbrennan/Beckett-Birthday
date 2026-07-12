@@ -120,6 +120,8 @@ describe('edit state', () => {
         // The edited idx is now the authoritative progress: question 1's answer (see
         // testServer.js's TEST_QUIZ_QUESTIONS) must be accepted, not silently dropped.
         const { conn } = await connectAsPlayer(TEST_PORT, quizEditBuild.uuid);
+        conn.send({ quizSongEnded: { idx: 1 } });
+        await conn.waitFor((m) => m.payload === 'quizSongEndedAck');
         conn.send({ quizAnswerSubmitted: { idx: 1, answer: 'answer one' } });
         const result = await conn.waitFor((m) => m.payload === 'quizAnswerResult');
         expect(result.quizAnswerResult.correct).toBe(true);

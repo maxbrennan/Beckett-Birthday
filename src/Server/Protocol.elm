@@ -23,6 +23,7 @@ type ClientEnvelope
     | ClientIqResume
     | ClientQuizAdvanced Int
     | ClientQuizAnswerSubmitted { idx : Int, answer : String }
+    | ClientQuizSongEnded Int
     | ClientUnknown
 
 
@@ -138,6 +139,10 @@ decodeClientEnvelope =
                         Decode.map2 (\idx answer -> ClientQuizAnswerSubmitted { idx = idx, answer = answer })
                             (Decode.at [ "quizAnswerSubmitted", "idx" ] Decode.int)
                             (Decode.at [ "quizAnswerSubmitted", "answer" ] Decode.string)
+
+                    "quizSongEnded" ->
+                        Decode.map ClientQuizSongEnded
+                            (Decode.at [ "quizSongEnded", "idx" ] Decode.int)
 
                     _ ->
                         Decode.succeed ClientUnknown
@@ -348,4 +353,15 @@ quizAnswerResultEnvelope { idx, correct, revealAnswer } =
                 , ( "revealAnswer", Encode.string revealAnswer )
                 ]
           )
+        ]
+
+
+-- Confirms the server has recorded that idx's song/video ended, so the client
+-- may proceed to reveal the answer input for it (see Server.elm's
+-- quizSongEnded tracking / the ClientQuizAnswerSubmitted gate).
+quizSongEndedAckEnvelope : Int -> Encode.Value
+quizSongEndedAckEnvelope idx =
+    Encode.object
+        [ ( "payload", Encode.string "quizSongEndedAck" )
+        , ( "quizSongEndedAck", Encode.object [ ( "idx", Encode.int idx ) ] )
         ]
