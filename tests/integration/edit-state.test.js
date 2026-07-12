@@ -53,9 +53,13 @@ describe('edit state', () => {
     test('successfully edits the state when a uuid is provided', async () => {
         const { authResult, conn, json } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
         expect(authResult.success).toBe(true);
-        expect(JSON.parse(json)).toEqual({}); // freshly deployed build starts with no saved state
+        // the fetched document is the whole merged server-state blob (screen, winText,
+        // iqTimer, quizProgress, timerEndsAt, quizQuestions), not just the raw screen.
+        const fetched = JSON.parse(json);
+        expect(fetched.state).toBeNull(); // freshly deployed build starts with no saved state
 
-        const newState = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
+        const editedScreen = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
+        const newState = { ...fetched, state: editedScreen };
         const resultMsg = await distClient.saveStateEdit(conn, build.uuid, JSON.stringify(newState));
         expect(resultMsg.payload).toBe('distStateEditSaveAck');
         await conn.close();
@@ -64,9 +68,9 @@ describe('edit state', () => {
         // they aren't guaranteed to land in order — poll rather than read once.
         const entry = await waitUntil(() => {
             const found = readRegistry().find((e) => e.uuid === build.uuid);
-            return found && found.state && found.state.tag === newState.tag ? found : null;
+            return found && found.state && found.state.tag === editedScreen.tag ? found : null;
         });
-        expect(entry.state).toEqual(newState);
+        expect(entry.state).toEqual(editedScreen);
     });
 
     test('falls back to the previous state when invalid JSON is provided', async () => {
@@ -74,10 +78,11 @@ describe('edit state', () => {
             platform: 'mac',
             filename: 'Ryan Birthday-3.0.1-universal.dmg',
         });
-        const goodState = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
+        const goodScreen = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
 
         {
-            const { conn } = await distClient.requestStateEdit(TEST_PORT, admin, invalidJsonBuild.uuid);
+            const { conn, json } = await distClient.requestStateEdit(TEST_PORT, admin, invalidJsonBuild.uuid);
+            const goodState = { ...JSON.parse(json), state: goodScreen };
             const saveResult = await distClient.saveStateEdit(conn, invalidJsonBuild.uuid, JSON.stringify(goodState));
             expect(saveResult.payload).toBe('distStateEditSaveAck');
             await conn.close();
@@ -85,7 +90,7 @@ describe('edit state', () => {
 
         const { authResult, conn, json } = await distClient.requestStateEdit(TEST_PORT, admin, invalidJsonBuild.uuid);
         expect(authResult.success).toBe(true);
-        expect(JSON.parse(json)).toEqual(goodState);
+        expect(JSON.parse(json).state).toEqual(goodScreen);
 
         const resultMsg = await distClient.saveStateEdit(conn, invalidJsonBuild.uuid, 'this is not valid json');
         expect(resultMsg.payload).toBe('stateRequestRejected');
@@ -96,22 +101,23 @@ describe('edit state', () => {
         // polling anyway for consistency with the rest of this suite rather than assuming
         // enough time has already passed.
         const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === invalidJsonBuild.uuid));
-        expect(entry.state).toEqual(goodState); // unchanged — no write happened
+        expect(entry.state).toEqual(goodScreen); // unchanged — no write happened
     });
 
     // Issue #74: an edit onto a quiz-slide screen must also move the server's own
-    // quizProgress (Server.elm's reconcileQuizProgressAfterEdit), or acceptQuizAdvance
-    // keeps expecting the pre-edit question and silently rejects every answer the
-    // edited-onto screen produces, stranding the player.
-    test('an edit onto a quiz-slide screen reconciles quizProgress so the player can answer that question', async () => {
+    // quizProgress, or acceptQuizAdvance keeps expecting the pre-edit question and
+    // silently rejects every answer the edited-onto screen produces, stranding the
+    // player. quizProgress is now a real field the admin sets directly (see
+    // Server.elm's ClientDistStateEditSave), not inferred from the screen's shape.
+    test('an edit setting quizProgress directly lets the player answer that question', async () => {
         const quizEditBuild = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'Ryan Birthday-3.0.2-universal.dmg',
         });
 
-        const editedState = { tag: 'QuestionScreen', idx: 1, s: '' };
         {
-            const { conn } = await distClient.requestStateEdit(TEST_PORT, admin, quizEditBuild.uuid);
+            const { conn, json } = await distClient.requestStateEdit(TEST_PORT, admin, quizEditBuild.uuid);
+            const editedState = { ...JSON.parse(json), state: { tag: 'QuestionScreen', idx: 1, s: '' }, quizProgress: 1 };
             const saveResult = await distClient.saveStateEdit(conn, quizEditBuild.uuid, JSON.stringify(editedState));
             expect(saveResult.payload).toBe('distStateEditSaveAck');
             await conn.close();

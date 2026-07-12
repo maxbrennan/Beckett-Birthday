@@ -80,8 +80,9 @@ describe('deploy-replacement', () => {
         // admin resolves the pending edit — the edit payload shows the carried-over state.
         const { authResult: editAuth, conn: editConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, replacement.uuid);
         expect(editAuth.success).toBe(true);
-        expect(JSON.parse(json)).toEqual(preservedState);
-        const saveResult = await distClient.saveStateEdit(editConn, replacement.uuid, JSON.stringify(preservedState));
+        const fetchedForEdit = JSON.parse(json);
+        expect(fetchedForEdit.state).toEqual(preservedState);
+        const saveResult = await distClient.saveStateEdit(editConn, replacement.uuid, JSON.stringify(fetchedForEdit));
         expect(saveResult.payload).toBe('distStateEditSaveAck');
         await editConn.close();
 
@@ -125,9 +126,10 @@ describe('deploy-replacement', () => {
 
         const { authResult: editAuth, conn: editConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, replacement.uuid);
         expect(editAuth.success).toBe(true);
-        expect(JSON.parse(json)).toEqual({});
-        const newState = { screen: 'BeginScreen' };
-        const saveResult = await distClient.saveStateEdit(editConn, replacement.uuid, JSON.stringify(newState));
+        const fetched = JSON.parse(json);
+        expect(fetched.state).toBeNull();
+        const newScreen = { tag: 'BeginScreen' };
+        const saveResult = await distClient.saveStateEdit(editConn, replacement.uuid, JSON.stringify({ ...fetched, state: newScreen }));
         expect(saveResult.payload).toBe('distStateEditSaveAck');
         await editConn.close();
 
@@ -138,7 +140,7 @@ describe('deploy-replacement', () => {
 
         const { result } = await connectAsPlayer(TEST_PORT, replacement.uuid);
         expect(result.payload).toBe('stateUpdate');
-        expect(JSON.parse(result.stateUpdate.json)).toEqual(newState);
+        expect(JSON.parse(result.stateUpdate.json)).toEqual(newScreen);
 
         const okDownload = await distClient.download(TEST_PORT, replacement.uuid);
         expect(okDownload.statusCode).toBe(200);
@@ -326,9 +328,11 @@ describe('deploy-replacement', () => {
             // replacement instead of an admin's on-demand distStateEdit.
             const { authResult: editAuth, conn, json } = await distClient.requestStateEdit(TEST_PORT, admin, replacement.uuid);
             expect(editAuth.success).toBe(true);
-            expect(JSON.parse(json)).toEqual({});
+            const fetched = JSON.parse(json);
+            expect(fetched.state).toBeNull();
 
-            const newState = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
+            const newScreen = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
+            const newState = { ...fetched, state: newScreen };
             const saveResult = await distClient.saveStateEdit(conn, replacement.uuid, JSON.stringify(newState));
             expect(saveResult.payload).toBe('distStateEditSaveAck');
             await conn.close();
@@ -337,7 +341,7 @@ describe('deploy-replacement', () => {
                 const found = readRegistry().find((e) => e.uuid === replacement.uuid);
                 return found && found.pendingStateEdit === false ? found : null;
             });
-            expect(entry.state).toEqual(newState);
+            expect(entry.state).toEqual(newScreen);
 
             // now exercise the invalid-JSON fallback against the SAME (already-unlocked)
             // newUuid, re-entering pending state via the manual distStateEdit trigger

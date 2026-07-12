@@ -58,7 +58,11 @@ describe('kick behavior', () => {
 
         const { authResult, conn: adminConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
         expect(authResult.success).toBe(true);
-        expect(JSON.parse(json)).toEqual({});
+        // the fetched document is the whole merged server-state blob (screen, winText,
+        // iqTimer, quizProgress, timerEndsAt, quizQuestions), not just the raw screen.
+        const fetched = JSON.parse(json);
+        expect(fetched.state).toBeNull();
+        expect(fetched.quizProgress).toBe(0);
 
         // starting the edit kicks the live player — its connection closes without any
         // further message from the server.
@@ -69,15 +73,16 @@ describe('kick behavior', () => {
         expect(duringEditResult.payload).toBe('stateRequestRejected');
         expect(duringEditResult.stateRequestRejected.reason).toBe('state is being edited by admin');
 
-        const newState = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
+        const editedScreen = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
+        const newState = { ...fetched, state: editedScreen };
         const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(newState));
         expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 
-        // after the save completes, reconnecting delivers the edited state.
+        // after the save completes, reconnecting delivers the edited screen.
         const { result: afterSaveResult } = await connectAsPlayer(TEST_PORT, build.uuid);
         expect(afterSaveResult.payload).toBe('stateUpdate');
-        expect(JSON.parse(afterSaveResult.stateUpdate.json)).toEqual(newState);
+        expect(JSON.parse(afterSaveResult.stateUpdate.json)).toEqual(editedScreen);
     });
 
     // The two tests below pin the intended rejoin behavior for admin-edited state, using the
@@ -90,7 +95,7 @@ describe('kick behavior', () => {
 
         const midGameState = { tag: 'QuizScreen' };
         const { conn: adminConn } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
-        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(midGameState));
+        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify({ state: midGameState }));
         expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 
@@ -113,7 +118,7 @@ describe('kick behavior', () => {
         // A player already parked on the begin screen (e.g. an admin resetting them there).
         const beginState = { tag: 'BeginScreen', nextScreen: { tag: 'QuizScreen' } };
         const { conn: adminConn } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
-        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(beginState));
+        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify({ state: beginState }));
         expect(saveResult.payload).toBe('distStateEditSaveAck');
         await adminConn.close();
 

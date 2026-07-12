@@ -12,7 +12,6 @@ import Server
     exposing
         ( ClearOutcome(..)
         , DingKind(..)
-        , EditedIqScreen(..)
         , IqPhase(..)
         , IqTimerState
         , Model
@@ -23,7 +22,6 @@ import Server
         , classifyDing
         , classifyFileRead
         , clearIqTimer
-        , decodeEditedIqScreen
         , decodeDingKind
         , decodeIqPhase
         , decodeIqTimerStateFull
@@ -39,8 +37,6 @@ import Server
         , persistQuizScreenInRegistry
         , questionsForUuid
         , quizJustCompleted
-        , reconcileIqTimerAfterEdit
-        , reconcileQuizProgressAfterEdit
         , resumeIqTimer
         , setIqTimer
         , update
@@ -65,8 +61,10 @@ import Server.Registry
         ( RegistryEntry
         , decodeRegistry
         , decodeRegistryEntry
+        , decodeServerStateFields
         , encodeRegistry
         , encodeRegistryEntry
+        , encodeServerStateFields
         , findUuidByClient
         , isExpired
         , registryFilePath
@@ -1137,13 +1135,14 @@ iqUpdateSuite =
         ]
 
 
--- ── Admin state-edit reconciliation with the server's IQ timer ──────────────
--- The server's iqTimers is now the sole authority on the IQ countdown/count,
--- separate from the persisted registry JSON edit:state edits. Without
--- reconcileIqTimerAfterEdit, an edited countdown/count is silently clobbered
--- the moment the server resends its own (unrelated) value on the next
--- iqResume -- this is exactly the bug report: "start countdown at 100s, edit
--- state to 5s, click begin, still 100s".
+-- ── Admin edit:state now writes iqTimer/quizProgress directly (issue #74) ────
+-- The admin's saved JSON is the whole merged server-state document (see
+-- encodeServerStateFields/decodeServerStateFields) -- iqTimer and quizProgress
+-- are edited as their own real fields rather than inferred from the screen's
+-- shape, so there's no more separate reconciliation step: the save handler
+-- writes them straight into both the registry and the live
+-- model.iqTimers/model.quizProgress dicts (the actual authority while a
+-- player is connected).
 
 
 editedScreenState : String -> List ( String, Encode.Value ) -> Encode.Value
@@ -1153,118 +1152,56 @@ editedScreenState tag fields =
 
 iqEditSuite : Test
 iqEditSuite =
-    describe "reconcileIqTimerAfterEdit"
-        [ describe "decodeEditedIqScreen"
-            [ test "decodes an edited IQTestCountdownScreen's countdown/totalDings" <|
-                \_ ->
-                    editedScreenState "IQTestCountdownScreen" [ ( "questionIdx", Encode.int 0 ), ( "countdown", Encode.int 5 ), ( "totalDings", Encode.int 100 ) ]
-                        |> Decode.decodeValue decodeEditedIqScreen
-                        |> Expect.equal (Ok (EditedIqCountdown { countdown = 5, totalDings = 100 }))
-            , test "decodes an edited IQTestActiveScreen's dingCount/totalDings" <|
-                \_ ->
-                    editedScreenState "IQTestActiveScreen"
-                        [ ( "questionIdx", Encode.int 0 ), ( "dingCount", Encode.int 3 ), ( "totalDings", Encode.int 100 )
-                        , ( "isFlashing", Encode.bool False ), ( "dingActive", Encode.bool False )
-                        , ( "fakeFlashActive", Encode.bool False ), ( "fakeIsTrap", Encode.bool False ), ( "loudPlaying", Encode.bool False )
-                        ]
-                        |> Decode.decodeValue decodeEditedIqScreen
-                        |> Expect.equal (Ok (EditedIqActive { dingCount = 3, totalDings = 100 }))
-            , test "decodes an edited IQTestScreen's totalDings" <|
-                \_ ->
-                    editedScreenState "IQTestScreen" [ ( "questionIdx", Encode.int 0 ), ( "totalDings", Encode.int 200 ) ]
-                        |> Decode.decodeValue decodeEditedIqScreen
-                        |> Expect.equal (Ok (EditedIqBegin { totalDings = 200 }))
-            , test "a non-IQ screen decodes to EditedIqOther" <|
-                \_ ->
-                    Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ]
-                        |> Decode.decodeValue decodeEditedIqScreen
-                        |> Expect.equal (Ok EditedIqOther)
-            , test "malformed JSON (no screen field) decodes to EditedIqOther rather than failing" <|
-                \_ ->
-                    Encode.object []
-                        |> Decode.decodeValue decodeEditedIqScreen
-                        |> Expect.equal (Ok EditedIqOther)
-            ]
-        , test "reconciles a paused countdown to the edited value (the reported bug)" <|
+    describe "edit:state writes iqTimer directly"
+        [ test "saving a full iqTimer snapshot lands in both model.iqTimers and the registry" <|
             \_ ->
                 let
-                    -- Countdown was started at iqQuestionCount and paused (disconnected) partway.
-                    paused =
-                        { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | phase = IqCounting, countdownRemaining = 63, totalDings = IQTest.iqQuestionCount } }
+                    editing =
+                        { baseModel | distClients = Dict.singleton "c1" (EditingState "uuid1") }
 
-                    edited =
-                        editedScreenState "IQTestCountdownScreen" [ ( "questionIdx", Encode.int 0 ), ( "countdown", Encode.int 5 ), ( "totalDings", Encode.int IQTest.iqQuestionCount ) ]
+                    editedState =
+                        encodeServerStateFields
+                            { state = Nothing
+                            , winText = ""
+                            , iqTimer = Just (encodeIqTimerStateFull { iqState | phase = IqCounting, countdownRemaining = 5 })
+                            , quizProgress = 0
+                            , timerEndsAt = Nothing
+                            , quizQuestions = Nothing
+                            }
 
-                    reconciled =
-                        reconcileIqTimerAfterEdit "uuid1" edited paused
+                    ( m, _ ) =
+                        update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
                 in
-                Dict.get "uuid1" reconciled.iqTimers
-                    |> Maybe.map (\s -> ( s.countdownRemaining, s.phase ))
-                    |> Expect.equal (Just ( 5, IqCounting ))
-        , test "reconciling an IQTestActiveScreen edit sets dingCount/totalDings and awaits the next ding" <|
-            \_ ->
-                let
-                    edited =
-                        editedScreenState "IQTestActiveScreen"
-                            [ ( "questionIdx", Encode.int 0 ), ( "dingCount", Encode.int 40 ), ( "totalDings", Encode.int 100 )
-                            , ( "isFlashing", Encode.bool False ), ( "dingActive", Encode.bool False )
-                            , ( "fakeFlashActive", Encode.bool False ), ( "fakeIsTrap", Encode.bool False ), ( "loudPlaying", Encode.bool False )
-                            ]
-
-                    reconciled =
-                        reconcileIqTimerAfterEdit "uuid1" edited baseModel
-                in
-                Dict.get "uuid1" reconciled.iqTimers
-                    |> Maybe.map (\s -> ( s.dingCount, s.totalDings, s.phase ))
-                    |> Expect.equal (Just ( 40, 100, IqAwaitingReady ))
-        , test "reconciling an edit to a non-IQ screen leaves any existing timer untouched" <|
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.iqTimers |> Maybe.map (\s -> ( s.countdownRemaining, s.phase )) |> Expect.equal (Just ( 5, IqCounting ))
+                    , \_ -> entryOf |> Maybe.andThen .iqTimer |> Expect.notEqual Nothing
+                    ]
+                    ()
+        , test "saving with iqTimer: null clears both the live entry and the registry" <|
             \_ ->
                 let
                     staged =
-                        { baseModel | iqTimers = Dict.singleton "uuid1" { iqState | dingCount = 7 } }
+                        setIqTimer "uuid1" { iqState | phase = IqDingShown } baseModel |> Tuple.first
 
-                    edited =
-                        Encode.object [ ( "tag", Encode.string "QuestionScreen" ) ]
+                    editing =
+                        { staged | distClients = Dict.singleton "c1" (EditingState "uuid1") }
 
-                    reconciled =
-                        reconcileIqTimerAfterEdit "uuid1" edited staged
-                in
-                Dict.get "uuid1" reconciled.iqTimers
-                    |> Maybe.map .dingCount
-                    |> Expect.equal (Just 7)
-        , test "reconciling a countdown edit also persists the re-derived screen/iqTimer into the registry (not just iqTimers)" <|
-            \_ ->
-                let
-                    -- Mirrors the real call site: the admin's raw edit is applied to the
-                    -- registry *before* reconcileIqTimerAfterEdit runs (see the ordering fix
-                    -- in ClientDistStateEditSave).
-                    rawEdited =
-                        editedScreenState "IQTestCountdownScreen" [ ( "questionIdx", Encode.int 0 ), ( "countdown", Encode.int 5 ), ( "totalDings", Encode.int IQTest.iqQuestionCount ) ]
+                    editedState =
+                        encodeServerStateFields
+                            { state = Nothing, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing }
 
-                    editedRegistry =
-                        List.map
-                            (\e ->
-                                if e.uuid == "uuid1" then
-                                    { e | state = Just rawEdited }
+                    ( m, _ ) =
+                        update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
 
-                                else
-                                    e
-                            )
-                            baseModel.registry
-
-                    reconciled =
-                        reconcileIqTimerAfterEdit "uuid1" rawEdited { baseModel | registry = editedRegistry }
-
-                    entryOf uuid =
-                        reconciled.registry |> List.filter (\e -> e.uuid == uuid) |> List.head
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
                 in
                 Expect.all
-                    [ \_ -> entryOf "uuid1" |> Maybe.andThen .iqTimer |> Expect.notEqual Nothing
-                    , \_ ->
-                        entryOf "uuid1"
-                            |> Maybe.andThen .state
-                            |> Maybe.andThen (Decode.decodeValue (Decode.at [ "state", "countdown" ] Decode.int) >> Result.toMaybe)
-                            |> Expect.equal (Just 5)
+                    [ \_ -> Dict.get "uuid1" m.iqTimers |> Expect.equal Nothing
+                    , \_ -> entryOf |> Maybe.andThen .iqTimer |> Expect.equal Nothing
                     ]
                     ()
         ]
@@ -2512,17 +2449,27 @@ iqPhaseDingKindCodecSuite =
 
 editedIqBeginSuite : Test
 editedIqBeginSuite =
-    describe "reconcileIqTimerAfterEdit: EditedIqBegin"
-        [ test "reconciling an IQTestScreen (begin) edit resets to IqIdleNotStarted with the edited totalDings" <|
+    describe "edit:state can reset iqTimer back to IqIdleNotStarted directly"
+        [ test "saving iqTimer with phase IqIdleNotStarted and the edited totalDings lands as-is" <|
             \_ ->
                 let
-                    edited =
-                        editedScreenState "IQTestScreen" [ ( "questionIdx", Encode.int 0 ), ( "totalDings", Encode.int 250 ) ]
+                    editing =
+                        { baseModel | distClients = Dict.singleton "c1" (EditingState "uuid1") }
 
-                    reconciled =
-                        reconcileIqTimerAfterEdit "uuid1" edited baseModel
+                    editedState =
+                        encodeServerStateFields
+                            { state = Nothing
+                            , winText = ""
+                            , iqTimer = Just (encodeIqTimerStateFull { iqState | phase = IqIdleNotStarted, totalDings = 250 })
+                            , quizProgress = 0
+                            , timerEndsAt = Nothing
+                            , quizQuestions = Nothing
+                            }
+
+                    ( m, _ ) =
+                        update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
                 in
-                Dict.get "uuid1" reconciled.iqTimers
+                Dict.get "uuid1" m.iqTimers
                     |> Maybe.map (\s -> ( s.totalDings, s.phase ))
                     |> Expect.equal (Just ( 250, IqIdleNotStarted ))
         ]
@@ -3375,47 +3322,46 @@ quizScreenOverrideRoutingSuite =
 
 quizEditSuite : Test
 quizEditSuite =
-    describe "reconcileQuizProgressAfterEdit"
-        [ test "an edit onto a quiz slide makes its idx the authoritative progress, in memory and in the registry" <|
-            \_ ->
-                let
-                    reconciled =
-                        reconcileQuizProgressAfterEdit "uuid1" (quizSlideReport "QuestionScreen" 2) baseModel
-                in
-                Expect.all
-                    [ \_ -> Dict.get "uuid1" reconciled.quizProgress |> Expect.equal (Just 2)
-                    , \_ ->
-                        reconciled.registry
-                            |> List.filter (\e -> e.uuid == "uuid1")
-                            |> List.head
-                            |> Maybe.map .quizProgress
-                            |> Expect.equal (Just 2)
-                    ]
-                    ()
-        , test "an out-of-range idx clamps to the last real slide (self-healing, not a soft-lock)" <|
-            \_ ->
-                reconcileQuizProgressAfterEdit "uuid1" (quizSlideReport "BlankScreen" 9) baseModel
-                    |> .quizProgress
-                    |> Dict.get "uuid1"
-                    |> Expect.equal (Just 2)
-        , test "a negative idx clamps to 0" <|
-            \_ ->
-                reconcileQuizProgressAfterEdit "uuid1" (quizSlideReport "WrongAnswerScreen" -5) baseModel
-                    |> .quizProgress
-                    |> Dict.get "uuid1"
-                    |> Expect.equal (Just 0)
-        , test "an edit onto a non-quiz screen reconciles nothing" <|
-            \_ ->
-                reconcileQuizProgressAfterEdit "uuid1" (Encode.object [ ( "tag", Encode.string "WinScreen" ) ]) baseModel
-                    |> Expect.equal baseModel
-        , test "a state-edit save routes through the reconciliation (wired into Server.update)" <|
+    describe "edit:state writes quizProgress directly (issue #74)"
+        [ test "saving quizProgress lands in both model.quizProgress and the registry, whatever the screen is" <|
             \_ ->
                 let
                     editing =
                         { baseModel | distClients = Dict.singleton "c1" (EditingState "uuid1") }
 
+                    editedState =
+                        encodeServerStateFields
+                            { state = Just (quizSlideReport "QuestionScreen" 2)
+                            , winText = ""
+                            , iqTimer = Nothing
+                            , quizProgress = 2
+                            , timerEndsAt = Nothing
+                            , quizQuestions = Nothing
+                            }
+
                     ( m, _ ) =
-                        update (saveMsg "c1" "uuid1" (Encode.encode 0 (quizSlideReport "QuestionScreen" 1))) editing
+                        update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
                 in
-                Dict.get "uuid1" m.quizProgress |> Expect.equal (Just 1)
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.quizProgress |> Expect.equal (Just 2)
+                    , \_ -> entryOf |> Maybe.map .quizProgress |> Expect.equal (Just 2)
+                    ]
+                    ()
+        , test "the admin can set quizProgress to any value directly -- no clamping or inference from the screen shape" <|
+            \_ ->
+                let
+                    editing =
+                        { baseModel | distClients = Dict.singleton "c1" (EditingState "uuid1") }
+
+                    editedState =
+                        encodeServerStateFields
+                            { state = Nothing, winText = "", iqTimer = Nothing, quizProgress = 9, timerEndsAt = Nothing, quizQuestions = Nothing }
+
+                    ( m, _ ) =
+                        update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
+                in
+                Dict.get "uuid1" m.quizProgress |> Expect.equal (Just 9)
         ]

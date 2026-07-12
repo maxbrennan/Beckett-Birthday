@@ -56,19 +56,48 @@ registryFilePath =
 -- ── Codecs ────────────────────────────────────────────────────────────────────
 
 
+{-| Encodes just the six server/game-state fields (everything except the
+file-distribution metadata `uuid`/`filename`/`platform`/`pendingStateEdit`).
+Reused both to nest them under `serverState` in `encodeRegistryEntry` below,
+and by Server.elm's `performStateEdit` to hand an admin the exact same
+document shape for `edit:state` -- one physically merged blob covering
+`state` (the screen), `winText`, `iqTimer`, `quizProgress`, `timerEndsAt`, and
+`quizQuestions`, rather than just the raw screen.
+-}
+encodeServerStateFields : ServerStateFields -> Encode.Value
+encodeServerStateFields fields =
+    Encode.object
+        [ ( "state", Maybe.withDefault Encode.null fields.state )
+        , ( "winText", Encode.string fields.winText )
+        , ( "iqTimer", Maybe.withDefault Encode.null fields.iqTimer )
+        , ( "quizProgress", Encode.int fields.quizProgress )
+        , ( "timerEndsAt", fields.timerEndsAt |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
+        , ( "quizQuestions", Maybe.withDefault Encode.null fields.quizQuestions )
+        ]
+
+
+{-| `uuid`/`filename`/`platform`/`pendingStateEdit` are file-distribution
+metadata and stay top-level; everything server/game-state-related is
+physically merged into one nested `serverState` object via
+`encodeServerStateFields` above.
+-}
 encodeRegistryEntry : RegistryEntry -> Encode.Value
 encodeRegistryEntry entry =
     Encode.object
         [ ( "uuid", Encode.string entry.uuid )
         , ( "filename", Encode.string entry.filename )
         , ( "platform", Encode.string entry.platform )
-        , ( "state", Maybe.withDefault Encode.null entry.state )
         , ( "pendingStateEdit", Encode.bool entry.pendingStateEdit )
-        , ( "winText", Encode.string entry.winText )
-        , ( "iqTimer", Maybe.withDefault Encode.null entry.iqTimer )
-        , ( "quizProgress", Encode.int entry.quizProgress )
-        , ( "timerEndsAt", entry.timerEndsAt |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
-        , ( "quizQuestions", Maybe.withDefault Encode.null entry.quizQuestions )
+        , ( "serverState"
+          , encodeServerStateFields
+                { state = entry.state
+                , winText = entry.winText
+                , iqTimer = entry.iqTimer
+                , quizProgress = entry.quizProgress
+                , timerEndsAt = entry.timerEndsAt
+                , quizQuestions = entry.quizQuestions
+                }
+          )
         ]
 
 
@@ -93,41 +122,79 @@ decodeOptionalValue name =
             )
 
 
+{-| The six server/game-state fields, nested under `serverState` in the
+current shape. Tried there first; falls back to reading them top-level (the
+pre-merge shape every row on disk before this change used) so existing
+`builds.json` rows keep loading -- same tolerant-decoder convention as the
+individual per-field defaults below.
+-}
+type alias ServerStateFields =
+    { state : Maybe Encode.Value
+    , winText : String
+    , iqTimer : Maybe Encode.Value
+    , quizProgress : Int
+    , timerEndsAt : Maybe Float
+    , quizQuestions : Maybe Encode.Value
+    }
+
+
+decodeServerStateFields : Decode.Decoder ServerStateFields
+decodeServerStateFields =
+    let
+        fields =
+            Decode.map4
+                (\state winText iqTimer quizProgress ->
+                    \timerEndsAt quizQuestions ->
+                        ServerStateFields state winText iqTimer quizProgress timerEndsAt quizQuestions
+                )
+                (decodeOptionalValue "state")
+                -- older rows predate the win text; treat missing as empty.
+                (Decode.maybe (Decode.field "winText" Decode.string)
+                    |> Decode.map (Maybe.withDefault "")
+                )
+                -- older rows predate the IQ timer snapshot; treat missing as Nothing.
+                (decodeOptionalValue "iqTimer")
+                -- older rows predate quiz progress tracking; treat missing as 0.
+                (Decode.maybe (Decode.field "quizProgress" Decode.int)
+                    |> Decode.map (Maybe.withDefault 0)
+                )
+                |> Decode.andThen
+                    (\partial ->
+                        Decode.map2 partial
+                            -- older rows predate the server-owned timer; treat missing as
+                            -- Nothing (established fresh on this player's next stateRequest).
+                            (Decode.maybe (Decode.field "timerEndsAt" Decode.float))
+                            -- older rows predate per-build quiz questions; treat missing as Nothing.
+                            (decodeOptionalValue "quizQuestions")
+                    )
+    in
+    Decode.oneOf [ Decode.field "serverState" fields, fields ]
+
+
 decodeRegistryEntry : Decode.Decoder RegistryEntry
 decodeRegistryEntry =
-    Decode.map8
-        (\uuid filename platform state pendingStateEdit winText iqTimer quizProgress ->
-            RegistryEntry uuid filename platform state pendingStateEdit winText iqTimer quizProgress
+    Decode.map4
+        (\uuid filename platform pendingStateEdit ->
+            \serverState ->
+                RegistryEntry uuid
+                    filename
+                    platform
+                    serverState.state
+                    pendingStateEdit
+                    serverState.winText
+                    serverState.iqTimer
+                    serverState.quizProgress
+                    serverState.timerEndsAt
+                    serverState.quizQuestions
         )
         (Decode.field "uuid" Decode.string)
         (Decode.field "filename" Decode.string)
         (Decode.field "platform" Decode.string)
-        (decodeOptionalValue "state")
         -- older builds.json rows predate this field; treat missing as unlocked.
         (Decode.maybe (Decode.field "pendingStateEdit" Decode.bool)
             |> Decode.map (Maybe.withDefault False)
         )
-        -- older rows predate the win text; treat missing as empty.
-        (Decode.maybe (Decode.field "winText" Decode.string)
-            |> Decode.map (Maybe.withDefault "")
-        )
-        -- older rows predate the IQ timer snapshot; treat missing as Nothing.
-        (decodeOptionalValue "iqTimer")
-        -- older rows predate quiz progress tracking; treat missing as 0.
-        (Decode.maybe (Decode.field "quizProgress" Decode.int)
-            |> Decode.map (Maybe.withDefault 0)
-        )
-        |> Decode.andThen
-            (\partial ->
-                -- Decode.map8 above is already at elm/json's mapN ceiling, so timerEndsAt
-                -- and quizQuestions (the 9th/10th fields) are applied here instead.
-                Decode.map2 partial
-                    -- older rows predate the server-owned timer; treat missing as Nothing
-                    -- (established fresh on this player's next stateRequest).
-                    (Decode.maybe (Decode.field "timerEndsAt" Decode.float))
-                    -- older rows predate per-build quiz questions; treat missing as Nothing.
-                    (decodeOptionalValue "quizQuestions")
-            )
+        |> Decode.andThen (\partial -> Decode.map partial decodeServerStateFields)
 
 
 decodeRegistry : String -> List RegistryEntry

@@ -67,7 +67,7 @@ type IqPhase
     | IqAwaitingReady -- countdown done or a ding resolved; waiting for the client's iqReadyForDing
     | IqDingScheduled -- a random inter-ding delay is sleeping; ding not yet shown
     | IqDingShown -- a ding was emitted; waiting for the client to resolve it
-    | IqIdleNotStarted -- never started this test yet, or an admin's edit:state edit reset it back to the begin screen (EditedIqBegin)
+    | IqIdleNotStarted -- never started this test yet, or an admin's edit:state edit reset it back to the begin screen
     | IqIdleCaught -- just caught the trap; waiting for the client to press Begin (iqStartCountdown) again after the fake-flash cutscene
 
 
@@ -432,10 +432,8 @@ outside this family, and reports made before the question config is readable,
 pass through untouched.
 
 Note `"WinScreen"` is checked separately from `quizSlideTags` rather than
-folded into that list: `quizSlideTags` is also used by
-`reconcileQuizProgressAfterEdit` (the admin edit:state path), where an edit
-onto `WinScreen` has no `idx` to extract and must not be treated as "resetting
-progress to slide 0."
+folded into that list: `WinScreen` has no `idx` to extract, so folding it in
+would make an edit onto `WinScreen` look like "resetting progress to slide 0."
 -}
 applyQuizScreenOverride : String -> Encode.Value -> Model -> List RegistryEntry -> List RegistryEntry
 applyQuizScreenOverride uuid inner model registry =
@@ -462,31 +460,6 @@ applyQuizScreenOverride uuid inner model registry =
 
         Nothing ->
             registry
-
-
-{-| Admin state edits are the other write path onto quiz-slide screens.
-Without this, an edit onto e.g. `QuestionScreen 2` leaves `quizProgress`
-stale, so `acceptQuizAdvance` rejects the player's next answer (stranding
-them mid-quiz) -- and `applyQuizScreenOverride` would snap the edited screen
-straight back on their next stateUpdate. Mirrors `reconcileIqTimerAfterEdit`:
-the edited slide's idx becomes the new authoritative progress, clamped into
-the playable range so even an out-of-range edit self-heals to a real slide.
-Edits onto anything outside the quiz-slide family reconcile nothing.
--}
-reconcileQuizProgressAfterEdit : String -> Encode.Value -> Model -> Model
-reconcileQuizProgressAfterEdit uuid parsedState model =
-    if List.member (innermostScreenTag parsedState) quizSlideTags then
-        let
-            progress =
-                clamp 0 (List.length (questionsForUuid uuid model.registry) - 1) (extractQuestionIdx parsedState)
-        in
-        { model
-            | quizProgress = Dict.insert uuid progress model.quizProgress
-            , registry = updateEntryQuizProgress uuid progress model.registry
-        }
-
-    else
-        model
 
 
 {-| The client's overall trivia slide index, read off whatever's already
@@ -820,150 +793,6 @@ clearIqTimer uuid model =
     )
 
 
-{-| The IQ-relevant fields of whatever screen an admin state edit just saved.
-`EditedIqOther` covers both "not an IQ screen" and "decode failed" -- either
-way there's nothing to reconcile.
--}
-type EditedIqScreen
-    = EditedIqBegin { totalDings : Int }
-    | EditedIqCountdown { countdown : Int, totalDings : Int }
-    | EditedIqActive { dingCount : Int, totalDings : Int }
-    | EditedIqOther
-
-
-decodeEditedIqScreen : Decode.Decoder EditedIqScreen
-decodeEditedIqScreen =
-    Decode.oneOf
-        [ Decode.field "tag" Decode.string
-            |> Decode.andThen
-                (\tag ->
-                    case tag of
-                        "IQTestScreen" ->
-                            Decode.map (\td -> EditedIqBegin { totalDings = td })
-                                (Decode.at [ "state", "totalDings" ] Decode.int)
-
-                        "IQTestCountdownScreen" ->
-                            Decode.map2 (\cd td -> EditedIqCountdown { countdown = cd, totalDings = td })
-                                (Decode.at [ "state", "countdown" ] Decode.int)
-                                (Decode.at [ "state", "totalDings" ] Decode.int)
-
-                        "IQTestActiveScreen" ->
-                            Decode.map2 (\dc td -> EditedIqActive { dingCount = dc, totalDings = td })
-                                (Decode.at [ "state", "dingCount" ] Decode.int)
-                                (Decode.at [ "state", "totalDings" ] Decode.int)
-
-                        _ ->
-                            Decode.succeed EditedIqOther
-                )
-        , Decode.succeed EditedIqOther
-        ]
-
-
-{-| The server's in-memory `iqTimers` is now the sole authority on the IQ
-countdown/count, entirely separate from the persisted registry JSON an admin
-edits with `edit:state`. Without this, an edited countdown/count is silently
-clobbered the moment the server resends its own (unrelated) authoritative
-value -- see the `iqResume`-driven resends in `resumeIqTimer`. So: whenever an
-edit is saved, treat its IQ-relevant fields as the new authoritative state and
-overwrite (or create) the player's `iqTimers` entry to match, keeping it
-paused (no live schedule armed) exactly like a normal disconnect, so the next
-`iqResume` (once the player reconnects and presses Begin again) arms it.
-`fakeFlashUsed`/`in50PercentPhase` carry over from any existing entry (an edit
-doesn't expose them); `fakeFlashPoint` is freshly drawn since the client no
-longer has one to round-trip.
--}
-reconcileIqTimerAfterEdit : String -> Encode.Value -> Model -> Model
-reconcileIqTimerAfterEdit uuid parsedState model =
-    let
-        prev =
-            Dict.get uuid model.iqTimers
-
-        nextEpoch =
-            (prev |> Maybe.map .epoch |> Maybe.withDefault 0) + 1
-
-        carriedFakeFlashUsed =
-            prev |> Maybe.map .fakeFlashUsed |> Maybe.withDefault False
-
-        carriedIn50Percent =
-            prev |> Maybe.map .in50PercentPhase |> Maybe.withDefault False
-
-        questionIdx =
-            prev |> Maybe.map .questionIdx |> Maybe.withDefault (extractQuestionIdx parsedState)
-
-        -- Mirror the reconciled iqTimers entry into the registry too (model.registry
-        -- here already has the admin's raw edit applied by the caller), so it
-        -- survives a restart and so the persisted screen agrees with the
-        -- reconciled state rather than the admin's raw JSON (see deriveIqScreen).
-        persist state m =
-            { m
-                | iqTimers = Dict.insert uuid state m.iqTimers
-                , registry = persistIqTimerInRegistry uuid (Just state) m.registry
-            }
-    in
-    case Decode.decodeValue decodeEditedIqScreen parsedState of
-        Ok (EditedIqBegin { totalDings }) ->
-            persist
-                { epoch = nextEpoch
-                , phase = IqIdleNotStarted
-                , questionIdx = questionIdx
-                , countdownRemaining = totalDings
-                , dingCount = 0
-                , totalDings = totalDings
-                , fakeFlashPoint = prev |> Maybe.map .fakeFlashPoint |> Maybe.withDefault 0
-                , fakeFlashUsed = carriedFakeFlashUsed
-                , in50PercentPhase = carriedIn50Percent
-                , lastDing = RealDing
-                , dingDelay = Nothing
-                }
-                model
-
-        Ok (EditedIqCountdown { countdown, totalDings }) ->
-            let
-                ( fakeFlashPoint, newSeed ) =
-                    Random.step (IQTest.fakeFlashPointGen totalDings) model.seed
-            in
-            persist
-                { epoch = nextEpoch
-                , phase = IqCounting
-                , questionIdx = questionIdx
-                , countdownRemaining = countdown
-                , dingCount = 0
-                , totalDings = totalDings
-                , fakeFlashPoint = fakeFlashPoint
-                , fakeFlashUsed = carriedFakeFlashUsed
-                , in50PercentPhase = carriedIn50Percent
-                , lastDing = RealDing
-                , dingDelay = Nothing
-                }
-                { model | seed = newSeed }
-
-        Ok (EditedIqActive { dingCount, totalDings }) ->
-            let
-                ( fakeFlashPoint, newSeed ) =
-                    Random.step (IQTest.fakeFlashPointGen totalDings) model.seed
-            in
-            persist
-                { epoch = nextEpoch
-                , phase = IqAwaitingReady
-                , questionIdx = questionIdx
-                , countdownRemaining = 0
-                , dingCount = dingCount
-                , totalDings = totalDings
-                , fakeFlashPoint = fakeFlashPoint
-                , fakeFlashUsed = carriedFakeFlashUsed
-                , in50PercentPhase = carriedIn50Percent
-                , lastDing = RealDing
-                , dingDelay = Nothing
-                }
-                { model | seed = newSeed }
-
-        Ok EditedIqOther ->
-            model
-
-        Err _ ->
-            model
-
-
 -- Send a payload to a player's *current* connection, resolved live via
 -- connectedPlayers (their clientId can change across a disconnect/reconnect).
 -- Silently drops the send if the player isn't currently connected.
@@ -1181,9 +1010,11 @@ performUndeploy uuid clientId model =
 
 
 {-| Open a build's state for editing after admin auth: mark it pending, kick any
-connected player, hand the current state to the admin, and move the admin into
-the EditingState stage (which authorizes the following distStateEditSave).
-Runs only from AuthCompleted (post level-2 auth).
+connected player, hand the admin the whole merged server-state document
+(screen, winText, iqTimer, quizProgress, timerEndsAt, quizQuestions -- see
+encodeServerStateFields), and move the admin into the EditingState stage
+(which authorizes the following distStateEditSave). Runs only from
+AuthCompleted (post level-2 auth).
 -}
 performStateEdit : String -> String -> Model -> ( Model, Cmd Msg )
 performStateEdit uuid clientId model =
@@ -1191,12 +1022,23 @@ performStateEdit uuid clientId model =
         maybePlayerClientId =
             Dict.get uuid model.connectedPlayers
 
+        maybeEntry =
+            model.registry |> List.filter (\e -> e.uuid == uuid) |> List.head
+
         currentState =
-            model.registry
-                |> List.filter (\e -> e.uuid == uuid)
-                |> List.head
-                |> Maybe.andThen .state
-                |> Maybe.withDefault (Encode.object [])
+            case maybeEntry of
+                Just entry ->
+                    encodeServerStateFields
+                        { state = entry.state
+                        , winText = entry.winText
+                        , iqTimer = entry.iqTimer
+                        , quizProgress = entry.quizProgress
+                        , timerEndsAt = entry.timerEndsAt
+                        , quizQuestions = entry.quizQuestions
+                        }
+
+                Nothing ->
+                    Encode.object []
 
         newRegistry =
             setPendingStateEdit uuid model.registry
@@ -1591,30 +1433,57 @@ update msg model =
                                 clearedDist =
                                     Dict.remove clientId model.distClients
                             in
-                            case Decode.decodeString Decode.value json of
-                                Ok parsedState ->
+                            case Decode.decodeString decodeServerStateFields json of
+                                Ok edited ->
                                     let
-                                        -- Apply the admin's raw edit first, then reconcile against
-                                        -- *that* registry -- not the pre-edit one -- so the IQ
-                                        -- reconciliation's registry write (iqTimer + re-derived
-                                        -- screen) isn't discarded by this record update. Previously
-                                        -- these were computed independently from the same pre-edit
-                                        -- model and stitched together, which silently dropped
-                                        -- whatever reconcileIqTimerAfterEdit put in .registry.
-                                        rawEditedRegistry =
-                                            updateEntryState editUuid parsedState model.registry
+                                        newRegistry =
+                                            model.registry
+                                                |> List.map
+                                                    (\e ->
+                                                        if e.uuid == editUuid then
+                                                            { e
+                                                                | state = edited.state
+                                                                , pendingStateEdit = False
+                                                                , winText = edited.winText
+                                                                , iqTimer = edited.iqTimer
+                                                                , quizProgress = edited.quizProgress
+                                                                , timerEndsAt = edited.timerEndsAt
+                                                                , quizQuestions = edited.quizQuestions
+                                                            }
 
-                                        reconciledModel =
-                                            { model | registry = rawEditedRegistry }
-                                                |> reconcileIqTimerAfterEdit editUuid parsedState
-                                                |> reconcileQuizProgressAfterEdit editUuid parsedState
+                                                        else
+                                                            e
+                                                    )
+
+                                        -- The admin now edits the real source-of-truth fields
+                                        -- directly, so the server's live in-memory
+                                        -- quizProgress/iqTimers (the actual authority while a
+                                        -- player is connected) must be updated to match --
+                                        -- otherwise a reconnecting player's next
+                                        -- quizAdvanced/iqStartCountdown would still be checked
+                                        -- against the stale pre-edit value. This replaces the old
+                                        -- reconcileIqTimerAfterEdit/reconcileQuizProgressAfterEdit
+                                        -- inference-from-screen-shape dance entirely.
+                                        newQuizProgress =
+                                            Dict.insert editUuid edited.quizProgress model.quizProgress
+
+                                        newIqTimers =
+                                            case edited.iqTimer |> Maybe.andThen (Decode.decodeValue decodeIqTimerStateFull >> Result.toMaybe) of
+                                                Just iqState ->
+                                                    Dict.insert editUuid iqState model.iqTimers
+
+                                                Nothing ->
+                                                    Dict.remove editUuid model.iqTimers
                                     in
-                                    ( { reconciledModel
-                                        | pendingStateEdits = Set.remove editUuid model.pendingStateEdits
+                                    ( { model
+                                        | registry = newRegistry
+                                        , quizProgress = newQuizProgress
+                                        , iqTimers = newIqTimers
+                                        , pendingStateEdits = Set.remove editUuid model.pendingStateEdits
                                         , distClients = clearedDist
                                       }
                                     , Cmd.batch
-                                        [ writeRegistry reconciledModel.registry
+                                        [ writeRegistry newRegistry
                                         , sendToClient { clientId = clientId, payload = distStateEditSaveAckEnvelope }
                                         ]
                                     )
