@@ -51,6 +51,11 @@ screenRoundTripTests =
             \_ -> Expect.equal (CheckingAnswerScreen (QuestionScreen 4 "x")) (roundTripScreen (CheckingAnswerScreen (QuestionScreen 4 "x")))
         , test "WinScreen round-trips its text (safe: only ever derived once server-verified)" <|
             \_ -> Expect.equal (WinScreen "hello reward") (roundTripScreen (WinScreen "hello reward"))
+        , test "WinScreen decodes a hand-edited textless payload as empty text rather than failing the whole decode" <|
+            \_ ->
+                Expect.equal
+                    (Ok (WinScreen ""))
+                    (Decode.decodeValue decodeScreen (Encode.object [ ( "tag", Encode.string "WinScreen" ) ]))
         , test "WsConnectingScreen" <|
             \_ -> Expect.equal WsConnectingScreen (roundTripScreen WsConnectingScreen)
         , test "WsErrorScreen" <|

@@ -491,7 +491,8 @@ decodeScreen =
                         Decode.map FakeFlashCaughtScreen (Decode.field "state" decodeFakeFlashCaughtState)
 
                     "WinScreen" ->
-                        Decode.map WinScreen (Decode.field "text" Decode.string)
+                        Decode.map WinScreen
+                            (Decode.oneOf [ Decode.field "text" Decode.string, Decode.succeed "" ])
 
                     "TimedOutScreen" ->
                         Decode.succeed TimedOutScreen
