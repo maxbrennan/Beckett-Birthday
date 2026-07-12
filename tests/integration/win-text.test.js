@@ -39,7 +39,7 @@ describe('win text delivery', () => {
         if (server) await server.stop();
     }, 10000);
 
-    test('deploy stores winText at top level of the registry entry, outside state', async () => {
+    test('deploy stores winText on the registry entry', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'win-store.dmg',
@@ -47,8 +47,6 @@ describe('win text delivery', () => {
         });
         const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
         expect(entry.winText).toBe(WIN_TEXT);
-        // winText is a sibling of uuid, not nested inside the (still empty) state.
-        expect(entry.state).toBeNull();
     });
 
     // Regression test for the fixed exploit (issue #33): the server used to grant

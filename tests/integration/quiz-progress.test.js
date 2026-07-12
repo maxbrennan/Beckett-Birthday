@@ -171,21 +171,15 @@ describe('server-side quiz-progress win gating', () => {
         });
 
         // Claim a question screen far past the earned one, with a typed answer in tow.
+        // ClientStateUpdate no longer inspects or persists this at all (see
+        // Server.elm's rewritten ClientStateUpdate) -- the screen is instead
+        // synthesized fresh from quizProgress at the next connect, below.
         conn.send({
             stateUpdate: {
                 json: stateWithScreen({ tag: 'QuestionScreen', idx: 9, s: 'stolen-answer-peek' }),
             },
         });
         await conn.waitFor((m) => m.payload === 'stateUpdateAck');
-
-        // The persisted screen must be the derived BlankScreen at the earned index,
-        // with the crafted screen (and its typed text) gone entirely.
-        const entry = await waitUntil(() => {
-            const e = readRegistry().find((row) => row.uuid === build.uuid);
-            return e && e.state && e.state.tag === 'BlankScreen' ? e : undefined;
-        });
-        expect(entry.state).toEqual({ tag: 'BlankScreen', idx: 1 });
-        expect(JSON.stringify(entry)).not.toContain('stolen-answer-peek');
         await conn.close();
 
         // Reconnect: mid-game states deliver via the jeopardy snapshot, wrapping the

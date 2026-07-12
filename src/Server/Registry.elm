@@ -5,11 +5,20 @@ import Json.Decode as Decode
 import Json.Encode as Encode
 
 
+{-| Deliberately has **no** persisted screen field. Every player-facing screen
+is synthesized fresh, at connect time, purely from `iqTimer`/`quizProgress`/
+`winText`/`quizQuestions`/`timerEndsAt` (see Server.elm's `ClientStateRequest`
+and `deriveIqScreen`/`deriveQuizOrWinScreen`/`deriveTimedOutScreen`) -- these
+five fields are collectively the *only* source of truth for what a
+reconnecting player sees. There is deliberately nothing else to cache or keep
+in sync: previously a `state` field held a write-time-derived copy of the
+screen, but every screen tag that matters is a pure function of the fields
+below, so caching it only risked drifting out of sync with them.
+-}
 type alias RegistryEntry =
     { uuid : String
     , filename : String
     , platform : String
-    , state : Maybe Encode.Value
     , pendingStateEdit : Bool
     , winText : String
 
@@ -18,17 +27,14 @@ type alias RegistryEntry =
     -- encodeIqTimerStateFull. It exists so a server restart can rehydrate the
     -- in-memory iqTimers Dict (see Server.elm's init) instead of silently
     -- losing a player's progress. quizProgress below is the generalization of
-    -- this idea to the quiz phase; for both, the `state` blob's `screen` is
-    -- overwritten from this server-owned record wherever it's derivable (see
-    -- Server.elm's deriveIqScreen/deriveQuizScreen) rather than trusting the
-    -- client's own stateUpdate verbatim.
+    -- this idea to the quiz phase.
     , iqTimer : Maybe Encode.Value
 
     -- The furthest quiz question index (see Server.elm's quizProgress Dict)
     -- the server has independently confirmed this player has passed, via
-    -- explicit quizAdvanced events rather than the client-reported `state`
-    -- blob. Lets a server restart rehydrate quizProgress without trusting
-    -- (or losing) anything the client itself claims about its screen.
+    -- explicit quizAdvanced events rather than anything the client itself
+    -- claims. Lets a server restart rehydrate quizProgress without trusting
+    -- (or losing) anything the client reports.
     , quizProgress : Int
 
     -- The server-computed epoch-ms deadline for this player's 7-day session
@@ -56,19 +62,19 @@ registryFilePath =
 -- ── Codecs ────────────────────────────────────────────────────────────────────
 
 
-{-| Encodes just the six server/game-state fields (everything except the
+{-| Encodes just the five server/game-state fields (everything except the
 file-distribution metadata `uuid`/`filename`/`platform`/`pendingStateEdit`).
 Reused both to nest them under `serverState` in `encodeRegistryEntry` below,
 and by Server.elm's `performStateEdit` to hand an admin the exact same
-document shape for `edit:state` -- one physically merged blob covering
-`state` (the screen), `winText`, `iqTimer`, `quizProgress`, `timerEndsAt`, and
-`quizQuestions`, rather than just the raw screen.
+document shape for `edit:state` -- `winText`, `iqTimer`, `quizProgress`,
+`timerEndsAt`, and `quizQuestions` are the sole editable, authoritative
+fields; there is no separate screen to edit, since it's always derived fresh
+from these (see RegistryEntry's doc comment).
 -}
 encodeServerStateFields : ServerStateFields -> Encode.Value
 encodeServerStateFields fields =
     Encode.object
-        [ ( "state", Maybe.withDefault Encode.null fields.state )
-        , ( "winText", Encode.string fields.winText )
+        [ ( "winText", Encode.string fields.winText )
         , ( "iqTimer", Maybe.withDefault Encode.null fields.iqTimer )
         , ( "quizProgress", Encode.int fields.quizProgress )
         , ( "timerEndsAt", fields.timerEndsAt |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
@@ -90,8 +96,7 @@ encodeRegistryEntry entry =
         , ( "pendingStateEdit", Encode.bool entry.pendingStateEdit )
         , ( "serverState"
           , encodeServerStateFields
-                { state = entry.state
-                , winText = entry.winText
+                { winText = entry.winText
                 , iqTimer = entry.iqTimer
                 , quizProgress = entry.quizProgress
                 , timerEndsAt = entry.timerEndsAt
@@ -122,15 +127,16 @@ decodeOptionalValue name =
             )
 
 
-{-| The six server/game-state fields, nested under `serverState` in the
+{-| The five server/game-state fields, nested under `serverState` in the
 current shape. Tried there first; falls back to reading them top-level (the
 pre-merge shape every row on disk before this change used) so existing
 `builds.json` rows keep loading -- same tolerant-decoder convention as the
-individual per-field defaults below.
+individual per-field defaults below. A stale `state`/`screen` key left over
+from an older row is simply never asked for, so it's silently ignored -- no
+migration needed.
 -}
 type alias ServerStateFields =
-    { state : Maybe Encode.Value
-    , winText : String
+    { winText : String
     , iqTimer : Maybe Encode.Value
     , quizProgress : Int
     , timerEndsAt : Maybe Float
@@ -142,12 +148,11 @@ decodeServerStateFields : Decode.Decoder ServerStateFields
 decodeServerStateFields =
     let
         fields =
-            Decode.map4
-                (\state winText iqTimer quizProgress ->
+            Decode.map3
+                (\winText iqTimer quizProgress ->
                     \timerEndsAt quizQuestions ->
-                        ServerStateFields state winText iqTimer quizProgress timerEndsAt quizQuestions
+                        ServerStateFields winText iqTimer quizProgress timerEndsAt quizQuestions
                 )
-                (decodeOptionalValue "state")
                 -- older rows predate the win text; treat missing as empty.
                 (Decode.maybe (Decode.field "winText" Decode.string)
                     |> Decode.map (Maybe.withDefault "")
@@ -179,7 +184,6 @@ decodeRegistryEntry =
                 RegistryEntry uuid
                     filename
                     platform
-                    serverState.state
                     pendingStateEdit
                     serverState.winText
                     serverState.iqTimer
@@ -210,26 +214,6 @@ decodeRegistry contents =
 -- ── State Helpers ─────────────────────────────────────────────────────────────
 
 
-{-| Mark a player as parked on the neutral begin screen by wrapping the
-persisted screen in `BeginScreen` -- the wrapped inner value is already
-whatever the IQ/quiz/timeout override chain last derived (or the client's own
-report, for the families that stay self-reported), so there's nothing to
-stash separately: the wrapped screen already *is* the correct resume target,
-and unwrapping it (see Main.elm's BeginPressed) is what removes any round-trip
-latency from pressing Begin. Idempotent: a screen already wrapped in
-BeginScreen is returned unchanged, so a player who reconnects then immediately
-disconnects again before ever pressing Begin doesn't get double-wrapped.
--}
-snapshotForJeopardy : Encode.Value -> Encode.Value
-snapshotForJeopardy screen =
-    case Decode.decodeValue (Decode.field "tag" Decode.string) screen of
-        Ok "BeginScreen" ->
-            screen
-
-        _ ->
-            Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", screen ) ]
-
-
 findUuidByClient : String -> Dict.Dict String String -> Maybe String
 findUuidByClient clientId dict =
     Dict.toList dict
@@ -244,20 +228,7 @@ findUuidByClient clientId dict =
         |> List.head
 
 
-updateEntryState : String -> Encode.Value -> List RegistryEntry -> List RegistryEntry
-updateEntryState uuid newState =
-    List.map
-        (\e ->
-            if e.uuid == uuid then
-                { e | state = Just newState, pendingStateEdit = False }
-
-            else
-                e
-        )
-
-
--- IQ-only stepping stone (see RegistryEntry.iqTimer). Mirrors updateEntryState
--- but for the opaque server-state snapshot rather than the client-reported one.
+-- IQ-only stepping stone (see RegistryEntry.iqTimer).
 updateEntryIqTimer : String -> Maybe Encode.Value -> List RegistryEntry -> List RegistryEntry
 updateEntryIqTimer uuid newIqTimer =
     List.map
@@ -307,22 +278,6 @@ isExpired now entry =
 
         Nothing ->
             False
-
-
--- Overwrite one entry's persisted state with a server-derived screen value.
--- The persisted state *is* the screen's own JSON directly (see Sync.elm's
--- encodeModel), so this is a straight replacement -- no key-within-object
--- indirection needed.
-overwriteEntryScreen : String -> Encode.Value -> List RegistryEntry -> List RegistryEntry
-overwriteEntryScreen uuid screen =
-    List.map
-        (\e ->
-            if e.uuid == uuid then
-                { e | state = Just screen }
-
-            else
-                e
-        )
 
 
 setPendingStateEdit : String -> List RegistryEntry -> List RegistryEntry

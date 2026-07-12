@@ -34,7 +34,7 @@ describe('deploy-replacement', () => {
         if (server) await server.stop();
     }, 10000);
 
-    test('replacing a build carries over state, kicks the old player, and retires the old uuid', async () => {
+    test('replacing a build carries over quizProgress, kicks the old player, and retires the old uuid', async () => {
         const oldBuild = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'Ryan Birthday-replace-old.dmg',
@@ -42,11 +42,17 @@ describe('deploy-replacement', () => {
 
         const { conn: playerConn, result: initialResult } = await connectAsPlayer(TEST_PORT, oldBuild.uuid);
         expect(initialResult.payload).toBe('stateUpdate');
-        expect(JSON.parse(initialResult.stateUpdate.json)).toEqual({});
+        // A fresh player has no live iqTimer/quiz progress, so the screen is derived
+        // fresh as BlankScreen 0, always wrapped in BeginScreen.
+        expect(JSON.parse(initialResult.stateUpdate.json)).toEqual({ tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } });
 
-        const preservedState = { screen: 'IQTest', score: 7 };
-        playerConn.send({ stateUpdate: { json: JSON.stringify(preservedState) } });
-        await playerConn.waitFor((m) => m.payload === 'stateUpdateAck');
+        // Earn real, server-confirmed progress -- ClientStateUpdate no longer persists
+        // anything at all, so this has to go through the real quizAdvanced event.
+        playerConn.send({ quizAdvanced: { idx: 0 } });
+        await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === oldBuild.uuid);
+            return e && e.quizProgress === 1 ? e : undefined;
+        });
 
         const replacement = await distClient.replaceBuild(TEST_PORT, admin, oldBuild.uuid, {
             platform: 'mac',
@@ -64,7 +70,7 @@ describe('deploy-replacement', () => {
         });
         expect(entries.oldEntry).toBeUndefined();
         expect(entries.newEntry.filename).toBe(replacement.filename);
-        expect(entries.newEntry.state).toEqual(preservedState);
+        expect(entries.newEntry.quizProgress).toBe(1);
 
         // a replacement starts locked pending an admin state edit: neither WS connects
         // nor downloads are allowed for the new uuid until that edit is saved.
@@ -77,11 +83,11 @@ describe('deploy-replacement', () => {
         const lockedDownload = await distClient.download(TEST_PORT, replacement.uuid);
         expect(lockedDownload.statusCode).toBe(423);
 
-        // admin resolves the pending edit — the edit payload shows the carried-over state.
+        // admin resolves the pending edit — the edit payload shows the carried-over progress.
         const { authResult: editAuth, conn: editConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, replacement.uuid);
         expect(editAuth.success).toBe(true);
         const fetchedForEdit = JSON.parse(json);
-        expect(fetchedForEdit.state).toEqual(preservedState);
+        expect(fetchedForEdit.quizProgress).toBe(1);
         const saveResult = await distClient.saveStateEdit(editConn, replacement.uuid, JSON.stringify(fetchedForEdit));
         expect(saveResult.payload).toBe('distStateEditSaveAck');
         await editConn.close();
@@ -90,11 +96,11 @@ describe('deploy-replacement', () => {
             const found = readRegistry().find((e) => e.uuid === replacement.uuid);
             return found && found.pendingStateEdit === false ? found : null;
         });
-        expect(unlockedEntry.state).toEqual(preservedState);
+        expect(unlockedEntry.quizProgress).toBe(1);
 
         const { result: newResult } = await connectAsPlayer(TEST_PORT, replacement.uuid);
         expect(newResult.payload).toBe('stateUpdate');
-        expect(JSON.parse(newResult.stateUpdate.json)).toEqual(preservedState);
+        expect(JSON.parse(newResult.stateUpdate.json)).toEqual({ tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 1 } });
 
         const okDownload = await distClient.download(TEST_PORT, replacement.uuid);
         expect(okDownload.statusCode).toBe(200);
@@ -104,7 +110,7 @@ describe('deploy-replacement', () => {
         expect(oldResult.stateRequestRejected.reason).toBe('unknown uuid');
     });
 
-    test('replacing a never-deployed oldUuid still succeeds, with no state to carry over, and is still gated pending a state edit', async () => {
+    test('replacing a never-deployed oldUuid still succeeds, with nothing to carry over, and is still gated pending a state edit', async () => {
         const oldUuid = crypto.randomUUID();
 
         const replacement = await distClient.replaceBuild(TEST_PORT, admin, oldUuid, {
@@ -113,10 +119,10 @@ describe('deploy-replacement', () => {
         });
 
         const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === replacement.uuid));
-        expect(entry.state).toBeNull();
+        expect(entry.quizProgress).toBe(0);
         expect(entry.pendingStateEdit).toBe(true);
 
-        // gating applies uniformly, even though there was no old state to carry over.
+        // gating applies uniformly, even though there was nothing old to carry over.
         const { result: pendingResult } = await connectAsPlayer(TEST_PORT, replacement.uuid);
         expect(pendingResult.payload).toBe('stateRequestRejected');
         expect(pendingResult.stateRequestRejected.reason).toBe('state is being edited by admin');
@@ -127,9 +133,9 @@ describe('deploy-replacement', () => {
         const { authResult: editAuth, conn: editConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, replacement.uuid);
         expect(editAuth.success).toBe(true);
         const fetched = JSON.parse(json);
-        expect(fetched.state).toBeNull();
-        const newScreen = { tag: 'BeginScreen' };
-        const saveResult = await distClient.saveStateEdit(editConn, replacement.uuid, JSON.stringify({ ...fetched, state: newScreen }));
+        expect(fetched.quizProgress).toBe(0);
+        // Save unmodified -- there's nothing to set, this only needs to unlock the uuid.
+        const saveResult = await distClient.saveStateEdit(editConn, replacement.uuid, JSON.stringify(fetched));
         expect(saveResult.payload).toBe('distStateEditSaveAck');
         await editConn.close();
 
@@ -140,7 +146,7 @@ describe('deploy-replacement', () => {
 
         const { result } = await connectAsPlayer(TEST_PORT, replacement.uuid);
         expect(result.payload).toBe('stateUpdate');
-        expect(JSON.parse(result.stateUpdate.json)).toEqual(newScreen);
+        expect(JSON.parse(result.stateUpdate.json)).toEqual({ tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } });
 
         const okDownload = await distClient.download(TEST_PORT, replacement.uuid);
         expect(okDownload.statusCode).toBe(200);
@@ -324,15 +330,14 @@ describe('deploy-replacement', () => {
 
             // newUuid is already pending (mandatory post-replacement gating) — resolving
             // it via requestStateEdit/saveStateEdit mirrors edit-state.test.js's
-            // "successfully edits the state when a uuid is provided", just entered via
+            // "successfully edits quizProgress when a uuid is provided", just entered via
             // replacement instead of an admin's on-demand distStateEdit.
             const { authResult: editAuth, conn, json } = await distClient.requestStateEdit(TEST_PORT, admin, replacement.uuid);
             expect(editAuth.success).toBe(true);
             const fetched = JSON.parse(json);
-            expect(fetched.state).toBeNull();
+            expect(fetched.quizProgress).toBe(0);
 
-            const newScreen = { tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } };
-            const newState = { ...fetched, state: newScreen };
+            const newState = { ...fetched, quizProgress: 1 };
             const saveResult = await distClient.saveStateEdit(conn, replacement.uuid, JSON.stringify(newState));
             expect(saveResult.payload).toBe('distStateEditSaveAck');
             await conn.close();
@@ -341,7 +346,7 @@ describe('deploy-replacement', () => {
                 const found = readRegistry().find((e) => e.uuid === replacement.uuid);
                 return found && found.pendingStateEdit === false ? found : null;
             });
-            expect(entry.state).toEqual(newScreen);
+            expect(entry.quizProgress).toBe(1);
 
             // now exercise the invalid-JSON fallback against the SAME (already-unlocked)
             // newUuid, re-entering pending state via the manual distStateEdit trigger

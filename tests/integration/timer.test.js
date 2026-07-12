@@ -144,20 +144,10 @@ describe('server-side 7-day session timer (issue #50)', () => {
         const syncMsg = await conn.waitFor((m) => m.payload === 'timedOut' || m.payload === 'stateUpdateAck');
         expect(syncMsg.payload).toBe('timedOut');
 
-        // The expiry is also reflected at rest, regardless of whatever screen the client
-        // was actually self-reporting (see Server.elm's deriveTimedOutScreen) -- this
-        // matters for the admin edit tool reading entry.state verbatim, and for a later
-        // reconnect to deliver the right screen.
-        const persisted = await waitUntil(() => {
-            const e = readRegistry().find((row) => row.uuid === build.uuid);
-            return e && e.state && e.state.tag === 'TimedOutScreen' ? e : undefined;
-        });
-        expect(persisted.state).toEqual({ tag: 'TimedOutScreen' });
-
         await conn.close();
     }, 15000);
 
-    test('an expired session persists and delivers TimedOutScreen on a later reconnect too', async () => {
+    test('an expired session keeps delivering timedOut on a later reconnect too, re-derived fresh from timerEndsAt each time', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
             platform: 'mac',
             filename: 'timer-expired-reconnect.dmg',
@@ -176,13 +166,11 @@ describe('server-side 7-day session timer (issue #50)', () => {
         expect(connectMsg.payload).toBe('timedOut');
         await conn.close();
 
-        // Confirm the ClientStateRequest expiry path itself (not just ClientStateUpdate's)
-        // persists the derived TimedOutScreen at rest.
-        const persisted = await waitUntil(() => {
-            const e = readRegistry().find((row) => row.uuid === build.uuid);
-            return e && e.state && e.state.tag === 'TimedOutScreen' ? e : undefined;
-        });
-        expect(persisted.state).toEqual({ tag: 'TimedOutScreen' });
+        // Nothing is cached for this -- expiry is re-derived fresh from timerEndsAt on
+        // every connect, so a second reconnect independently gets timedOut again too.
+        const { conn: secondConn, result: secondConnectMsg } = await requestStateAfterRestart(TEST_PORT, build.uuid);
+        expect(secondConnectMsg.payload).toBe('timedOut');
+        await secondConn.close();
     }, 15000);
 
     test("a replacement build inherits the original build's deadline rather than starting a fresh one", async () => {
