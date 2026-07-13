@@ -12,5 +12,6 @@
     { "answers": ["Revolving door"] },
     { "answers": ["핑크판타지"] }
   ],
-  "winScreen": "Text \"creeper... awwww man\" to Max to claim your reward!"
+  "winScreen": "Text \"creeper... awwww man\" to Max to claim your reward!",
+  "iqSkipOfferEnabled": true
 }

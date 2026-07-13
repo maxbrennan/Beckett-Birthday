@@ -653,6 +653,90 @@ viewNonBeginScreen model =
                     [ text "But there was no ding..." ]
                 ]
 
+        IQTestSkipOfferScreen _ ->
+            let
+                offerButton label msg =
+                    button
+                        [ onClick msg
+                        , style "padding" "16px 48px"
+                        , style "font-size" "22px"
+                        , style "cursor" "pointer"
+                        , style "border-radius" "12px"
+                        , style "border" "none"
+                        , style "background-color" "#4a9eca"
+                        , style "color" "white"
+                        , style "font-weight" "bold"
+                        ]
+                        [ text label ]
+            in
+            screen
+                [ p
+                    [ style "font-size" "34px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    , style "font-weight" "bold"
+                    ]
+                    [ text "One-time offer" ]
+                , p
+                    [ style "font-size" "22px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    , style "max-width" "560px"
+                    , style "line-height" "1.6"
+                    ]
+                    [ text "You can skip the IQ test. In exchange, you'll take on a mystery challenge later — it's easier and less frustrating than this, but longer." ]
+                , p
+                    [ style "font-size" "20px"
+                    , style "color" "#2c4a5a"
+                    , style "text-align" "center"
+                    , style "margin" "0"
+                    , style "max-width" "520px"
+                    , style "line-height" "1.6"
+                    , style "font-weight" "bold"
+                    ]
+                    [ text "This offer is made only once. If you decline, it will not come back." ]
+                , div
+                    [ style "display" "flex"
+                    , style "gap" "24px"
+                    ]
+                    [ offerButton "Accept" IQSkipOfferAccepted
+                    , offerButton "Decline" IQSkipOfferDeclined
+                    ]
+                ]
+
+        IQTestSkipAnimScreen state ->
+            let
+                counterOpacity =
+                    if state.phase == SkipCounterOut then
+                        "0"
+
+                    else
+                        "1"
+
+                counterText =
+                    String.fromInt state.displayCount ++ " / " ++ String.fromInt state.total
+            in
+            div [ style "height" "100vh", style "background-color" "#a8c8e0" ]
+                [ p
+                    [ style "position" "fixed"
+                    , style "top" "50%"
+                    , style "left" "50%"
+                    , style "transform" "translate(-50%, -50%)"
+                    , style "font-size" "96px"
+                    , style "color" "#2c4a5a"
+                    , style "margin" "0"
+                    , style "font-weight" "bold"
+                    , style "text-align" "center"
+                    , style "white-space" "nowrap"
+                    , style "opacity" counterOpacity
+                    , style "transition" "opacity 0.8s ease"
+                    , style "z-index" "10"
+                    ]
+                    [ text counterText ]
+                ]
+
         WinScreen winText ->
             screen
                 [ p

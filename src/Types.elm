@@ -21,6 +21,15 @@ type Screen
     | IQTestCountdownScreen IQTestCountdownState
     | IQTestActiveScreen IQTestState
     | FakeFlashCaughtScreen FakeFlashCaughtState
+      -- The one-time offer to skip the IQ test (see Server.elm's decideIqOffer),
+      -- shown after a qualifying fail/catch. Never server-derived (unlike the
+      -- screens above) -- a disconnect mid-offer re-derives to plain IQTestScreen
+      -- on reconnect, the same coarse-resume trade already accepted for
+      -- FakeFlashCaughtScreen.
+    | IQTestSkipOfferScreen IQTestScreenState
+      -- The one-step count-up animation shown after accepting the offer. Also
+      -- never server-derived, for the same reason as IQTestSkipOfferScreen above.
+    | IQTestSkipAnimScreen IQSkipAnimState
       -- Carries the personalized win text, delivered live by the server via a
       -- standalone winText message at win time. Also derived server-side
       -- (embedding the real, already-verified text) so it persists/round-trips
@@ -87,6 +96,10 @@ type Msg
     | FakeFlashNextPhase
     | FakeFlashCounterTick
     | FakeFlashWindowExpired
+    | IQSkipOfferAccepted
+    | IQSkipOfferDeclined
+    | IQSkipAnimNextPhase
+    | IQSkipCounterTick
     | DomPropertyReceived { elementId : String, property : String, value : Decode.Value }
     | DomPropertyError String
     | WsClientReady String

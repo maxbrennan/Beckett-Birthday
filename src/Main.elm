@@ -149,20 +149,17 @@ resumeCmd model screen =
 
 
 
+-- A qualifying fail just happened (DingWindowExpired timeout, or a SpaceBarPressed
+-- miss). Unlike the old client-only decision, the screen doesn't transition yet --
+-- the server now decides whether this grants the one-time skip offer (see
+-- Server.elm's decideIqOffer), and Main.elm's ServerIqOfferDecision handling is what
+-- actually moves off IQTestActiveScreen once that reply arrives. Meanwhile just
+-- freeze the active flags so nothing looks "live" while waiting.
 iqFail : Model -> IQTestState -> ( Model, Cmd Msg )
 iqFail model state =
-    -- Back to the IQ Begin screen. No server message: the server preserves its
-    -- own count/phase across a fail, and the next iqStartCountdown resets only the
-    -- run. totalDings here is the display copy the server last sent.
     ( clearPending
-        { model
-            | screen =
-                IQTestScreen
-                    { questionIdx = state.questionIdx
-                    , totalDings = state.totalDings
-                    }
-        }
-    , Cmd.none
+        { model | screen = IQTestActiveScreen { state | isFlashing = False, dingActive = False, fakeFlashActive = False } }
+    , sendWs model iqFailedEnvelope
     )
 
 
@@ -543,12 +540,114 @@ update msg model =
                                     )
 
                                 FfCounterOut ->
-                                    ( clearPending { model | screen = IQTestScreen (exitFakeFlash state) }
-                                    , Cmd.none
-                                    )
+                                    -- If the server's ServerIqOfferDecision (in reply to the
+                                    -- iqCaught this cutscene started from) already arrived and
+                                    -- granted the offer, land on the offer screen instead of the
+                                    -- plain IQ begin screen -- see Main.elm's WsDataReceived
+                                    -- handling of ServerIqOfferDecision.
+                                    case state.skipOffer of
+                                        Just totalDings ->
+                                            ( clearPending { model | screen = IQTestSkipOfferScreen { questionIdx = state.questionIdx, totalDings = totalDings } }
+                                            , Cmd.none
+                                            )
+
+                                        Nothing ->
+                                            ( clearPending { model | screen = IQTestScreen (exitFakeFlash state) }
+                                            , Cmd.none
+                                            )
 
                                 _ ->
                                     ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        IQSkipOfferAccepted ->
+            case model.screen of
+                IQTestSkipOfferScreen s ->
+                    ( clearPending
+                        { model
+                            | screen =
+                                IQTestSkipAnimScreen
+                                    { questionIdx = s.questionIdx
+                                    , displayCount = 0
+                                    , total = s.totalDings
+                                    , phase = SkipCounterIn
+                                    }
+                        }
+                        |> schedule 700 IQSkipAnimNextPhase
+                    , Cmd.none
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        IQSkipOfferDeclined ->
+            case model.screen of
+                IQTestSkipOfferScreen s ->
+                    -- Releases the server-held grant (see decideIqOffer/
+                    -- Model.iqOfferGrants) so a subsequent Begin press isn't blocked --
+                    -- the one-time flag was already committed server-side at grant
+                    -- time, so this is the only thing left to report.
+                    ( clearPending { model | screen = IQTestScreen { questionIdx = s.questionIdx, totalDings = s.totalDings } }
+                    , sendWs model iqOfferDeclinedEnvelope
+                    )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        IQSkipAnimNextPhase ->
+            case model.screen of
+                IQTestSkipAnimScreen s ->
+                    case s.phase of
+                        SkipCounterIn ->
+                            ( { model | screen = IQTestSkipAnimScreen { s | phase = SkipTick } }
+                                |> schedule counterTickMs IQSkipCounterTick
+                            , Cmd.none
+                            )
+
+                        SkipTick ->
+                            ( { model | screen = IQTestSkipAnimScreen { s | phase = SkipCounterOut } }
+                                |> schedule 1500 IQSkipAnimNextPhase
+                            , Cmd.none
+                            )
+
+                        SkipCounterOut ->
+                            -- Exactly mirrors ServerIqTestComplete's genuine-pass transition
+                            -- below (BlankScreen nextIdx + PlaySong + quizAdvancedEnvelope) --
+                            -- the count-up animation is flavor layered in front of it, not a
+                            -- substitute for it.
+                            let
+                                nextIdx =
+                                    s.questionIdx + 1
+                            in
+                            ( clearPending { model | screen = BlankScreen nextIdx }
+                                |> schedule 1000 (PlaySong nextIdx)
+                            , sendWs model (quizAdvancedEnvelope s.questionIdx)
+                            )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        IQSkipCounterTick ->
+            case model.screen of
+                IQTestSkipAnimScreen s ->
+                    case s.phase of
+                        SkipTick ->
+                            let
+                                targetId =
+                                    "ding-audio-" ++ String.fromInt (modBy dingSlotCount model.dingKey)
+                            in
+                            ( { model
+                                | screen = IQTestSkipAnimScreen { s | displayCount = s.total }
+                                , dingKey = model.dingKey + 1
+                              }
+                                |> schedule 500 IQSkipAnimNextPhase
+                            , setDomProperty { elementId = targetId, property = "volume", value = Encode.float 0.3 }
+                            )
+
+                        _ ->
+                            ( model, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
@@ -782,6 +881,37 @@ update msg model =
 
                             else
                                 ( { model | songEndAcked = True }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Ok (ServerIqOfferDecision d) ->
+                    -- The server's authoritative reply to iqFailedEnvelope (a plain fail)
+                    -- or iqCaughtEnvelope (a trap catch) -- see Server.elm's decideIqOffer.
+                    -- On IQTestActiveScreen (the plain-fail case, frozen there by iqFail
+                    -- above) this is what actually transitions off it, to the offer screen
+                    -- if granted or the plain begin screen otherwise. On
+                    -- FakeFlashCaughtScreen (the catch case) the cutscene is still ~10s
+                    -- from its end, so just stash the decision for FfCounterOut to read.
+                    -- Any other screen: a stale/late reply after the screen already moved
+                    -- on (e.g. a race with a reconnect) -- ignore.
+                    case model.screen of
+                        IQTestActiveScreen state ->
+                            ( { model
+                                | screen =
+                                    if d.granted then
+                                        IQTestSkipOfferScreen { questionIdx = state.questionIdx, totalDings = d.totalDings }
+
+                                    else
+                                        IQTestScreen { questionIdx = state.questionIdx, totalDings = d.totalDings }
+                              }
+                            , Cmd.none
+                            )
+
+                        FakeFlashCaughtScreen state ->
+                            ( { model | screen = FakeFlashCaughtScreen { state | skipOffer = if d.granted then Just d.totalDings else Nothing } }
+                            , Cmd.none
+                            )
 
                         _ ->
                             ( model, Cmd.none )

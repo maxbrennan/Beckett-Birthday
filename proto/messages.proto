@@ -68,15 +68,20 @@ message DistUpload {
 }
 message DistUndeploy        { string uuid = 1; }
 message DistList            {}
-message DistComplete         { string uuid = 1; string filename = 2; string win_text = 3; repeated Question quiz_questions = 4; }
+// iq_skip_offer_disabled: true if this build's config/app-config.json set
+// iqSkipOfferEnabled to false at deploy time. Absent/false (protobufjs' default for
+// an unset bool) means enabled -- see RegistryEntry.iqOfferDisabled and Server.elm's
+// decideIqOffer, which is why this is phrased as the negative rather than mirroring
+// the config file's positive "iqSkipOfferEnabled" name.
+message DistComplete         { string uuid = 1; string filename = 2; string win_text = 3; repeated Question quiz_questions = 4; bool iq_skip_offer_disabled = 5; }
 message DistStateEdit        { string uuid = 1; }
 message DistStateEditSave    { string uuid = 1; string json = 2; }
 message DistStateEditPayload { string uuid = 1; string json = 2; }
-// quiz_questions/win_text are resent fresh at replacement time, not inherited from the uuid
-// being replaced -- unlike every other per-build field (state/iqTimer/quizProgress/
-// timerEndsAt), which the server carries forward from the old entry. See Server.elm's
-// ClientDistReplaceComplete handler.
-message DistReplaceComplete  { string new_uuid = 1; string old_uuid = 2; string filename = 3; repeated Question quiz_questions = 4; string win_text = 5; }
+// quiz_questions/win_text/iq_skip_offer_disabled are resent fresh at replacement time, not
+// inherited from the uuid being replaced -- unlike every other per-build field (state/iqTimer/
+// quizProgress/timerEndsAt/iqOfferUsed), which the server carries forward from the old entry.
+// See Server.elm's ClientDistReplaceComplete handler.
+message DistReplaceComplete  { string new_uuid = 1; string old_uuid = 2; string filename = 3; repeated Question quiz_questions = 4; string win_text = 5; bool iq_skip_offer_disabled = 6; }
 
 message DistListEntry {
   string uuid     = 1;
@@ -106,6 +111,24 @@ message IqCountdownComplete {}
 message IqDing              { bool fake = 1; bool trap = 2; uint32 ding_count = 3; uint32 total_dings = 4; }
 message IqStartLoud         {}
 message IqTestComplete      {}
+
+// "A qualifying fail just happened" (DingWindowExpired timeout, or a SpaceBarPressed
+// miss -- see Game.IQTest.decideSpaceBar's SpaceBarFailed case). No payload -- the
+// server already owns dingCount/totalDings/phase for this uuid. See Server.elm's
+// decideIqOffer / Model.iqOfferGrants.
+message IqFailed {}
+
+// "The player declined an outstanding skip offer." Releases the server-held grant
+// (Model.iqOfferGrants) so a subsequent IqStartCountdown is no longer blocked -- see
+// Server.elm's ClientIqStartCountdown handling. No payload: the server already knows
+// which uuid/idx the outstanding grant is for.
+message IqOfferDeclined {}
+
+// The server's authoritative answer to "was the skip offer granted" for a fail (or a
+// fake-flash catch). Sent once, synchronously, in reply to IqFailed and IqCaught alike
+// -- see Server.elm's decideIqOffer. total_dings always carries the server's current
+// totalDings (unchanged on a plain fail, already-doubled on a catch).
+message IqOfferDecision { bool granted = 1; uint32 total_dings = 2; }
 
 // One quiz slide's accepted answers. Carried only on DistComplete/DistReplaceComplete (the
 // deploy-time, client->server ingress) -- never on any server->client message, since answers
@@ -161,6 +184,7 @@ message ServerMessage {
     TimedOut                timed_out                  = 22;
     QuizAnswerResult        quiz_answer_result         = 23;
     QuizSongEndedAck        quiz_song_ended_ack        = 24;
+    IqOfferDecision         iq_offer_decision          = 25;
   }
 }
 
@@ -184,5 +208,7 @@ message ClientMessage {
     QuizAdvanced         quiz_advanced         = 16;
     QuizAnswerSubmitted  quiz_answer_submitted = 17;
     QuizSongEnded        quiz_song_ended       = 18;
+    IqFailed             iq_failed             = 19;
+    IqOfferDeclined      iq_offer_declined     = 20;
   }
 }

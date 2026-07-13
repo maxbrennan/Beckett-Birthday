@@ -42,6 +42,16 @@ type alias Model =
     -- scratch anyway (see ClientStateRequest clearing this on connect), so
     -- there is nothing worth surviving a restart for.
     , quizSongEnded : Dict String Int
+
+    -- Per-uuid: a granted-but-not-yet-consumed IQ-test skip offer, mapping to the
+    -- exact questionIdx it was granted for (see decideIqOffer / ClientIqFailed /
+    -- ClientIqCaught). In memory only, deliberately never persisted: a reconnect
+    -- always re-derives IQTestScreen/FakeFlashCaughtScreen fresh via deriveIqScreen,
+    -- which can't reconstruct the transient offer/anim screens anyway, so there's
+    -- nothing worth surviving a restart for -- same rationale as quizSongEnded above.
+    -- Consumed by ClientQuizAdvanced when accepted (see the bypass there), or
+    -- released by ClientIqOfferDeclined when declined.
+    , iqOfferGrants : Dict String Int
     }
 
 
@@ -230,6 +240,21 @@ applyCatch s =
         , fakeFlashUsed = True
         , in50PercentPhase = False
         , dingCount = 0
+    }
+
+
+{-| Decide whether a qualifying fail (ClientIqFailed) or trap catch (ClientIqCaught)
+grants the one-time skip offer: the build must not have it config-disabled, this
+player must not have already been granted it once before (ever, regardless of
+accept/decline -- see RegistryEntry.iqOfferUsed), and the run must have cleared at
+least iqOfferMinDings real dings. totalDings always echoes back the count at the
+moment of the fail/catch (already-doubled for a catch, since the caller passes
+`applyCatch`'s output) so the caller can render the right N either way.
+-}
+decideIqOffer : { dingCountAtFail : Int, totalDingsAtFail : Int, offerDisabled : Bool, offerUsed : Bool } -> { granted : Bool, totalDings : Int }
+decideIqOffer { dingCountAtFail, totalDingsAtFail, offerDisabled, offerUsed } =
+    { granted = not offerDisabled && not offerUsed && dingCountAtFail >= IQTest.iqOfferMinDings
+    , totalDings = totalDingsAtFail
     }
 
 
@@ -951,6 +976,7 @@ performStateEdit uuid clientId model =
                         , quizProgress = entry.quizProgress
                         , timerEndsAt = entry.timerEndsAt
                         , quizQuestions = entry.quizQuestions
+                        , iqOfferUsed = entry.iqOfferUsed
                         }
 
                 Nothing ->
@@ -987,6 +1013,7 @@ init () =
       , seed = Random.initialSeed 0
       , quizProgress = Dict.empty
       , quizSongEnded = Dict.empty
+      , iqOfferGrants = Dict.empty
       }
     , Cmd.batch
         [ readFile registryFilePath
@@ -1230,8 +1257,11 @@ update msg model =
                                             -- right after the last upload chunk, immediately
                                             -- superseded by ClientDistComplete's own entry (same
                                             -- filename, filtered out below) once that message
-                                            -- arrives with the real winText/quizQuestions.
+                                            -- arrives with the real winText/quizQuestions/
+                                            -- iqOfferDisabled.
                                             , quizQuestions = Nothing
+                                            , iqOfferDisabled = False
+                                            , iqOfferUsed = False
                                             }
 
                                         newRegistry =
@@ -1258,7 +1288,7 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
-                Ok (ClientDistComplete { uuid, filename, winText, quizQuestions }) ->
+                Ok (ClientDistComplete { uuid, filename, winText, quizQuestions, iqOfferDisabled }) ->
                     case Dict.get clientId model.distClients of
                         Just (AwaitingUpload info) ->
                             if info.uuid == uuid then
@@ -1273,6 +1303,8 @@ update msg model =
                                         , quizProgress = 0
                                         , timerEndsAt = Nothing
                                         , quizQuestions = Just quizQuestions
+                                        , iqOfferDisabled = iqOfferDisabled
+                                        , iqOfferUsed = False
                                         }
 
                                     newRegistry =
@@ -1330,6 +1362,7 @@ update msg model =
                                                                 , quizProgress = edited.quizProgress
                                                                 , timerEndsAt = edited.timerEndsAt
                                                                 , quizQuestions = edited.quizQuestions
+                                                                , iqOfferUsed = edited.iqOfferUsed
                                                             }
 
                                                         else
@@ -1382,7 +1415,7 @@ update msg model =
                     , requestAuth { clientId = clientId, level = 2 }
                     )
 
-                Ok (ClientDistReplaceComplete { newUuid, oldUuid, filename, quizQuestions, winText }) ->
+                Ok (ClientDistReplaceComplete { newUuid, oldUuid, filename, quizQuestions, winText, iqOfferDisabled }) ->
                     case Dict.get clientId model.distClients of
                         Just (AwaitingUpload info) ->
                             if info.uuid == newUuid then
@@ -1398,14 +1431,15 @@ update msg model =
                                         , platform = info.platform
                                         , pendingStateEdit = True
 
-                                        -- Unlike every field below, winText and quizQuestions are
-                                        -- resent fresh on every replace deploy (see
-                                        -- scripts/deploy-replacement.js) rather than inherited from
-                                        -- oldEntry -- a replacement build's songs/config may have
+                                        -- Unlike every field below, winText, quizQuestions, and
+                                        -- iqOfferDisabled are resent fresh on every replace deploy
+                                        -- (see scripts/deploy-replacement.js) rather than inherited
+                                        -- from oldEntry -- a replacement build's songs/config may have
                                         -- changed, and reusing the old uuid's answers/reward text
                                         -- would silently mismatch the new build. See #77.
                                         , winText = winText
                                         , quizQuestions = Just quizQuestions
+                                        , iqOfferDisabled = iqOfferDisabled
 
                                         -- Carry the IQ snapshot to the new uuid too.
                                         -- (model.iqTimers itself stays keyed by oldUuid until a restart
@@ -1421,6 +1455,12 @@ update msg model =
                                         -- reason: a build replacement shouldn't grant (or cost)
                                         -- extra time on the 7-day clock.
                                         , timerEndsAt = oldEntry |> Maybe.andThen .timerEndsAt
+
+                                        -- The one-time-ever skip-offer-granted fact is the real
+                                        -- player's permanent state, not per-build authoring -- carry
+                                        -- it forward like iqTimer/quizProgress/timerEndsAt above, not
+                                        -- reset it like winText/quizQuestions/iqOfferDisabled above.
+                                        , iqOfferUsed = oldEntry |> Maybe.map .iqOfferUsed |> Maybe.withDefault False
                                         }
 
                                     newRegistry =
@@ -1475,22 +1515,32 @@ update msg model =
                     -- client's Begin button only renders on IQTestScreen in those
                     -- states, so a countdown already ticking/dinging in any other
                     -- phase is a stale/crafted request: ignore it rather than
-                    -- silently restarting the test.
+                    -- silently restarting the test. Also blocked while an outstanding
+                    -- skip-offer grant sits unconsumed for this uuid (see
+                    -- Model.iqOfferGrants) -- both idle phases are exactly what a fail/
+                    -- catch leaves behind once granted, so without this guard a stray
+                    -- iqStartCountdown could hijack the offer screen into a real countdown
+                    -- out from under it. ClientIqOfferDeclined releases the grant so a
+                    -- genuine "declined, pressed Begin again" flow isn't stuck forever.
                     case findUuidByClient clientId model.connectedPlayers of
                         Nothing ->
                             ( model, Cmd.none )
 
                         Just uuid ->
-                            case Dict.get uuid model.iqTimers of
-                                Nothing ->
-                                    startCountdown uuid model
+                            if Dict.member uuid model.iqOfferGrants then
+                                ( model, Cmd.none )
 
-                                Just state ->
-                                    if state.phase == IqIdleNotStarted || state.phase == IqIdleCaught then
+                            else
+                                case Dict.get uuid model.iqTimers of
+                                    Nothing ->
                                         startCountdown uuid model
 
-                                    else
-                                        ( model, Cmd.none )
+                                    Just state ->
+                                        if state.phase == IqIdleNotStarted || state.phase == IqIdleCaught then
+                                            startCountdown uuid model
+
+                                        else
+                                            ( model, Cmd.none )
 
                 Ok ClientIqReadyForDing ->
                     case findUuidByClient clientId model.connectedPlayers of
@@ -1542,7 +1592,10 @@ update msg model =
                     -- Honor a catch only when a fake ding is actually outstanding.
                     -- The server doubles its own count and goes idle; the client is
                     -- meanwhile playing the cutscene and will send iqStartCountdown
-                    -- (which resets the run) when the player presses Begin again.
+                    -- (which resets the run) when the player presses Begin again --
+                    -- unless the catch also grants the skip offer (see decideIqOffer
+                    -- below), in which case iqStartCountdown is blocked until the
+                    -- offer is resolved (see the guard above).
                     case findUuidByClient clientId model.connectedPlayers of
                         Nothing ->
                             ( model, Cmd.none )
@@ -1552,10 +1605,51 @@ update msg model =
                                 Just state ->
                                     if state.phase == IqDingShown && state.lastDing == TrapFake then
                                         let
-                                            caught =
+                                            doubled =
                                                 applyCatch state
+
+                                            caught =
+                                                { doubled | phase = IqIdleCaught }
+
+                                            offerEntry =
+                                                model.registry |> List.filter (\e -> e.uuid == uuid) |> List.head
+
+                                            decision =
+                                                decideIqOffer
+                                                    { dingCountAtFail = state.dingCount
+                                                    , totalDingsAtFail = caught.totalDings
+                                                    , offerDisabled = offerEntry |> Maybe.map .iqOfferDisabled |> Maybe.withDefault False
+                                                    , offerUsed = offerEntry |> Maybe.map .iqOfferUsed |> Maybe.withDefault False
+                                                    }
+
+                                            registryWithTimer =
+                                                persistIqTimerInRegistry uuid (Just caught) model.registry
+
+                                            finalRegistry =
+                                                if decision.granted then
+                                                    updateEntryIqOfferUsed uuid registryWithTimer
+
+                                                else
+                                                    registryWithTimer
+
+                                            finalModel =
+                                                { model
+                                                    | iqTimers = Dict.insert uuid caught model.iqTimers
+                                                    , registry = finalRegistry
+                                                    , iqOfferGrants =
+                                                        if decision.granted then
+                                                            Dict.insert uuid state.questionIdx model.iqOfferGrants
+
+                                                        else
+                                                            model.iqOfferGrants
+                                                }
                                         in
-                                        setIqTimer uuid { caught | phase = IqIdleCaught } model
+                                        ( finalModel
+                                        , Cmd.batch
+                                            [ writeRegistry finalRegistry
+                                            , sendToClient { clientId = clientId, payload = iqOfferDecisionEnvelope decision }
+                                            ]
+                                        )
 
                                     else
                                         ( model, Cmd.none )
@@ -1574,6 +1668,86 @@ update msg model =
 
                         Nothing ->
                             ( model, Cmd.none )
+
+                Ok ClientIqFailed ->
+                    -- "A qualifying fail just happened" (DingWindowExpired timeout, or a
+                    -- SpaceBarPressed miss -- see Game.IQTest.decideSpaceBar's
+                    -- SpaceBarFailed case). Only a live, non-idle phase is a plausible
+                    -- fail -- IqCounting/IqIdleNotStarted/IqIdleCaught can't have produced
+                    -- one client-side, so a report from one of those is stale/crafted and
+                    -- ignored. This is the first place a "fail" transition is defined
+                    -- server-side at all: it moves the entry to IqIdleNotStarted (the
+                    -- honest client's next screen is always IQTestScreen/the offer screen,
+                    -- never a live phase, after this).
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just uuid ->
+                            case Dict.get uuid model.iqTimers of
+                                Just state ->
+                                    if List.member state.phase [ IqAwaitingReady, IqDingScheduled, IqDingShown ] then
+                                        let
+                                            idled =
+                                                { state | phase = IqIdleNotStarted }
+
+                                            offerEntry =
+                                                model.registry |> List.filter (\e -> e.uuid == uuid) |> List.head
+
+                                            decision =
+                                                decideIqOffer
+                                                    { dingCountAtFail = state.dingCount
+                                                    , totalDingsAtFail = state.totalDings
+                                                    , offerDisabled = offerEntry |> Maybe.map .iqOfferDisabled |> Maybe.withDefault False
+                                                    , offerUsed = offerEntry |> Maybe.map .iqOfferUsed |> Maybe.withDefault False
+                                                    }
+
+                                            registryWithTimer =
+                                                persistIqTimerInRegistry uuid (Just idled) model.registry
+
+                                            finalRegistry =
+                                                if decision.granted then
+                                                    updateEntryIqOfferUsed uuid registryWithTimer
+
+                                                else
+                                                    registryWithTimer
+
+                                            finalModel =
+                                                { model
+                                                    | iqTimers = Dict.insert uuid idled model.iqTimers
+                                                    , registry = finalRegistry
+                                                    , iqOfferGrants =
+                                                        if decision.granted then
+                                                            Dict.insert uuid state.questionIdx model.iqOfferGrants
+
+                                                        else
+                                                            model.iqOfferGrants
+                                                }
+                                        in
+                                        ( finalModel
+                                        , Cmd.batch
+                                            [ writeRegistry finalRegistry
+                                            , sendToClient { clientId = clientId, payload = iqOfferDecisionEnvelope decision }
+                                            ]
+                                        )
+
+                                    else
+                                        ( model, Cmd.none )
+
+                                Nothing ->
+                                    ( model, Cmd.none )
+
+                Ok ClientIqOfferDeclined ->
+                    -- Releases an outstanding grant (see decideIqOffer/Model.iqOfferGrants)
+                    -- so the ClientIqStartCountdown guard above no longer blocks the next
+                    -- genuine "player pressed Begin". A decline with no outstanding grant
+                    -- (stale/crafted/already-consumed) is a harmless no-op.
+                    case findUuidByClient clientId model.connectedPlayers of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just uuid ->
+                            ( { model | iqOfferGrants = Dict.remove uuid model.iqOfferGrants }, Cmd.none )
 
                 Ok (ClientQuizSongEnded idx) ->
                     -- "The song/video for question idx just finished playing." Accepted
@@ -1613,29 +1787,67 @@ update msg model =
                             ( model, Cmd.none )
 
                         Just uuid ->
-                            if quizBlockedByLiveIqTimer uuid model then
+                            let
+                                -- A server-granted, not-yet-consumed skip offer for this
+                                -- exact question (see decideIqOffer/Model.iqOfferGrants) is
+                                -- the one thing allowed to bypass a live IQ timer -- accepting
+                                -- the offer *is* the honest client's replacement for actually
+                                -- passing the test. Deliberately scoped to an exact idx match,
+                                -- not a blanket "any idle phase unblocks" relaxation, so the
+                                -- #73/#75 cheat vector quizBlockedByLiveIqTimer exists to close
+                                -- stays closed for every other case.
+                                offerAccept =
+                                    Dict.get uuid model.iqOfferGrants == Just idx
+                            in
+                            if quizBlockedByLiveIqTimer uuid model && not offerAccept then
                                 ( model, Cmd.none )
 
                             else
                                 let
+                                    -- Fold the iqTimer-clear into the same in-memory Model/registry
+                                    -- state the quizProgress bump below is computed from, and issue
+                                    -- exactly ONE writeRegistry for the whole handler -- calling
+                                    -- clearIqTimer here directly would fire its own writeRegistry
+                                    -- with a stale (pre-bump) quizProgress snapshot, and batching
+                                    -- that alongside a second writeRegistry below hits the same
+                                    -- Cmd.batch port-ordering hazard already worked around for
+                                    -- ClientIqFailed/ClientIqCaught (registry writes within one
+                                    -- Cmd.batch aren't guaranteed to land in array order).
+                                    baseModel =
+                                        if offerAccept then
+                                            { model
+                                                | iqTimers = Dict.remove uuid model.iqTimers
+                                                , iqOfferGrants = Dict.remove uuid model.iqOfferGrants
+                                                , registry = persistIqTimerInRegistry uuid Nothing model.registry
+                                            }
+
+                                        else
+                                            model
+
                                     current =
-                                        Dict.get uuid model.quizProgress |> Maybe.withDefault 0
+                                        Dict.get uuid baseModel.quizProgress |> Maybe.withDefault 0
 
                                     total =
-                                        List.length (questionsForUuid uuid model.registry)
+                                        List.length (questionsForUuid uuid baseModel.registry)
                                 in
                                 case acceptQuizAdvance { current = current, idx = idx } of
                                     Nothing ->
-                                        ( model, Cmd.none )
+                                        ( baseModel
+                                        , if offerAccept then
+                                            writeRegistry baseModel.registry
+
+                                          else
+                                            Cmd.none
+                                        )
 
                                     Just next ->
                                         let
                                             newRegistry =
-                                                persistQuizScreenInRegistry uuid { next = next, total = total } model.registry
+                                                persistQuizScreenInRegistry uuid { next = next, total = total } baseModel.registry
 
                                             newModel =
-                                                { model
-                                                    | quizProgress = Dict.insert uuid next model.quizProgress
+                                                { baseModel
+                                                    | quizProgress = Dict.insert uuid next baseModel.quizProgress
                                                     , registry = newRegistry
                                                 }
 

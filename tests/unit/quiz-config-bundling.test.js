@@ -38,6 +38,10 @@ describe('config/app-config.example.json', () => {
         expect(typeof example.winScreen).toBe('string');
         expect(example.winScreen.length).toBeGreaterThan(0);
     });
+
+    test('has a boolean iqSkipOfferEnabled', () => {
+        expect(typeof example.iqSkipOfferEnabled).toBe('boolean');
+    });
 });
 
 describe('package.json build.files excludes config/ entirely', () => {

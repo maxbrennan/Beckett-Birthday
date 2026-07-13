@@ -17,6 +17,7 @@ const { _electron: electron } = require('playwright');
 const { startTestServer } = require('../helpers/testServer');
 const { AdminClient } = require('../helpers/adminAuth');
 const distClient = require('../helpers/distClient');
+const registryHelper = require('../helpers/registry');
 const { PROJECT_ROOT } = require('../helpers/certPaths');
 const globalSetup = require('../helpers/globalSetup');
 const globalTeardown = require('../helpers/globalTeardown');
@@ -38,6 +39,48 @@ async function readAudioState(window) {
 
 async function bodyText(window) {
     return window.evaluate(() => document.body.innerText);
+}
+
+async function waitForBodyTextIncluding(window, substring, opts = GUI_WAIT_OPTS) {
+    await waitUntil(async () => (await bodyText(window)).includes(substring) ? true : null, opts);
+}
+
+// Fast-forwards a build straight to a live, real-dings-already-cleared IQ timer via
+// the admin edit:state path -- the same technique tests/integration/iq-offer.test.js
+// uses at the protocol level, needed here too since actually waiting through
+// iqQuestionCount real dings (each gated by a 2-15s random production delay) would
+// make this scenario impractically slow. `IqAwaitingReady`/`IqDingScheduled` both
+// derive to IQTestActiveScreen with every flash/ding flag false (see
+// Server.elm's deriveIqScreen), so the real client renders an idle "waiting for the
+// next ding" screen -- pressing Space there is a genuine SpaceBarFailed via the
+// real Game.IQTest.decideSpaceBar, not a simulated one.
+async function stageQualifyingIqOffer(server, admin, port, uuid) {
+    const { authResult, conn, json } = await distClient.requestStateEdit(port, admin, uuid);
+    if (!authResult.success) throw new Error('admin auth failed while staging iqTimer');
+    const fetched = JSON.parse(json);
+    const edited = {
+        ...fetched,
+        iqTimer: {
+            epoch: 1,
+            phase: 'IqAwaitingReady',
+            questionIdx: 0,
+            countdownRemaining: 0,
+            dingCount: 10,
+            totalDings: 100,
+            fakeFlashPoint: 9999,
+            fakeFlashUsed: false,
+            in50PercentPhase: false,
+            lastDing: 'RealDing',
+            dingDelay: null,
+        },
+    };
+    const resultMsg = await distClient.saveStateEdit(conn, uuid, JSON.stringify(edited));
+    if (resultMsg.payload !== 'distStateEditSaveAck') throw new Error(`stageQualifyingIqOffer save failed: ${resultMsg.payload}`);
+    await conn.close();
+    await waitUntil(() => {
+        const found = registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === uuid);
+        return found && found.iqTimer && found.iqTimer.phase === 'IqAwaitingReady' ? found : null;
+    });
 }
 
 // Loading + decoding the local mp3 file takes a little while (a few seconds observed
@@ -147,6 +190,73 @@ async function main() {
         await window.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
         await assertAudioPlaying(window);
         console.log('  ✓ client reconnects and re-renders BeginScreen with audio playing, without relaunching Electron');
+
+        // --- IQ-test skip offer: real View.elm rendering of both new screens, driven by
+        // an actual SpaceBarFailed through the real Elm runtime (see stageQualifyingIqOffer
+        // above for why the dings themselves are fast-forwarded rather than awaited live).
+        // Each path needs its own uuid (the offer is granted at most once per build) and
+        // its own Electron launch (the client only reads app-uuid.json at startup).
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        const acceptBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'iq-offer-accept-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === acceptBuild.uuid));
+        await stageQualifyingIqOffer(server, admin, TEST_PORT, acceptBuild.uuid);
+
+        fs.writeFileSync(APP_UUID_PATH, JSON.stringify({ uuid: acceptBuild.uuid }));
+        electronApp = await electron.launch({
+            args: ['.'],
+            cwd: PROJECT_ROOT,
+            env: { ...process.env, DEV: 'false', PROD_SERVER_HOST: 'localhost', PROD_SERVER_PORT: String(TEST_PORT) },
+        });
+        let iqWindow = await electronApp.firstWindow();
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, '10 / 100', GUI_WAIT_OPTS);
+        console.log('  ✓ IQTestActiveScreen renders the staged, already-qualifying ding count');
+
+        await iqWindow.keyboard.press('Space');
+        await iqWindow.getByRole('button', { name: 'Accept' }).waitFor({ state: 'visible', timeout: 8000 });
+        await iqWindow.getByRole('button', { name: 'Decline' }).waitFor({ state: 'visible', timeout: 1000 });
+        console.log('  ✓ a real SpaceBarFailed (no ding active) grants the offer and renders IQTestSkipOfferScreen');
+
+        await iqWindow.getByRole('button', { name: 'Accept' }).click();
+        await waitForBodyTextIncluding(iqWindow, 'Listen carefully...', { timeoutMs: 8000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ Accept runs the real skip animation through to the quiz (IQTestSkipAnimScreen -> BlankScreen)');
+
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        const declineBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'iq-offer-decline-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === declineBuild.uuid));
+        await stageQualifyingIqOffer(server, admin, TEST_PORT, declineBuild.uuid);
+
+        fs.writeFileSync(APP_UUID_PATH, JSON.stringify({ uuid: declineBuild.uuid }));
+        electronApp = await electron.launch({
+            args: ['.'],
+            cwd: PROJECT_ROOT,
+            env: { ...process.env, DEV: 'false', PROD_SERVER_HOST: 'localhost', PROD_SERVER_PORT: String(TEST_PORT) },
+        });
+        iqWindow = await electronApp.firstWindow();
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, '10 / 100', GUI_WAIT_OPTS);
+
+        await iqWindow.keyboard.press('Space');
+        await iqWindow.getByRole('button', { name: 'Decline' }).waitFor({ state: 'visible', timeout: 8000 });
+
+        await iqWindow.getByRole('button', { name: 'Decline' }).click();
+        await waitForBodyTextIncluding(iqWindow, 'IQ Test 2.0', GUI_WAIT_OPTS);
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 8000 });
+        console.log('  ✓ Decline returns to the real IQTestScreen (offer releases, no skip)');
 
         console.log('\nGUI suite passed.');
     } finally {

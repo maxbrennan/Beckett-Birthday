@@ -31,6 +31,13 @@ maxTotalDings =
     iqQuestionCount * 8
 
 
+-- Minimum real dings cleared this run before a fail (or fake-flash catch) becomes
+-- eligible for the one-time skip offer -- see Server.elm's decideIqOffer.
+iqOfferMinDings : Int
+iqOfferMinDings =
+    5
+
+
 -- Lower bound (as a fraction of iqQuestionCount) for the fake-flash trap position.
 -- Debug: 0.65  |  Production: 0.85
 fakeFlashRangeLo : Float
@@ -161,6 +168,31 @@ type alias FakeFlashCaughtState =
     , displayNumerator : Int
     , displayDenominator : Int
     , phase : FakeFlashPhase
+
+    -- The server's answer to "was the skip offer granted for this catch" (see
+    -- Server.elm's decideIqOffer) -- Nothing until ServerIqOfferDecision arrives (it's
+    -- sent in reply to the ClientIqCaught this cutscene started from, so it typically
+    -- lands well before FfCounterOut, the only phase that reads it). Just totalDings
+    -- once granted; stays Nothing forever if denied.
+    , skipOffer : Maybe Int
+    }
+
+
+-- Phases of the one-step count-up animation shown when the player accepts the skip
+-- offer: the counter holds at 0/total, ticks once straight to total/total (with a
+-- ding), then holds before advancing to the next song. See Main.elm's
+-- IQSkipOfferAccepted/IQSkipAnimNextPhase/IQSkipCounterTick.
+type IQSkipPhase
+    = SkipCounterIn
+    | SkipTick
+    | SkipCounterOut
+
+
+type alias IQSkipAnimState =
+    { questionIdx : Int
+    , displayCount : Int
+    , total : Int
+    , phase : IQSkipPhase
     }
 
 
@@ -252,6 +284,7 @@ decideSpaceBar state =
                 , displayNumerator = state.dingCount
                 , displayDenominator = state.totalDings
                 , phase = FfDelay
+                , skipOffer = Nothing
                 }
 
         else

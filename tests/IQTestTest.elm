@@ -50,6 +50,7 @@ decideSpaceBarTests =
                             , displayNumerator = 5
                             , displayDenominator = 100
                             , phase = FfDelay
+                            , skipOffer = Nothing
                             }
                         )
         , test "pressing during a 50%-phase fake (not the trap) fails" <|
@@ -97,11 +98,11 @@ exitFakeFlashTests =
     describe "exitFakeFlash"
         [ test "doubles the display total on exit" <|
             \_ ->
-                exitFakeFlash { questionIdx = 2, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut }
+                exitFakeFlash { questionIdx = 2, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut, skipOffer = Nothing }
                     |> Expect.equal { questionIdx = 2, totalDings = 20 }
         , test "caps the doubled total at maxTotalDings" <|
             \_ ->
-                exitFakeFlash { questionIdx = 0, originalTotal = maxTotalDings, displayNumerator = 0, displayDenominator = 0, phase = FfCounterOut }
+                exitFakeFlash { questionIdx = 0, originalTotal = maxTotalDings, displayNumerator = 0, displayDenominator = 0, phase = FfCounterOut, skipOffer = Nothing }
                     |> Expect.equal { questionIdx = 0, totalDings = maxTotalDings }
         ]
 

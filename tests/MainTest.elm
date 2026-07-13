@@ -1,7 +1,7 @@
 module MainTest exposing (..)
 
 import Expect
-import Game.IQTest exposing (FakeFlashPhase(..), IQTestState, iqQuestionCount)
+import Game.IQTest exposing (FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, iqQuestionCount)
 import Json.Encode as Encode
 import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
 import Sync
@@ -396,18 +396,22 @@ spaceBarPressedSuite =
                 result.screen
                     |> Expect.equal
                         (FakeFlashCaughtScreen
-                            { questionIdx = 0, originalTotal = 50, displayNumerator = 3, displayDenominator = 50, phase = FfDelay }
+                            { questionIdx = 0, originalTotal = 50, displayNumerator = 3, displayDenominator = 50, phase = FfDelay, skipOffer = Nothing }
                         )
-        , test "pressing a 50%-phase fake fails back to the IQ begin screen" <|
+        , test "pressing a 50%-phase fake freezes on the active screen (flags cleared) and reports the fail" <|
             \_ ->
                 let
                     state =
                         { iqActiveState | fakeFlashActive = True, fakeIsTrap = False, totalDings = 42 }
 
-                    ( result, _ ) =
+                    ( result, cmd ) =
                         update SpaceBarPressed { baseModel | screen = IQTestActiveScreen state }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 42 })
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (IQTestActiveScreen { state | isFlashing = False, dingActive = False, fakeFlashActive = False })
+                    , \_ -> cmd |> Expect.equal (sendWs baseModel Sync.iqFailedEnvelope)
+                    ]
+                    ()
         , test "clearing a real ding updates the optimistic count" <|
             \_ ->
                 let
@@ -418,13 +422,20 @@ spaceBarPressedSuite =
                         update SpaceBarPressed { baseModel | screen = IQTestActiveScreen state }
                 in
                 result.screen |> Expect.equal (IQTestActiveScreen { state | dingActive = False, dingCount = 3 })
-        , test "pressing with nothing active fails" <|
+        , test "pressing with nothing active freezes on the active screen (flags cleared) and reports the fail" <|
             \_ ->
                 let
-                    ( result, _ ) =
-                        update SpaceBarPressed { baseModel | screen = IQTestActiveScreen { iqActiveState | totalDings = 7 } }
+                    state =
+                        { iqActiveState | totalDings = 7 }
+
+                    ( result, cmd ) =
+                        update SpaceBarPressed { baseModel | screen = IQTestActiveScreen state }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 7 })
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (IQTestActiveScreen { state | isFlashing = False, dingActive = False, fakeFlashActive = False })
+                    , \_ -> cmd |> Expect.equal (sendWs baseModel Sync.iqFailedEnvelope)
+                    ]
+                    ()
         ]
 
 
@@ -435,7 +446,7 @@ fakeFlashNextPhaseSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
@@ -445,22 +456,32 @@ fakeFlashNextPhaseSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfCounterIn }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfCounterIn, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
                 in
                 result.screen |> Expect.equal (FakeFlashCaughtScreen { state | phase = FfTickNumerator })
-        , test "FfCounterOut exits back to the IQ begin screen with the doubled count" <|
+        , test "FfCounterOut exits back to the IQ begin screen with the doubled count, when no skip offer was granted" <|
             \_ ->
                 let
                     state =
-                        { questionIdx = 3, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut }
+                        { questionIdx = 3, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
                 in
                 result.screen |> Expect.equal (IQTestScreen { questionIdx = 3, totalDings = 20 })
+        , test "FfCounterOut lands on the skip-offer screen instead, when the server already granted it" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 3, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut, skipOffer = Just 20 }
+
+                    ( result, _ ) =
+                        update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 3, totalDings = 20 })
         ]
 
 
@@ -725,6 +746,192 @@ serverQuizSongEndedAckSuite =
         ]
 
 
+serverIqOfferDecisionSuite : Test
+serverIqOfferDecisionSuite =
+    let
+        decisionEnvelope : Bool -> Int -> String
+        decisionEnvelope granted totalDings =
+            Encode.encode 0
+                (Encode.object
+                    [ ( "payload", Encode.string "iqOfferDecision" )
+                    , ( "iqOfferDecision", Encode.object [ ( "granted", Encode.bool granted ), ( "totalDings", Encode.int totalDings ) ] )
+                    ]
+                )
+    in
+    describe "ServerIqOfferDecision (via WsDataReceived)"
+        [ test "granted, on the active IQ screen, transitions to the skip-offer screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (decisionEnvelope True 42))
+                            { baseModel | screen = IQTestActiveScreen { iqActiveState | questionIdx = 2 } }
+                in
+                result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 42 })
+        , test "not granted, on the active IQ screen, transitions to the plain begin screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (decisionEnvelope False 42))
+                            { baseModel | screen = IQTestActiveScreen { iqActiveState | questionIdx = 2 } }
+                in
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42 })
+        , test "granted, on the fake-flash-caught screen, stashes the decision without transitioning yet" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfDelay, skipOffer = Nothing }
+
+                    ( result, _ ) =
+                        update (WsDataReceived (decisionEnvelope True 20)) { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen { state | skipOffer = Just 20 })
+        , test "not granted, on the fake-flash-caught screen, stashes Nothing" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfDelay, skipOffer = Just 999 }
+
+                    ( result, _ ) =
+                        update (WsDataReceived (decisionEnvelope False 20)) { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen { state | skipOffer = Nothing })
+        , test "ignored off both screens" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (decisionEnvelope True 42)) { baseModel | screen = WsErrorScreen }
+                in
+                result.screen |> Expect.equal WsErrorScreen
+        ]
+
+
+iqSkipOfferAcceptedSuite : Test
+iqSkipOfferAcceptedSuite =
+    describe "IQSkipOfferAccepted"
+        [ test "starts the count-up animation at SkipCounterIn" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipOfferAccepted
+                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 } }
+                in
+                result.screen
+                    |> Expect.equal
+                        (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 0, total = 100, phase = SkipCounterIn })
+        , test "ignored off the skip-offer screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipOfferAccepted { baseModel | screen = BlankScreen 0 }
+                in
+                result.screen |> Expect.equal (BlankScreen 0)
+        ]
+
+
+iqSkipOfferDeclinedSuite : Test
+iqSkipOfferDeclinedSuite =
+    describe "IQSkipOfferDeclined"
+        [ test "returns to the IQ begin screen and reports the decline" <|
+            \_ ->
+                let
+                    ( result, cmd ) =
+                        update IQSkipOfferDeclined
+                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 } }
+                in
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 100 })
+                    , \_ -> cmd |> Expect.equal (sendWs baseModel Sync.iqOfferDeclinedEnvelope)
+                    ]
+                    ()
+        , test "ignored off the skip-offer screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipOfferDeclined { baseModel | screen = BlankScreen 0 }
+                in
+                result.screen |> Expect.equal (BlankScreen 0)
+        ]
+
+
+iqSkipAnimNextPhaseSuite : Test
+iqSkipAnimNextPhaseSuite =
+    describe "IQSkipAnimNextPhase"
+        [ test "SkipCounterIn advances to SkipTick" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipAnimNextPhase
+                            { baseModel | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 0, total = 100, phase = SkipCounterIn } }
+                in
+                result.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 0, total = 100, phase = SkipTick })
+        , test "SkipTick advances to SkipCounterOut" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipAnimNextPhase
+                            { baseModel | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipTick } }
+                in
+                result.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipCounterOut })
+        , test "SkipCounterOut advances to the next song's BlankScreen and reports the pass, exactly like a genuine pass" <|
+            \_ ->
+                let
+                    ( result, cmd ) =
+                        update IQSkipAnimNextPhase
+                            { baseModel | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipCounterOut } }
+                in
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (BlankScreen 3)
+                    , \_ -> cmd |> Expect.equal (sendWs baseModel (Sync.quizAdvancedEnvelope 2))
+                    ]
+                    ()
+        , test "ignored off the skip-anim screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipAnimNextPhase { baseModel | screen = BlankScreen 0 }
+                in
+                result.screen |> Expect.equal (BlankScreen 0)
+        ]
+
+
+iqSkipCounterTickSuite : Test
+iqSkipCounterTickSuite =
+    describe "IQSkipCounterTick"
+        [ test "during SkipTick, jumps displayCount straight to total and bumps dingKey" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipCounterTick
+                            { baseModel
+                                | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 0, total = 100, phase = SkipTick }
+                                , dingKey = 7
+                            }
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipTick })
+                    , \m -> m.dingKey |> Expect.equal 8
+                    ]
+                    result
+        , test "outside SkipTick (e.g. SkipCounterOut) is a no-op here" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 2, displayCount = 100, total = 100, phase = SkipCounterOut }
+
+                    ( result, _ ) =
+                        update IQSkipCounterTick { baseModel | screen = IQTestSkipAnimScreen state }
+                in
+                result.screen |> Expect.equal (IQTestSkipAnimScreen state)
+        , test "ignored off the skip-anim screen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipCounterTick { baseModel | screen = BlankScreen 0 }
+                in
+                result.screen |> Expect.equal (BlankScreen 0)
+        ]
+
+
 answerChangedSuite : Test
 answerChangedSuite =
     describe "AnswerChanged"
@@ -821,13 +1028,20 @@ dingFlashEndSuite =
 dingWindowExpiredSuite : Test
 dingWindowExpiredSuite =
     describe "DingWindowExpired"
-        [ test "a still-active ding times out to a fail" <|
+        [ test "a still-active ding times out to a fail: freezes on the active screen (flags cleared) and reports it" <|
             \_ ->
                 let
-                    ( result, _ ) =
-                        update DingWindowExpired { baseModel | screen = IQTestActiveScreen { iqActiveState | dingActive = True, totalDings = 9 } }
+                    state =
+                        { iqActiveState | dingActive = True, totalDings = 9 }
+
+                    ( result, cmd ) =
+                        update DingWindowExpired { baseModel | screen = IQTestActiveScreen state }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 9 })
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (IQTestActiveScreen { state | isFlashing = False, dingActive = False, fakeFlashActive = False })
+                    , \_ -> cmd |> Expect.equal (sendWs baseModel Sync.iqFailedEnvelope)
+                    ]
+                    ()
         , test "an already-cleared ding is a no-op" <|
             \_ ->
                 let
@@ -899,7 +1113,7 @@ fakeFlashNextPhaseMoreSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickDelay }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickDelay, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
@@ -909,7 +1123,7 @@ fakeFlashNextPhaseMoreSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 5, displayDenominator = 10, phase = FfTickNumerator }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 5, displayDenominator = 10, phase = FfTickNumerator, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1057,7 +1271,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 3, displayDenominator = 10, phase = FfTickNumerator }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 3, displayDenominator = 10, phase = FfTickNumerator, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1067,7 +1281,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickNumerator }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickNumerator, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1077,7 +1291,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 15, phase = FfTickDenominator }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 15, phase = FfTickDenominator, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1087,7 +1301,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfTickDenominator }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfTickDenominator, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1097,7 +1311,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1385,7 +1599,7 @@ remainingEdgeCasesSuite =
             \_ ->
                 let
                     savedScreen =
-                        FakeFlashCaughtScreen { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay }
+                        FakeFlashCaughtScreen { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing }
 
                     ( result, _ ) =
                         update BeginPressed { baseModel | screen = BeginScreen savedScreen }

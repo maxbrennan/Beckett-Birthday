@@ -1,7 +1,7 @@
 module SyncTest exposing (..)
 
 import Expect
-import Game.IQTest exposing (FakeFlashPhase(..))
+import Game.IQTest exposing (FakeFlashPhase(..), IQSkipPhase(..))
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Sync
@@ -9,15 +9,19 @@ import Sync
         ( ServerEnvelope(..)
         , clientStateEnvelope
         , decodeFakeFlashPhase
+        , decodeIQSkipPhase
         , decodeMsg
         , decodeModel
         , decodeScreen
         , decodeServerEnvelope
         , encodeFakeFlashPhase
+        , encodeIQSkipPhase
         , encodeModel
         , encodeMsg
         , encodeScreen
         , iqCaughtEnvelope
+        , iqFailedEnvelope
+        , iqOfferDeclinedEnvelope
         , iqReadyForDingEnvelope
         , iqResumeEnvelope
         , iqStartCountdownEnvelope
@@ -82,9 +86,49 @@ screenRoundTripTests =
             \_ ->
                 let
                     state =
-                        { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold }
+                        { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Nothing }
                 in
                 Expect.equal (FakeFlashCaughtScreen state) (roundTripScreen (FakeFlashCaughtScreen state))
+        , test "FakeFlashCaughtScreen carries a granted skipOffer too" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Just 200 }
+                in
+                Expect.equal (FakeFlashCaughtScreen state) (roundTripScreen (FakeFlashCaughtScreen state))
+        , test "FakeFlashCaughtScreen's skipOffer defaults to Nothing for an older persisted row missing the field" <|
+            \_ ->
+                let
+                    oldShapeJson =
+                        Encode.object
+                            [ ( "tag", Encode.string "FakeFlashCaughtScreen" )
+                            , ( "state"
+                              , Encode.object
+                                    [ ( "questionIdx", Encode.int 1 )
+                                    , ( "originalTotal", Encode.int 100 )
+                                    , ( "displayNumerator", Encode.int 3 )
+                                    , ( "displayDenominator", Encode.int 100 )
+                                    , ( "phase", Encode.string "FfText1Hold" )
+                                    ]
+                              )
+                            ]
+                in
+                Decode.decodeValue decodeScreen oldShapeJson
+                    |> Expect.equal
+                        (Ok
+                            (FakeFlashCaughtScreen
+                                { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Nothing }
+                            )
+                        )
+        , test "IQTestSkipOfferScreen carries its state" <|
+            \_ -> Expect.equal (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 }) (roundTripScreen (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 }))
+        , test "IQTestSkipAnimScreen carries its state" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 2, displayCount = 42, total = 100, phase = SkipTick }
+                in
+                Expect.equal (IQTestSkipAnimScreen state) (roundTripScreen (IQTestSkipAnimScreen state))
         , test "ConfirmingAnswerScreen nests the next screen" <|
             \_ -> Expect.equal (ConfirmingAnswerScreen (BlankScreen 4)) (roundTripScreen (ConfirmingAnswerScreen (BlankScreen 4)))
         , test "BeginScreen nests the next screen" <|
@@ -114,6 +158,27 @@ fakeFlashPhaseRoundTripTests =
         , test "rejects an unknown phase string" <|
             \_ ->
                 Decode.decodeValue decodeFakeFlashPhase (Encode.string "NotAPhase")
+                    |> Result.toMaybe
+                    |> Expect.equal Nothing
+        ]
+
+
+iqSkipPhaseRoundTripTests : Test
+iqSkipPhaseRoundTripTests =
+    let
+        roundTrip phase =
+            encodeIQSkipPhase phase
+                |> Decode.decodeValue decodeIQSkipPhase
+    in
+    describe "encodeIQSkipPhase / decodeIQSkipPhase round-trip"
+        [ test "round-trips every phase" <|
+            \_ ->
+                [ SkipCounterIn, SkipTick, SkipCounterOut ]
+                    |> List.map roundTrip
+                    |> Expect.equal (List.map Ok [ SkipCounterIn, SkipTick, SkipCounterOut ])
+        , test "rejects an unknown phase string" <|
+            \_ ->
+                Decode.decodeValue decodeIQSkipPhase (Encode.string "NotAPhase")
                     |> Result.toMaybe
                     |> Expect.equal Nothing
         ]
@@ -163,6 +228,10 @@ iqEnvelopeBuilderTests =
             \_ -> Encode.encode 0 iqCaughtEnvelope |> Expect.equal """{"payload":"iqCaught","iqCaught":{}}"""
         , test "iqResumeEnvelope" <|
             \_ -> Encode.encode 0 iqResumeEnvelope |> Expect.equal """{"payload":"iqResume","iqResume":{}}"""
+        , test "iqFailedEnvelope" <|
+            \_ -> Encode.encode 0 iqFailedEnvelope |> Expect.equal """{"payload":"iqFailed","iqFailed":{}}"""
+        , test "iqOfferDeclinedEnvelope" <|
+            \_ -> Encode.encode 0 iqOfferDeclinedEnvelope |> Expect.equal """{"payload":"iqOfferDeclined","iqOfferDeclined":{}}"""
         ]
 
 
@@ -310,6 +379,14 @@ serverEnvelopeTests =
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"quizAnswerResult","quizAnswerResult":{"idx":0}}"""
                     |> Expect.equal (Ok (ServerQuizAnswerResult { idx = 0, correct = False, revealAnswer = "" }))
+        , test "iqOfferDecision with all fields present" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqOfferDecision","iqOfferDecision":{"granted":true,"totalDings":150}}"""
+                    |> Expect.equal (Ok (ServerIqOfferDecision { granted = True, totalDings = 150 }))
+        , test "iqOfferDecision defaults granted/totalDings to false/0 when protobufjs omits them" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqOfferDecision","iqOfferDecision":{}}"""
+                    |> Expect.equal (Ok (ServerIqOfferDecision { granted = False, totalDings = 0 }))
         ]
 
 
