@@ -204,6 +204,24 @@ and sent to the server along with that build, which stores it per‑build in
 `config/app-config.json` is missing or `winScreen` is empty, the deploy fails
 outright rather than shipping a build with no win text.
 
+### 5a. Enable/disable the IQ‑test skip offer
+
+The IQ test's one‑time "skip this and take on a mystery challenge later" offer
+(shown after the player's first qualifying failure) is on by default. To turn it
+off for a build, set **`config/app-config.json`**'s `iqSkipOfferEnabled` to `false`:
+
+```json
+{
+  "iqSkipOfferEnabled": false
+}
+```
+
+Like `winScreen`, this is read by `scripts/deploy.js`/`scripts/deploy-replacement.js`
+at deploy time and stored per‑build in `app-builds/builds.json`. Unlike `winScreen`,
+it's optional — a missing field (or an existing `config/app-config.json` from before
+this option existed) is treated as `true` (offer enabled), so older configs keep
+working unchanged.
+
 ---
 
 ## 6. Song assets

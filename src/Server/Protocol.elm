@@ -11,16 +11,18 @@ type ClientEnvelope
     | ClientStateRequest String
     | ClientDistRegister DistInfo
     | ClientDistUpload { uuid : String, filename : String, contentsBase64 : String, chunkIndex : Int, isLast : Bool }
-    | ClientDistComplete { uuid : String, filename : String, winText : String, quizQuestions : Encode.Value }
+    | ClientDistComplete { uuid : String, filename : String, winText : String, quizQuestions : Encode.Value, iqOfferDisabled : Bool }
     | ClientDistStateEdit String
     | ClientDistStateEditSave { uuid : String, json : String }
-    | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String, quizQuestions : Encode.Value, winText : String }
+    | ClientDistReplaceComplete { newUuid : String, oldUuid : String, filename : String, quizQuestions : Encode.Value, winText : String, iqOfferDisabled : Bool }
     | ClientDistUndeploy String
     | ClientDistList
     | ClientIqStartCountdown
     | ClientIqReadyForDing
     | ClientIqCaught
     | ClientIqResume
+    | ClientIqFailed
+    | ClientIqOfferDeclined
     | ClientQuizAdvanced Int
     | ClientQuizAnswerSubmitted { idx : Int, answer : String }
     | ClientQuizSongEnded Int
@@ -73,7 +75,9 @@ decodeClientEnvelope =
 
                     "distComplete" ->
                         Decode.map4
-                            (\u f w q -> ClientDistComplete { uuid = u, filename = f, winText = w, quizQuestions = q })
+                            (\u f w q ->
+                                \d -> ClientDistComplete { uuid = u, filename = f, winText = w, quizQuestions = q, iqOfferDisabled = d }
+                            )
                             (Decode.at [ "distComplete", "uuid" ] Decode.string)
                             (Decode.at [ "distComplete", "filename" ] Decode.string)
                             -- older deploy clients omit winText; codec defaults it to "".
@@ -84,6 +88,13 @@ decodeClientEnvelope =
                                 , Decode.succeed (Encode.list identity [])
                                 ]
                             )
+                            |> Decode.andThen
+                                (\partial ->
+                                    -- protobufjs omits a false scalar, and older deploy clients predate
+                                    -- this field entirely -- both cases mean the offer stays enabled.
+                                    Decode.map partial
+                                        (Decode.oneOf [ Decode.at [ "distComplete", "iqSkipOfferDisabled" ] Decode.bool, Decode.succeed False ])
+                                )
 
                     "distStateEdit" ->
                         Decode.map ClientDistStateEdit
@@ -97,8 +108,9 @@ decodeClientEnvelope =
                     "distReplaceComplete" ->
                         Decode.map5
                             (\n o f q w ->
-                                ClientDistReplaceComplete
-                                    { newUuid = n, oldUuid = o, filename = f, quizQuestions = q, winText = w }
+                                \d ->
+                                    ClientDistReplaceComplete
+                                        { newUuid = n, oldUuid = o, filename = f, quizQuestions = q, winText = w, iqOfferDisabled = d }
                             )
                             (Decode.at [ "distReplaceComplete", "newUuid" ] Decode.string)
                             (Decode.at [ "distReplaceComplete", "oldUuid" ] Decode.string)
@@ -111,6 +123,13 @@ decodeClientEnvelope =
                             )
                             -- older deploy clients omit winText; codec defaults it to "".
                             (Decode.oneOf [ Decode.at [ "distReplaceComplete", "winText" ] Decode.string, Decode.succeed "" ])
+                            |> Decode.andThen
+                                (\partial ->
+                                    -- protobufjs omits a false scalar, and older deploy clients predate
+                                    -- this field entirely -- both cases mean the offer stays enabled.
+                                    Decode.map partial
+                                        (Decode.oneOf [ Decode.at [ "distReplaceComplete", "iqSkipOfferDisabled" ] Decode.bool, Decode.succeed False ])
+                                )
 
                     "distUndeploy" ->
                         Decode.map ClientDistUndeploy
@@ -130,6 +149,12 @@ decodeClientEnvelope =
 
                     "iqResume" ->
                         Decode.succeed ClientIqResume
+
+                    "iqFailed" ->
+                        Decode.succeed ClientIqFailed
+
+                    "iqOfferDeclined" ->
+                        Decode.succeed ClientIqOfferDeclined
 
                     "quizAdvanced" ->
                         Decode.map ClientQuizAdvanced
@@ -364,4 +389,16 @@ quizSongEndedAckEnvelope idx =
     Encode.object
         [ ( "payload", Encode.string "quizSongEndedAck" )
         , ( "quizSongEndedAck", Encode.object [ ( "idx", Encode.int idx ) ] )
+        ]
+
+
+-- The server's authoritative answer to "was the one-time IQ-test skip offer granted"
+-- for a fail (ClientIqFailed) or a fake-flash catch (ClientIqCaught) -- see
+-- Server.elm's decideIqOffer. totalDings always carries the server's current count
+-- (unchanged on a plain fail, already-doubled on a catch).
+iqOfferDecisionEnvelope : { granted : Bool, totalDings : Int } -> Encode.Value
+iqOfferDecisionEnvelope { granted, totalDings } =
+    Encode.object
+        [ ( "payload", Encode.string "iqOfferDecision" )
+        , ( "iqOfferDecision", Encode.object [ ( "granted", Encode.bool granted ), ( "totalDings", Encode.int totalDings ) ] )
         ]

@@ -51,6 +51,19 @@ type alias RegistryEntry =
     -- (not inherited from the old entry) on a build replacement -- see Server.elm's
     -- ClientDistReplaceComplete handler.
     , quizQuestions : Maybe Encode.Value
+
+    -- This build's config-time choice (config/app-config.json's iqSkipOfferEnabled,
+    -- inverted), sent at deploy time on DistComplete/DistReplaceComplete. Deploy-time
+    -- build config, not player game-state -- stays top-level like platform/filename,
+    -- not nested in the editable serverState document below. Resent fresh (not
+    -- inherited) on replacement, same as quizQuestions above.
+    , iqOfferDisabled : Bool
+
+    -- Durable one-time-ever flag: has this player already been *granted* the IQ-test
+    -- skip offer (granted, not necessarily accepted -- see Server.elm's decideIqOffer).
+    -- Game-state, so it lives in the editable serverState document alongside
+    -- winText/iqTimer/quizProgress; inherited on replacement like those.
+    , iqOfferUsed : Bool
     }
 
 
@@ -79,6 +92,7 @@ encodeServerStateFields fields =
         , ( "quizProgress", Encode.int fields.quizProgress )
         , ( "timerEndsAt", fields.timerEndsAt |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
         , ( "quizQuestions", Maybe.withDefault Encode.null fields.quizQuestions )
+        , ( "iqOfferUsed", Encode.bool fields.iqOfferUsed )
         ]
 
 
@@ -94,6 +108,7 @@ encodeRegistryEntry entry =
         , ( "filename", Encode.string entry.filename )
         , ( "platform", Encode.string entry.platform )
         , ( "pendingStateEdit", Encode.bool entry.pendingStateEdit )
+        , ( "iqOfferDisabled", Encode.bool entry.iqOfferDisabled )
         , ( "serverState"
           , encodeServerStateFields
                 { winText = entry.winText
@@ -101,6 +116,7 @@ encodeRegistryEntry entry =
                 , quizProgress = entry.quizProgress
                 , timerEndsAt = entry.timerEndsAt
                 , quizQuestions = entry.quizQuestions
+                , iqOfferUsed = entry.iqOfferUsed
                 }
           )
         ]
@@ -141,6 +157,7 @@ type alias ServerStateFields =
     , quizProgress : Int
     , timerEndsAt : Maybe Float
     , quizQuestions : Maybe Encode.Value
+    , iqOfferUsed : Bool
     }
 
 
@@ -150,8 +167,8 @@ decodeServerStateFields =
         fields =
             Decode.map3
                 (\winText iqTimer quizProgress ->
-                    \timerEndsAt quizQuestions ->
-                        ServerStateFields winText iqTimer quizProgress timerEndsAt quizQuestions
+                    \timerEndsAt quizQuestions iqOfferUsed ->
+                        ServerStateFields winText iqTimer quizProgress timerEndsAt quizQuestions iqOfferUsed
                 )
                 -- older rows predate the win text; treat missing as empty.
                 (Decode.maybe (Decode.field "winText" Decode.string)
@@ -172,6 +189,15 @@ decodeServerStateFields =
                             -- older rows predate per-build quiz questions; treat missing as Nothing.
                             (decodeOptionalValue "quizQuestions")
                     )
+                |> Decode.andThen
+                    (\partial ->
+                        Decode.map partial
+                            -- older rows predate this field; treat missing as False (offer
+                            -- not yet granted to this player).
+                            (Decode.maybe (Decode.field "iqOfferUsed" Decode.bool)
+                                |> Decode.map (Maybe.withDefault False)
+                            )
+                    )
     in
     Decode.oneOf [ Decode.field "serverState" fields, fields ]
 
@@ -180,7 +206,7 @@ decodeRegistryEntry : Decode.Decoder RegistryEntry
 decodeRegistryEntry =
     Decode.map4
         (\uuid filename platform pendingStateEdit ->
-            \serverState ->
+            \iqOfferDisabled serverState ->
                 RegistryEntry uuid
                     filename
                     platform
@@ -190,6 +216,8 @@ decodeRegistryEntry =
                     serverState.quizProgress
                     serverState.timerEndsAt
                     serverState.quizQuestions
+                    iqOfferDisabled
+                    serverState.iqOfferUsed
         )
         (Decode.field "uuid" Decode.string)
         (Decode.field "filename" Decode.string)
@@ -198,7 +226,15 @@ decodeRegistryEntry =
         (Decode.maybe (Decode.field "pendingStateEdit" Decode.bool)
             |> Decode.map (Maybe.withDefault False)
         )
-        |> Decode.andThen (\partial -> Decode.map partial decodeServerStateFields)
+        |> Decode.andThen
+            (\partial ->
+                Decode.map2 partial
+                    -- older rows predate this field; treat missing as False (offer enabled).
+                    (Decode.maybe (Decode.field "iqOfferDisabled" Decode.bool)
+                        |> Decode.map (Maybe.withDefault False)
+                    )
+                    decodeServerStateFields
+            )
 
 
 decodeRegistry : String -> List RegistryEntry
@@ -235,6 +271,19 @@ updateEntryIqTimer uuid newIqTimer =
         (\e ->
             if e.uuid == uuid then
                 { e | iqTimer = newIqTimer }
+
+            else
+                e
+        )
+
+
+-- Mirrors updateEntryQuizProgress but for the durable one-time skip-offer-granted flag.
+updateEntryIqOfferUsed : String -> List RegistryEntry -> List RegistryEntry
+updateEntryIqOfferUsed uuid =
+    List.map
+        (\e ->
+            if e.uuid == uuid then
+                { e | iqOfferUsed = True }
 
             else
                 e

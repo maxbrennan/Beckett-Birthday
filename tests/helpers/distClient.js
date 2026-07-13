@@ -28,7 +28,7 @@ function download(port, uuid) {
 // dummy buffer instead of a real electron-builder artifact — the server's registry/auth/
 // download behavior doesn't depend on what bytes were uploaded, and building a real signed
 // DMG/EXE per test run isn't needed to exercise that behavior.
-async function deployBuild(port, admin, { platform = 'mac', filename, contents, winText = '', quizQuestions = TEST_QUIZ_QUESTIONS } = {}) {
+async function deployBuild(port, admin, { platform = 'mac', filename, contents, winText = '', quizQuestions = TEST_QUIZ_QUESTIONS, iqSkipOfferDisabled = false } = {}) {
     const uuid = crypto.randomUUID();
     const finalFilename = filename || `test-build-${uuid}.bin`;
     const finalContents = contents !== undefined ? contents : Buffer.from(`dummy build ${uuid}`);
@@ -46,11 +46,11 @@ async function deployBuild(port, admin, { platform = 'mac', filename, contents, 
 
     await httpUpload({ host: 'localhost', port, token: uploadToken, filename: finalFilename, contents: finalContents });
 
-    conn.send({ distComplete: { uuid, filename: finalFilename, winText, quizQuestions } });
+    conn.send({ distComplete: { uuid, filename: finalFilename, winText, quizQuestions, iqSkipOfferDisabled } });
     await conn.waitFor((m) => m.payload === 'distCompleteAck');
     await conn.close();
 
-    return { uuid, filename: finalFilename, platform, contents: finalContents, winText, quizQuestions };
+    return { uuid, filename: finalFilename, platform, contents: finalContents, winText, quizQuestions, iqSkipOfferDisabled };
 }
 
 // Full distRegister -> admin auth -> HTTPS upload -> distReplaceComplete cycle, mirroring
@@ -58,7 +58,7 @@ async function deployBuild(port, admin, { platform = 'mac', filename, contents, 
 // src/Server.elm) instead of starting fresh. quizQuestions/winText are NOT carried forward
 // from oldUuid -- they're resent fresh on every replace (see #77), so they default the same
 // way deployBuild's do rather than being read from oldUuid's build.
-async function replaceBuild(port, admin, oldUuid, { platform = 'mac', filename, contents, winText = '', quizQuestions = TEST_QUIZ_QUESTIONS } = {}) {
+async function replaceBuild(port, admin, oldUuid, { platform = 'mac', filename, contents, winText = '', quizQuestions = TEST_QUIZ_QUESTIONS, iqSkipOfferDisabled = false } = {}) {
     const uuid = crypto.randomUUID();
     const finalFilename = filename || `test-build-${uuid}.bin`;
     const finalContents = contents !== undefined ? contents : Buffer.from(`dummy build ${uuid}`);
@@ -76,11 +76,11 @@ async function replaceBuild(port, admin, oldUuid, { platform = 'mac', filename, 
 
     await httpUpload({ host: 'localhost', port, token: uploadToken, filename: finalFilename, contents: finalContents });
 
-    conn.send({ distReplaceComplete: { newUuid: uuid, oldUuid, filename: finalFilename, winText, quizQuestions } });
+    conn.send({ distReplaceComplete: { newUuid: uuid, oldUuid, filename: finalFilename, winText, quizQuestions, iqSkipOfferDisabled } });
     await conn.waitFor((m) => m.payload === 'distReplaceCompleteAck');
     await conn.close();
 
-    return { uuid, filename: finalFilename, platform, contents: finalContents, winText, quizQuestions };
+    return { uuid, filename: finalFilename, platform, contents: finalContents, winText, quizQuestions, iqSkipOfferDisabled };
 }
 
 async function undeploy(port, admin, uuid) {

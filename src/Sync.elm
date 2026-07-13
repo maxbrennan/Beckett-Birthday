@@ -22,6 +22,7 @@ type ServerEnvelope
     | ServerIqTestComplete
     | ServerQuizAnswerResult { idx : Int, correct : Bool, revealAnswer : String }
     | ServerQuizSongEndedAck Int
+    | ServerIqOfferDecision { granted : Bool, totalDings : Int }
     | ServerTimerSync Float
     | ServerTimedOut
     | ServerUnknown
@@ -90,6 +91,14 @@ decodeServerEnvelope =
                         Decode.at [ "quizSongEndedAck", "idx" ] Decode.int
                             |> Decode.map ServerQuizSongEndedAck
 
+                    "iqOfferDecision" ->
+                        Decode.map2
+                            (\granted totalDings -> ServerIqOfferDecision { granted = granted, totalDings = totalDings })
+                            -- protobufjs omits default (false) scalar fields, so granted
+                            -- may be absent; treat a missing flag as false (denied).
+                            (Decode.oneOf [ Decode.at [ "iqOfferDecision", "granted" ] Decode.bool, Decode.succeed False ])
+                            (Decode.oneOf [ Decode.at [ "iqOfferDecision", "totalDings" ] Decode.int, Decode.succeed 0 ])
+
                     "timerSync" ->
                         -- protobufjs omits a scalar field left at its zero value, but
                         -- timerEndsAt is always a large epoch-ms deadline in practice.
@@ -150,6 +159,27 @@ iqResumeEnvelope =
     Encode.object
         [ ( "payload", Encode.string "iqResume" )
         , ( "iqResume", Encode.object [] )
+        ]
+
+
+-- "A qualifying fail just happened" -- see Server.elm's decideIqOffer /
+-- ClientIqFailed. The server replies with iqOfferDecision (ServerIqOfferDecision).
+iqFailedEnvelope : Encode.Value
+iqFailedEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqFailed" )
+        , ( "iqFailed", Encode.object [] )
+        ]
+
+
+-- "The player declined an outstanding skip offer." Releases the server-held grant
+-- (Server.elm's Model.iqOfferGrants) so a subsequent iqStartCountdown is no longer
+-- blocked.
+iqOfferDeclinedEnvelope : Encode.Value
+iqOfferDeclinedEnvelope =
+    Encode.object
+        [ ( "payload", Encode.string "iqOfferDeclined" )
+        , ( "iqOfferDeclined", Encode.object [] )
         ]
 
 
@@ -214,6 +244,26 @@ encodeFakeFlashPhase phase =
         )
 
 
+encodeIQSkipPhase : IQSkipPhase -> Encode.Value
+encodeIQSkipPhase phase =
+    Encode.string
+        (case phase of
+            SkipCounterIn -> "SkipCounterIn"
+            SkipTick -> "SkipTick"
+            SkipCounterOut -> "SkipCounterOut"
+        )
+
+
+encodeIQSkipAnimState : IQSkipAnimState -> Encode.Value
+encodeIQSkipAnimState s =
+    Encode.object
+        [ ( "questionIdx", Encode.int s.questionIdx )
+        , ( "displayCount", Encode.int s.displayCount )
+        , ( "total", Encode.int s.total )
+        , ( "phase", encodeIQSkipPhase s.phase )
+        ]
+
+
 encodeIQTestScreenState : IQTestScreenState -> Encode.Value
 encodeIQTestScreenState s =
     Encode.object
@@ -253,6 +303,7 @@ encodeFakeFlashCaughtState s =
         , ( "displayNumerator", Encode.int s.displayNumerator )
         , ( "displayDenominator", Encode.int s.displayDenominator )
         , ( "phase", encodeFakeFlashPhase s.phase )
+        , ( "skipOffer", s.skipOffer |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
         ]
 
 
@@ -296,6 +347,12 @@ encodeScreen scr =
 
         FakeFlashCaughtScreen state ->
             Encode.object [ ( "tag", Encode.string "FakeFlashCaughtScreen" ), ( "state", encodeFakeFlashCaughtState state ) ]
+
+        IQTestSkipOfferScreen state ->
+            Encode.object [ ( "tag", Encode.string "IQTestSkipOfferScreen" ), ( "state", encodeIQTestScreenState state ) ]
+
+        IQTestSkipAnimScreen state ->
+            Encode.object [ ( "tag", Encode.string "IQTestSkipAnimScreen" ), ( "state", encodeIQSkipAnimState state ) ]
 
         WinScreen text ->
             -- Round-trips normally now: the server only ever derives/persists this
@@ -413,6 +470,29 @@ decodeFakeFlashPhase =
             )
 
 
+decodeIQSkipPhase : Decoder IQSkipPhase
+decodeIQSkipPhase =
+    Decode.string
+        |> Decode.andThen
+            (\s ->
+                case s of
+                    "SkipCounterIn" -> Decode.succeed SkipCounterIn
+                    "SkipTick" -> Decode.succeed SkipTick
+                    "SkipCounterOut" -> Decode.succeed SkipCounterOut
+                    _ -> Decode.fail ("Unknown IQSkipPhase: " ++ s)
+            )
+
+
+decodeIQSkipAnimState : Decoder IQSkipAnimState
+decodeIQSkipAnimState =
+    Decode.map4
+        (\qi dc t ph -> { questionIdx = qi, displayCount = dc, total = t, phase = ph })
+        (Decode.field "questionIdx" Decode.int)
+        (Decode.field "displayCount" Decode.int)
+        (Decode.field "total" Decode.int)
+        (Decode.field "phase" decodeIQSkipPhase)
+
+
 decodeIQTestScreenState : Decoder IQTestScreenState
 decodeIQTestScreenState =
     Decode.map2
@@ -452,13 +532,21 @@ decodeFakeFlashCaughtState : Decoder FakeFlashCaughtState
 decodeFakeFlashCaughtState =
     Decode.map5
         (\qi ot dn dd ph ->
-            { questionIdx = qi, originalTotal = ot, displayNumerator = dn, displayDenominator = dd, phase = ph }
+            \skipOffer ->
+                { questionIdx = qi, originalTotal = ot, displayNumerator = dn, displayDenominator = dd, phase = ph, skipOffer = skipOffer }
         )
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "originalTotal" Decode.int)
         (Decode.field "displayNumerator" Decode.int)
         (Decode.field "displayDenominator" Decode.int)
         (Decode.field "phase" decodeFakeFlashPhase)
+        |> Decode.andThen
+            (\partial ->
+                -- older persisted rows predate this field; treat missing as Nothing (no
+                -- decision yet/denied).
+                Decode.map partial
+                    (Decode.oneOf [ Decode.field "skipOffer" (Decode.nullable Decode.int), Decode.succeed Nothing ])
+            )
 
 
 decodeScreen : Decoder Screen
@@ -505,6 +593,12 @@ decodeScreen =
 
                     "FakeFlashCaughtScreen" ->
                         Decode.map FakeFlashCaughtScreen (Decode.field "state" decodeFakeFlashCaughtState)
+
+                    "IQTestSkipOfferScreen" ->
+                        Decode.map IQTestSkipOfferScreen (Decode.field "state" decodeIQTestScreenState)
+
+                    "IQTestSkipAnimScreen" ->
+                        Decode.map IQTestSkipAnimScreen (Decode.field "state" decodeIQSkipAnimState)
 
                     "WinScreen" ->
                         Decode.map WinScreen
