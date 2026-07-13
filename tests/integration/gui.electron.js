@@ -28,6 +28,7 @@ const USERNAME = 'testadmin';
 const PASSWORD = 'correct-horse-battery-staple';
 const APP_UUID_PATH = path.join(PROJECT_ROOT, 'app-uuid.json');
 const AUDIO_ASSET_PATH = path.join(PROJECT_ROOT, 'assets', 'jeopardy-theme.mp3');
+const LOUD_VIDEO_ASSET_PATH = path.join(PROJECT_ROOT, 'assets', 'loud.mp4');
 const GUI_WAIT_OPTS = { timeoutMs: 8000, intervalMs: 150 };
 
 async function readAudioState(window) {
@@ -83,6 +84,47 @@ async function stageQualifyingIqOffer(server, admin, port, uuid) {
     });
 }
 
+// Regression coverage for issue #92: stages a countdown (as edit:state would) already
+// at/above the loud-video threshold, so the countdown-complete -> IQTestActiveScreen
+// transition is the one under test, not the IqAwaitingReady/IqDingShown derive path
+// stageQualifyingIqOffer above exercises. countdownRemaining is 1 (ticks are a real
+// 1000ms each -- see Server.elm's scheduleCountdownStep) purely to keep the test fast.
+async function stageCountdownAtLoudThreshold(server, admin, port, uuid, dingCount) {
+    const { authResult, conn, json } = await distClient.requestStateEdit(port, admin, uuid);
+    if (!authResult.success) throw new Error('admin auth failed while staging iqTimer');
+    const fetched = JSON.parse(json);
+    const edited = {
+        ...fetched,
+        iqTimer: {
+            epoch: 1,
+            phase: 'IqCounting',
+            questionIdx: 0,
+            countdownRemaining: 1,
+            dingCount,
+            totalDings: 100,
+            fakeFlashPoint: 9999,
+            fakeFlashUsed: false,
+            in50PercentPhase: false,
+            lastDing: 'RealDing',
+            dingDelay: null,
+        },
+    };
+    const resultMsg = await distClient.saveStateEdit(conn, uuid, JSON.stringify(edited));
+    if (resultMsg.payload !== 'distStateEditSaveAck') throw new Error(`stageCountdownAtLoudThreshold save failed: ${resultMsg.payload}`);
+    await conn.close();
+    await waitUntil(() => {
+        const found = registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === uuid);
+        return found && found.iqTimer && found.iqTimer.phase === 'IqCounting' ? found : null;
+    });
+}
+
+async function readVideoState(window) {
+    return window.evaluate(() => {
+        const el = document.getElementById('playing-video');
+        return el ? { exists: true, paused: el.paused } : { exists: false, paused: null };
+    });
+}
+
 // Loading + decoding the local mp3 file takes a little while (a few seconds observed
 // locally), so autoplay doesn't kick in the instant the element is inserted — poll for
 // playback to actually start rather than asserting immediately, then confirm currentTime
@@ -121,6 +163,18 @@ async function main() {
         fs.mkdirSync(path.dirname(AUDIO_ASSET_PATH), { recursive: true });
         execSync(
             `ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=mono -t 5 -q:a 9 "${AUDIO_ASSET_PATH}"`,
+            { stdio: 'pipe' }
+        );
+    }
+
+    // Same placeholder rationale as the audio asset above -- assets/loud.mp4 is
+    // gitignored, so a fresh checkout/CI runner needs a stand-in to actually assert
+    // playback against (see stageCountdownAtLoudThreshold's regression test).
+    const hadExistingVideoAsset = fs.existsSync(LOUD_VIDEO_ASSET_PATH);
+    if (!hadExistingVideoAsset) {
+        fs.mkdirSync(path.dirname(LOUD_VIDEO_ASSET_PATH), { recursive: true });
+        execSync(
+            `ffmpeg -y -f lavfi -i color=c=black:s=64x64:d=5 -f lavfi -i anullsrc=r=44100:cl=mono -shortest -pix_fmt yuv420p "${LOUD_VIDEO_ASSET_PATH}"`,
             { stdio: 'pipe' }
         );
     }
@@ -258,6 +312,50 @@ async function main() {
         await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 8000 });
         console.log('  ✓ Decline returns to the real IQTestScreen (offer releases, no skip)');
 
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        // --- issue #92 regression: a countdown staged (via edit:state) already at/above
+        // the loud-video threshold must render the real dingCount immediately on
+        // countdown-complete, and must still start the loud video a few seconds later,
+        // rather than never triggering it (the old code only ever fired on the exact
+        // dingCount 3->4 transition, which a pre-staged count skips past entirely).
+        const loudBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'iq-loud-threshold-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === loudBuild.uuid));
+        await stageCountdownAtLoudThreshold(server, admin, TEST_PORT, loudBuild.uuid, 5);
+
+        fs.writeFileSync(APP_UUID_PATH, JSON.stringify({ uuid: loudBuild.uuid }));
+        electronApp = await electron.launch({
+            args: ['.'],
+            cwd: PROJECT_ROOT,
+            env: { ...process.env, DEV: 'false', PROD_SERVER_HOST: 'localhost', PROD_SERVER_PORT: String(TEST_PORT) },
+        });
+        const loudWindow = await electronApp.firstWindow();
+
+        // Every derived screen arrives wrapped in BeginScreen (see Server.elm's
+        // ClientConnected handler) -- pressing Begin unwraps it locally with no round
+        // trip (Main.elm's BeginPressed), which is what actually puts the client on
+        // IQTestCountdownScreen and makes it fire iqResumeEnvelope (re-arming the
+        // dormant countdown -- see Server.elm's resumeIqTimer).
+        await loudWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await loudWindow.getByRole('button', { name: 'Begin' }).click();
+
+        await waitForBodyTextIncluding(loudWindow, '5 / 100', { timeoutMs: 8000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ countdown-complete renders the staged dingCount immediately (no 0/100 glitch)');
+
+        const soonAfter = await readVideoState(loudWindow);
+        assert.ok(!soonAfter.exists || soonAfter.paused, 'expected the loud video not to be playing yet, right after the countdown completed');
+        console.log('  ✓ loud video is not playing immediately after countdown-complete');
+
+        await waitUntil(async () => {
+            const state = await readVideoState(loudWindow);
+            return state.exists && state.paused === false ? state : null;
+        }, { timeoutMs: 8000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ loud video starts playing a few seconds later');
+
         console.log('\nGUI suite passed.');
     } finally {
         if (electronApp) await electronApp.close().catch(() => {});
@@ -265,6 +363,7 @@ async function main() {
         if (hadExistingUuidFile) fs.writeFileSync(APP_UUID_PATH, backedUpUuid);
         else fs.rmSync(APP_UUID_PATH, { force: true });
         if (!hadExistingAudioAsset) fs.rmSync(AUDIO_ASSET_PATH, { force: true });
+        if (!hadExistingVideoAsset) fs.rmSync(LOUD_VIDEO_ASSET_PATH, { force: true });
         await globalTeardown();
     }
 }

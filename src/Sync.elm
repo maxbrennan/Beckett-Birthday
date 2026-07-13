@@ -16,7 +16,7 @@ type ServerEnvelope
     | ServerAuth
     | ServerRejected String
     | ServerIqCountdownTick Int
-    | ServerIqCountdownComplete
+    | ServerIqCountdownComplete Int
     | ServerIqDing { fake : Bool, trap : Bool, dingCount : Int, totalDings : Int }
     | ServerIqStartLoud
     | ServerIqTestComplete
@@ -60,7 +60,10 @@ decodeServerEnvelope =
                             |> Decode.map ServerIqCountdownTick
 
                     "iqCountdownComplete" ->
-                        Decode.succeed ServerIqCountdownComplete
+                        -- protobufjs omits default (0) scalar fields, so dingCount may be
+                        -- absent on a fresh test; treat a missing count as 0.
+                        Decode.oneOf [ Decode.at [ "iqCountdownComplete", "dingCount" ] Decode.int, Decode.succeed 0 ]
+                            |> Decode.map ServerIqCountdownComplete
 
                     "iqDing" ->
                         Decode.map4
