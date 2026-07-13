@@ -220,9 +220,14 @@ async function main() {
         console.log('  ✓ IQTestActiveScreen renders the staged, already-qualifying ding count');
 
         await iqWindow.keyboard.press('Space');
+        await waitForBodyTextIncluding(iqWindow, 'IQ Test 2.0', GUI_WAIT_OPTS);
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 8000 });
+        console.log('  ✓ a real SpaceBarFailed (no ding active) grants the offer but lands on the instructions screen first (issue #93)');
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
         await iqWindow.getByRole('button', { name: 'Accept' }).waitFor({ state: 'visible', timeout: 8000 });
         await iqWindow.getByRole('button', { name: 'Decline' }).waitFor({ state: 'visible', timeout: 1000 });
-        console.log('  ✓ a real SpaceBarFailed (no ding active) grants the offer and renders IQTestSkipOfferScreen');
+        console.log('  ✓ pressing Begin again reveals the pending skip offer (IQTestSkipOfferScreen)');
 
         await iqWindow.getByRole('button', { name: 'Accept' }).click();
         await waitForBodyTextIncluding(iqWindow, 'Listen carefully...', { timeoutMs: 8000, intervalMs: GUI_WAIT_OPTS.intervalMs });
@@ -251,6 +256,10 @@ async function main() {
         await waitForBodyTextIncluding(iqWindow, '10 / 100', GUI_WAIT_OPTS);
 
         await iqWindow.keyboard.press('Space');
+        await waitForBodyTextIncluding(iqWindow, 'IQ Test 2.0', GUI_WAIT_OPTS);
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 8000 });
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
         await iqWindow.getByRole('button', { name: 'Decline' }).waitFor({ state: 'visible', timeout: 8000 });
 
         await iqWindow.getByRole('button', { name: 'Decline' }).click();
