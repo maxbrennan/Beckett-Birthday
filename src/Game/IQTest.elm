@@ -178,9 +178,10 @@ type alias FakeFlashCaughtState =
     }
 
 
--- Phases of the one-step count-up animation shown when the player accepts the skip
--- offer: the counter holds at 0/total, ticks once straight to total/total (with a
--- ding), then holds before advancing to the next song. See Main.elm's
+-- Phases of the count-up animation shown when the player accepts the skip
+-- offer: the counter holds at 0/total, ticks up by one (with a ding) every
+-- counterTickMs until it reaches total/total, then holds before advancing to
+-- the next song. See Main.elm's
 -- IQSkipOfferAccepted/IQSkipAnimNextPhase/IQSkipCounterTick.
 type IQSkipPhase
     = SkipCounterIn
