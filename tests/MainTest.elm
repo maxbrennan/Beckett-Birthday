@@ -3,7 +3,7 @@ module MainTest exposing (..)
 import Expect
 import Game.IQTest exposing (FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, iqLoudDelay, iqQuestionCount)
 import Json.Encode as Encode
-import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
+import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, needsFakeFlashKick, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
 import Sync
 import Test exposing (Test, describe, test)
 import Time
@@ -1679,16 +1679,24 @@ remainingEdgeCasesSuite =
                         update BeginPressed { baseModel | screen = BeginScreen (IQTestActiveScreen iqActiveState) }
                 in
                 result.screen |> Expect.equal (IQTestActiveScreen iqActiveState)
-        , test "resuming into a derived FakeFlashCaughtScreen re-arms the server timer" <|
+        , test "resuming into a derived FakeFlashCaughtScreen re-arms the local cutscene animation" <|
             \_ ->
                 let
                     savedScreen =
                         FakeFlashCaughtScreen { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing }
 
                     ( result, _ ) =
-                        update BeginPressed { baseModel | screen = BeginScreen savedScreen }
+                        update BeginPressed { baseModel | now = 6000, screen = BeginScreen savedScreen }
                 in
-                result.screen |> Expect.equal savedScreen
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal savedScreen
+                    , \m ->
+                        m.pending
+                            |> List.filter (\e -> e.msg == FakeFlashNextPhase)
+                            |> List.map .fireAt
+                            |> Expect.equal [ 7000 ]
+                    ]
+                    result
         , test "PlaySong unwraps a CheckingAnswerScreen-wrapped blank screen" <|
             \_ ->
                 let
@@ -1771,6 +1779,23 @@ resumePlaySongTargetSuite =
             \_ ->
                 resumePlaySongTarget baseModel.questions [] (VideoScreen 1 "video1.mp4")
                     |> Expect.equal Nothing
+        ]
+
+
+needsFakeFlashKickSuite : Test
+needsFakeFlashKickSuite =
+    describe "needsFakeFlashKick"
+        [ test "a FakeFlashCaughtScreen needs the cutscene kick" <|
+            \_ ->
+                needsFakeFlashKick
+                    (FakeFlashCaughtScreen { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing })
+                    |> Expect.equal True
+        , test "a bare BlankScreen doesn't need it" <|
+            \_ ->
+                needsFakeFlashKick (BlankScreen 0) |> Expect.equal False
+        , test "an IQTestActiveScreen doesn't need it" <|
+            \_ ->
+                needsFakeFlashKick (IQTestActiveScreen iqActiveState) |> Expect.equal False
         ]
 
 
