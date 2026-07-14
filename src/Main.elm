@@ -634,17 +634,24 @@ update msg model =
                 IQTestSkipAnimScreen s ->
                     case s.phase of
                         SkipTick ->
-                            let
-                                targetId =
-                                    "ding-audio-" ++ String.fromInt (modBy dingSlotCount model.dingKey)
-                            in
-                            ( { model
-                                | screen = IQTestSkipAnimScreen { s | displayCount = s.total }
-                                , dingKey = model.dingKey + 1
-                              }
-                                |> schedule 500 IQSkipAnimNextPhase
-                            , setDomProperty { elementId = targetId, property = "volume", value = Encode.float 0.3 }
-                            )
+                            if s.displayCount < s.total then
+                                let
+                                    targetId =
+                                        "ding-audio-" ++ String.fromInt (modBy dingSlotCount model.dingKey)
+                                in
+                                ( { model
+                                    | screen = IQTestSkipAnimScreen { s | displayCount = s.displayCount + 1 }
+                                    , dingKey = model.dingKey + 1
+                                  }
+                                    |> schedule counterTickMs IQSkipCounterTick
+                                , setDomProperty { elementId = targetId, property = "volume", value = Encode.float 0.3 }
+                                )
+
+                            else
+                                ( model
+                                    |> schedule 500 IQSkipAnimNextPhase
+                                , Cmd.none
+                                )
 
                         _ ->
                             ( model, Cmd.none )

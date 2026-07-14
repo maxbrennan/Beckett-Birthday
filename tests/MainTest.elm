@@ -905,7 +905,7 @@ iqSkipAnimNextPhaseSuite =
 iqSkipCounterTickSuite : Test
 iqSkipCounterTickSuite =
     describe "IQSkipCounterTick"
-        [ test "during SkipTick, jumps displayCount straight to total and bumps dingKey" <|
+        [ test "ticks displayCount up by one while it's below total, and bumps dingKey" <|
             \_ ->
                 let
                     ( result, _ ) =
@@ -916,8 +916,23 @@ iqSkipCounterTickSuite =
                             }
                 in
                 Expect.all
-                    [ \m -> m.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipTick })
+                    [ \m -> m.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 1, total = 100, phase = SkipTick })
                     , \m -> m.dingKey |> Expect.equal 8
+                    ]
+                    result
+        , test "displayCount reaching total stops ticking (schedules the next phase instead)" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update IQSkipCounterTick
+                            { baseModel
+                                | screen = IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipTick }
+                                , dingKey = 7
+                            }
+                in
+                Expect.all
+                    [ \m -> m.screen |> Expect.equal (IQTestSkipAnimScreen { questionIdx = 2, displayCount = 100, total = 100, phase = SkipTick })
+                    , \m -> m.dingKey |> Expect.equal 7
                     ]
                     result
         , test "outside SkipTick (e.g. SkipCounterOut) is a no-op here" <|
