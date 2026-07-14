@@ -730,6 +730,41 @@ adminOpSuite =
                         , \mm -> Expect.equal (Just (EditingState "uuid1")) (Dict.get "c1" mm.distClients)
                         ]
                         m
+            , test "admin auth success on a uuid mid-ding rewinds it to IqDingScheduled immediately, not just on the later disconnect (issue #52)" <|
+                \_ ->
+                    -- performStateEdit runs synchronously here, in the same update call
+                    -- that queues the player's closeClient -- the real disconnect (and its
+                    -- own IqDingShown -> IqDingScheduled rewind) only arrives as a later,
+                    -- separate ClientDisconnected message. Without performStateEdit doing
+                    -- this rewind itself, the admin would be handed a stale "IqDingShown"
+                    -- snapshot, and an unchanged save would clobber the later rewind right
+                    -- back to it.
+                    let
+                        staged =
+                            { baseModel
+                                | distClients = Dict.singleton "c1" (AwaitingStateEditAuth "uuid1")
+                                , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, phase = IqDingShown, dingCount = 10, dingDelay = Just 11000 }
+                            }
+
+                        ( m, _ ) =
+                            update (authDone "c1" True 2) staged
+                    in
+                    Dict.get "uuid1" m.iqTimers
+                        |> Expect.equal (Just { iqState | epoch = 2, phase = IqDingScheduled, dingCount = 10, dingDelay = Just 11000 })
+            , test "admin auth success on a uuid not mid-ding bumps its epoch (invalidating any in-flight schedule) but leaves phase/fields alone" <|
+                \_ ->
+                    let
+                        staged =
+                            { baseModel
+                                | distClients = Dict.singleton "c1" (AwaitingStateEditAuth "uuid1")
+                                , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, phase = IqAwaitingReady, dingCount = 10 }
+                            }
+
+                        ( m, _ ) =
+                            update (authDone "c1" True 2) staged
+                    in
+                    Dict.get "uuid1" m.iqTimers
+                        |> Expect.equal (Just { iqState | epoch = 2, phase = IqAwaitingReady, dingCount = 10 })
             , test "save with valid JSON while EditingState clears the stage and pending flag" <|
                 \_ ->
                     let

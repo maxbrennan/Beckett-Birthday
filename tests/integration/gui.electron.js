@@ -149,6 +149,22 @@ async function assertAudioPlaying(window, elementId = 'jeopardy-audio') {
     );
 }
 
+// Fetches a build's current edit:state document and saves it straight back
+// unchanged -- the "admin opens vim, makes no edits, quits" step of the edit:state
+// flow, as opposed to stageIqTimer's override-and-save. Used to reproduce issue
+// #52 against a *live, currently-connected* player: unlike stageIqTimer's callers
+// (which always stage before a client connects), this is invoked while a real
+// client window is already open, so the closeClient kick this triggers races the
+// real disconnect-driven rewind the same way the real admin tool does.
+async function resaveIqTimerUnchanged(admin, port, uuid) {
+    const { authResult, conn, json } = await distClient.requestStateEdit(port, admin, uuid);
+    if (!authResult.success) throw new Error('admin auth failed while resaving iqTimer unchanged');
+    const resultMsg = await distClient.saveStateEdit(conn, uuid, json);
+    if (resultMsg.payload !== 'distStateEditSaveAck') throw new Error(`resaveIqTimerUnchanged save failed: ${resultMsg.payload}`);
+    await conn.close();
+    return JSON.parse(json);
+}
+
 // Points app-uuid.json at uuid and launches a fresh Electron process reading it --
 // the client only reads this file at startup, so this is the "close and reopen the
 // client" step the reconnect scenarios below need, not just a websocket reconnect
@@ -559,6 +575,55 @@ async function main() {
         await waitForBodyTextIncluding(replayWindow, 'Listen carefully...', GUI_WAIT_OPTS);
         await assertAudioPlaying(replayWindow, 'quiz-audio');
         console.log('  ✓ closing and reopening before the song ends still replays it in full, with real audio playing (#90)');
+
+        // --- issue #52 regression: running the real admin edit:state tool (fetch, make no
+        // changes, save) while a real, still-connected client is mid-ding must not resurrect
+        // that ding on reconnect. Unlike every scenario above, edit:state itself is what
+        // disconnects the live window here -- there's no explicit electronApp.close(), since
+        // the whole point is that this is a same-window WS reconnect, not a process restart.
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        const editStateDingBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'iq-edit-state-ding-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === editStateDingBuild.uuid));
+        await stageIqTimer(server, admin, TEST_PORT, editStateDingBuild.uuid, {
+            phase: 'IqDingShown',
+            lastDing: 'RealDing',
+            dingCount: 3,
+            // dingDelay is milliseconds until the *next* ding once resumed onto
+            // IqDingScheduled -- comfortably longer than the 4s window this test
+            // watches below, so a legitimate next ding can't be mistaken for the
+            // resurrected/resent one the fix prevents.
+            dingDelay: 20000,
+        });
+
+        ({ electronApp, window: iqWindow } = await launchClientFor(editStateDingBuild.uuid));
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, '3 / 100', GUI_WAIT_OPTS);
+        console.log('  ✓ real client resumed onto the already-shown ding, mid-flash');
+
+        // Admin runs edit:state on the same, still-connected uuid: fetch the current
+        // document and save it straight back with no changes -- this kicks the window
+        // (server-side closeClient), which auto-reconnects on its own.
+        const resaved = await resaveIqTimerUnchanged(admin, TEST_PORT, editStateDingBuild.uuid);
+        assert.strictEqual(resaved.iqTimer.phase, 'IqDingScheduled', 'edit:state snapshot must already be rewound, not the raw IqDingShown');
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, '3 / 100', GUI_WAIT_OPTS);
+
+        // Deliberately do not press Space, and give a real resent/re-timed-out ding (the
+        // pre-fix behavior) the same ~2s window a genuine miss uses to reveal itself.
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        const bodyAfterWait = await bodyText(iqWindow);
+        assert.ok(!bodyAfterWait.includes('IQ Test 2.0'), 'an unchanged edit:state save must not resurrect/resend the cleared ding');
+        assert.ok(bodyAfterWait.includes('3 / 100'), 'the ding count must stay exactly what it was before the edit');
+        console.log('  ✓ resuming after an unchanged edit:state save lands on the idle IQ screen, not the ding screen, with the count unchanged (issue #52)');
 
         console.log('\nGUI suite passed.');
     } finally {
