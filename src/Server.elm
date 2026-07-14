@@ -36,11 +36,14 @@ type alias Model =
     -- Per-uuid confirmation that the song/video for this idx has actually
     -- finished playing (see ClientQuizSongEnded), required before
     -- ClientQuizAnswerSubmitted accepts an answer for the same idx -- a
-    -- crafted client can no longer submit before any song plays. In memory
-    -- only, deliberately never persisted to RegistryEntry/builds.json: a
-    -- reconnect always re-derives BlankScreen and replays the song from
-    -- scratch anyway (see ClientStateRequest clearing this on connect), so
-    -- there is nothing worth surviving a restart for.
+    -- crafted client can no longer submit before any song plays. This
+    -- in-memory copy is deliberately cleared on every reconnect
+    -- (ClientStateRequest) and rebuilt from a fresh report -- the real
+    -- durable fact lives in RegistryEntry.quizSongEndedIdx, which is what
+    -- deriveQuizScreen consults to resume straight onto QuestionScreen
+    -- instead of replaying an already-heard song (#90); the client's
+    -- resumeCmd re-sends ClientQuizSongEnded on landing there, which
+    -- repopulates this Dict too.
     , quizSongEnded : Dict String Int
 
     -- Per-uuid: a granted-but-not-yet-consumed IQ-test skip offer, mapping to the
@@ -321,27 +324,40 @@ quizJustCompleted { next, total } =
 
 
 {-| Project a player's confirmed quiz progress onto the exact JSON shape
-`Sync.elm`'s `encodeScreen` produces for `BlankScreen`, so the persisted
-quiz-slide screen can be derived from server state instead of the client's own
-report (the quiz analogue of `deriveIqScreen`). `BlankScreen progress` is the
-start of the slide the player has earned but not yet passed -- the client
-replays that slide's song/video from the top on resume, deliberately
-collapsing finer-grained transient state (a typed-but-unsubmitted answer, a
-mid-playback position, a wrong-answer reveal) that only ever existed
-client-side. `Nothing` when progress is out of the playable range: at or past
-`total` the quiz is complete and the client's own `WinScreen` report stays
-authoritative (`BlankScreen total` names no question and would strand the
-player on a slide with nothing to play), and `total <= 0` means the question
-config was never read -- same fail-safe convention as `quizJustCompleted`.
+`Sync.elm`'s `encodeScreen` produces for `BlankScreen`/`QuestionScreen`, so the
+persisted quiz-slide screen can be derived from server state instead of the
+client's own report (the quiz analogue of `deriveIqScreen`). `BlankScreen
+progress` is the start of the slide the player has earned but not yet passed
+-- the client replays that slide's song/video from the top on resume. When
+`songEnded` is `True` (the server has an independently-confirmed
+`ClientQuizSongEnded` report on file for this exact `progress` idx -- see
+`RegistryEntry.quizSongEndedIdx`), the song/video has already been heard, so
+`QuestionScreen progress ""` is derived instead, skipping the replay (#90).
+Either way this deliberately collapses finer-grained transient state (a
+typed-but-unsubmitted answer, a mid-playback position, a wrong-answer reveal)
+that only ever existed client-side. `Nothing` when progress is out of the
+playable range: at or past `total` the quiz is complete and the client's own
+`WinScreen` report stays authoritative (`BlankScreen total` names no question
+and would strand the player on a slide with nothing to play), and
+`total <= 0` means the question config was never read -- same fail-safe
+convention as `quizJustCompleted`.
 -}
-deriveQuizScreen : { progress : Int, total : Int } -> Maybe Encode.Value
-deriveQuizScreen { progress, total } =
+deriveQuizScreen : { progress : Int, total : Int, songEnded : Bool } -> Maybe Encode.Value
+deriveQuizScreen { progress, total, songEnded } =
     if 0 <= progress && progress < total then
         Just <|
-            Encode.object
-                [ ( "tag", Encode.string "BlankScreen" )
-                , ( "idx", Encode.int progress )
-                ]
+            if songEnded then
+                Encode.object
+                    [ ( "tag", Encode.string "QuestionScreen" )
+                    , ( "idx", Encode.int progress )
+                    , ( "s", Encode.string "" )
+                    ]
+
+            else
+                Encode.object
+                    [ ( "tag", Encode.string "BlankScreen" )
+                    , ( "idx", Encode.int progress )
+                    ]
 
     else
         Nothing
@@ -383,14 +399,14 @@ deriveWinScreen winText { progress, total } =
 reached the end -- the one combined function that covers every derivable state
 of the quiz-progress family, from the first slide through the win screen.
 -}
-deriveQuizOrWinScreen : String -> { progress : Int, total : Int } -> Maybe Encode.Value
+deriveQuizOrWinScreen : String -> { progress : Int, total : Int, songEnded : Bool } -> Maybe Encode.Value
 deriveQuizOrWinScreen winText args =
     case deriveQuizScreen args of
         Just screen ->
             Just screen
 
         Nothing ->
-            deriveWinScreen winText args
+            deriveWinScreen winText { progress = args.progress, total = args.total }
 
 
 {-| The screen tags whose persisted value is server-derived via
@@ -977,6 +993,7 @@ performStateEdit uuid clientId model =
                         , timerEndsAt = entry.timerEndsAt
                         , quizQuestions = entry.quizQuestions
                         , iqOfferUsed = entry.iqOfferUsed
+                        , quizSongEndedIdx = entry.quizSongEndedIdx
                         }
 
                 Nothing ->
@@ -1138,6 +1155,14 @@ update msg model =
                                         progress =
                                             Dict.get uuid model.quizProgress |> Maybe.withDefault 0
 
+                                        -- True only when the server has an independently-confirmed
+                                        -- ClientQuizSongEnded report on file for this exact progress
+                                        -- idx (see RegistryEntry.quizSongEndedIdx) -- lets
+                                        -- deriveQuizScreen resume straight onto QuestionScreen
+                                        -- instead of replaying a song the player already heard (#90).
+                                        songEnded =
+                                            entry.quizSongEndedIdx == Just progress
+
                                         -- Every player-facing screen is synthesized fresh here,
                                         -- straight from the server's own authoritative fields --
                                         -- there is nothing cached to read back (see RegistryEntry's
@@ -1159,7 +1184,7 @@ update msg model =
                                                         Just (Encode.object [ ( "tag", Encode.string "WinScreen" ), ( "text", Encode.string entry.winText ) ])
 
                                                     else
-                                                        case deriveQuizOrWinScreen entry.winText { progress = progress, total = total } of
+                                                        case deriveQuizOrWinScreen entry.winText { progress = progress, total = total, songEnded = songEnded } of
                                                             Just s ->
                                                                 Just s
 
@@ -1262,6 +1287,7 @@ update msg model =
                                             , quizQuestions = Nothing
                                             , iqOfferDisabled = False
                                             , iqOfferUsed = False
+                                            , quizSongEndedIdx = Nothing
                                             }
 
                                         newRegistry =
@@ -1305,6 +1331,7 @@ update msg model =
                                         , quizQuestions = Just quizQuestions
                                         , iqOfferDisabled = iqOfferDisabled
                                         , iqOfferUsed = False
+                                        , quizSongEndedIdx = Nothing
                                         }
 
                                     newRegistry =
@@ -1363,6 +1390,7 @@ update msg model =
                                                                 , timerEndsAt = edited.timerEndsAt
                                                                 , quizQuestions = edited.quizQuestions
                                                                 , iqOfferUsed = edited.iqOfferUsed
+                                                                , quizSongEndedIdx = edited.quizSongEndedIdx
                                                             }
 
                                                         else
@@ -1461,6 +1489,11 @@ update msg model =
                                         -- it forward like iqTimer/quizProgress/timerEndsAt above, not
                                         -- reset it like winText/quizQuestions/iqOfferDisabled above.
                                         , iqOfferUsed = oldEntry |> Maybe.map .iqOfferUsed |> Maybe.withDefault False
+
+                                        -- Same rationale as quizProgress above: whether the player
+                                        -- already heard the song for their current question is real
+                                        -- progress, not per-build authoring -- carry it forward.
+                                        , quizSongEndedIdx = oldEntry |> Maybe.andThen .quizSongEndedIdx
                                         }
 
                                     newRegistry =
@@ -1754,8 +1787,10 @@ update msg model =
                     -- only if idx is exactly the player's current expected question --
                     -- a stale/out-of-order report is silently ignored, same as a
                     -- mismatched ClientQuizAdvanced/ClientQuizAnswerSubmitted idx.
-                    -- Recorded in memory only (see Model.quizSongEnded); required by
-                    -- ClientQuizAnswerSubmitted below before it accepts an answer.
+                    -- Tracked in memory (Model.quizSongEnded) for ClientQuizAnswerSubmitted's
+                    -- gate below, and durably in RegistryEntry.quizSongEndedIdx so
+                    -- deriveQuizScreen can resume straight onto QuestionScreen instead of
+                    -- replaying the song on a later reconnect (#90).
                     case findUuidByClient clientId model.connectedPlayers of
                         Nothing ->
                             ( model, Cmd.none )
@@ -1770,8 +1805,18 @@ update msg model =
                                         Dict.get uuid model.quizProgress |> Maybe.withDefault 0
                                 in
                                 if idx == current then
-                                    ( { model | quizSongEnded = Dict.insert uuid idx model.quizSongEnded }
-                                    , sendToClient { clientId = clientId, payload = quizSongEndedAckEnvelope idx }
+                                    let
+                                        newRegistry =
+                                            updateEntryQuizSongEnded uuid idx model.registry
+                                    in
+                                    ( { model
+                                        | quizSongEnded = Dict.insert uuid idx model.quizSongEnded
+                                        , registry = newRegistry
+                                      }
+                                    , Cmd.batch
+                                        [ writeRegistry newRegistry
+                                        , sendToClient { clientId = clientId, payload = quizSongEndedAckEnvelope idx }
+                                        ]
                                     )
 
                                 else

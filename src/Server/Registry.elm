@@ -64,6 +64,16 @@ type alias RegistryEntry =
     -- Game-state, so it lives in the editable serverState document alongside
     -- winText/iqTimer/quizProgress; inherited on replacement like those.
     , iqOfferUsed : Bool
+
+    -- The question idx (if any) the server has independently confirmed the
+    -- song/video for via a real ClientQuizSongEnded report -- durable so a
+    -- reconnect/restart doesn't strand the player back on the listening
+    -- screen for a song they already heard (see Server.elm's deriveQuizScreen).
+    -- Naturally goes stale once quizProgress moves past it: only trusted when
+    -- it equals the *current* progress, so no explicit clearing is needed on
+    -- advance. Mirrors quizProgress's role as the durable generalization of
+    -- Server.elm's in-memory quizSongEnded Dict.
+    , quizSongEndedIdx : Maybe Int
     }
 
 
@@ -93,6 +103,7 @@ encodeServerStateFields fields =
         , ( "timerEndsAt", fields.timerEndsAt |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
         , ( "quizQuestions", Maybe.withDefault Encode.null fields.quizQuestions )
         , ( "iqOfferUsed", Encode.bool fields.iqOfferUsed )
+        , ( "quizSongEndedIdx", fields.quizSongEndedIdx |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
         ]
 
 
@@ -117,6 +128,7 @@ encodeRegistryEntry entry =
                 , timerEndsAt = entry.timerEndsAt
                 , quizQuestions = entry.quizQuestions
                 , iqOfferUsed = entry.iqOfferUsed
+                , quizSongEndedIdx = entry.quizSongEndedIdx
                 }
           )
         ]
@@ -158,6 +170,7 @@ type alias ServerStateFields =
     , timerEndsAt : Maybe Float
     , quizQuestions : Maybe Encode.Value
     , iqOfferUsed : Bool
+    , quizSongEndedIdx : Maybe Int
     }
 
 
@@ -167,8 +180,8 @@ decodeServerStateFields =
         fields =
             Decode.map3
                 (\winText iqTimer quizProgress ->
-                    \timerEndsAt quizQuestions iqOfferUsed ->
-                        ServerStateFields winText iqTimer quizProgress timerEndsAt quizQuestions iqOfferUsed
+                    \timerEndsAt quizQuestions iqOfferUsed quizSongEndedIdx ->
+                        ServerStateFields winText iqTimer quizProgress timerEndsAt quizQuestions iqOfferUsed quizSongEndedIdx
                 )
                 -- older rows predate the win text; treat missing as empty.
                 (Decode.maybe (Decode.field "winText" Decode.string)
@@ -191,12 +204,15 @@ decodeServerStateFields =
                     )
                 |> Decode.andThen
                     (\partial ->
-                        Decode.map partial
+                        Decode.map2 partial
                             -- older rows predate this field; treat missing as False (offer
                             -- not yet granted to this player).
                             (Decode.maybe (Decode.field "iqOfferUsed" Decode.bool)
                                 |> Decode.map (Maybe.withDefault False)
                             )
+                            -- older rows predate this field; treat missing as Nothing (no
+                            -- confirmed song-ended report on file for this player).
+                            (Decode.maybe (Decode.field "quizSongEndedIdx" Decode.int))
                     )
     in
     Decode.oneOf [ Decode.field "serverState" fields, fields ]
@@ -218,6 +234,7 @@ decodeRegistryEntry =
                     serverState.quizQuestions
                     iqOfferDisabled
                     serverState.iqOfferUsed
+                    serverState.quizSongEndedIdx
         )
         (Decode.field "uuid" Decode.string)
         (Decode.field "filename" Decode.string)
@@ -297,6 +314,19 @@ updateEntryQuizProgress uuid newQuizProgress =
         (\e ->
             if e.uuid == uuid then
                 { e | quizProgress = newQuizProgress }
+
+            else
+                e
+        )
+
+
+-- Mirrors updateEntryIqOfferUsed but records the confirmed song-ended idx.
+updateEntryQuizSongEnded : String -> Int -> List RegistryEntry -> List RegistryEntry
+updateEntryQuizSongEnded uuid idx =
+    List.map
+        (\e ->
+            if e.uuid == uuid then
+                { e | quizSongEndedIdx = Just idx }
 
             else
                 e

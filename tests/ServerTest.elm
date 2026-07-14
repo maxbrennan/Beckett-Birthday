@@ -72,6 +72,7 @@ import Server.Registry
         , findUuidByClient
         , isExpired
         , registryFilePath
+        , updateEntryQuizSongEnded
         , updateEntryTimer
         )
 import Sync exposing (decodeFakeFlashCaughtState, decodeIQTestCountdownState, decodeIQTestScreenState, decodeIQTestState, decodeScreen)
@@ -92,7 +93,7 @@ registrySuite =
     describe "RegistryEntry winText codec"
         [ test "round-trips winText through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -160,7 +161,7 @@ iqOfferRegistrySuite =
                     base =
                         entry "u1"
                 in
-                { base | iqOfferUsed = True }
+                { base | iqOfferUsed = True, quizSongEndedIdx = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -178,6 +179,42 @@ iqOfferRegistrySuite =
                     |> Decode.decodeString decodeRegistryEntry
                     |> Result.map .iqOfferUsed
                     |> Expect.equal (Ok False)
+        ]
+
+
+quizSongEndedRegistrySuite : Test
+quizSongEndedRegistrySuite =
+    describe "RegistryEntry.quizSongEndedIdx codec (#90)"
+        [ test "round-trips a confirmed idx through encode/decode" <|
+            \_ ->
+                let
+                    base =
+                        entry "u1"
+                in
+                { base | quizSongEndedIdx = Just 2 }
+                    |> encodeRegistryEntry
+                    |> Encode.encode 0
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .quizSongEndedIdx
+                    |> Expect.equal (Ok (Just 2))
+        , test "defaults quizSongEndedIdx to Nothing for older rows missing the field" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .quizSongEndedIdx
+                    |> Expect.equal (Ok Nothing)
+        , test "defaults quizSongEndedIdx to Nothing when explicitly serialized as null" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false,"serverState":{"quizSongEndedIdx":null}}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .quizSongEndedIdx
+                    |> Expect.equal (Ok Nothing)
+        , test "updateEntryQuizSongEnded sets the confirmed idx only on the matching uuid" <|
+            \_ ->
+                [ entry "uuid1", entry "uuid2" ]
+                    |> updateEntryQuizSongEnded "uuid1" 2
+                    |> List.map (\e -> ( e.uuid, e.quizSongEndedIdx ))
+                    |> Expect.equal [ ( "uuid1", Just 2 ), ( "uuid2", Nothing ) ]
         ]
 
 
@@ -229,7 +266,7 @@ encodeRegistryTests =
                     |> Expect.equal (Ok [])
         , test "encodeRegistry output is newline-terminated" <|
             \_ ->
-                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False } ]
+                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing } ]
                     |> String.endsWith "\n"
                     |> Expect.equal True
         ]
@@ -255,8 +292,8 @@ decodeRegistryTests =
             \_ ->
                 let
                     entries =
-                        [ { uuid = "u1", filename = "f1", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
-                        , { uuid = "u2", filename = "f2", platform = "win", pendingStateEdit = True, winText = "you win", iqTimer = Nothing, quizProgress = 3, timerEndsAt = Just 42, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                        [ { uuid = "u1", filename = "f1", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                        , { uuid = "u2", filename = "f2", platform = "win", pendingStateEdit = True, winText = "you win", iqTimer = Nothing, quizProgress = 3, timerEndsAt = Just 42, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                         ]
                 in
                 entries
@@ -285,7 +322,7 @@ timerSuite =
     describe "RegistryEntry.timerEndsAt"
         [ test "round-trips a set deadline through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -310,12 +347,12 @@ timerSuite =
                     |> Expect.equal False
         , test "isExpired is False before the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                     |> isExpired 1000
                     |> Expect.equal False
         , test "isExpired is True once now reaches the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                     |> isExpired 1000
                     |> Expect.equal True
         , test "timerSyncEnvelope carries the deadline under timerSync.timerEndsAt" <|
@@ -508,6 +545,7 @@ entry uuid =
     , quizQuestions = Just (encodeTestQuestions baseQuizQuestions)
     , iqOfferDisabled = False
     , iqOfferUsed = False
+    , quizSongEndedIdx = Nothing
     }
 
 
@@ -1206,6 +1244,7 @@ iqEditSuite =
                             , timerEndsAt = Nothing
                             , quizQuestions = Nothing
                             , iqOfferUsed = False
+                            , quizSongEndedIdx = Nothing
                             }
 
                     ( m, _ ) =
@@ -1230,7 +1269,7 @@ iqEditSuite =
 
                     editedState =
                         encodeServerStateFields
-                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False }
+                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False, quizSongEndedIdx = Nothing }
 
                     ( m, _ ) =
                         update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
@@ -1415,6 +1454,7 @@ persistIqTimerInRegistrySuite =
                           , quizQuestions = Nothing
                           , iqOfferDisabled = False
                           , iqOfferUsed = False
+                          , quizSongEndedIdx = Nothing
                           }
                         ]
 
@@ -1443,6 +1483,7 @@ persistIqTimerInRegistrySuite =
                           , quizQuestions = Nothing
                           , iqOfferDisabled = False
                           , iqOfferUsed = False
+                          , quizSongEndedIdx = Nothing
                           }
                         ]
 
@@ -1633,7 +1674,7 @@ stateRequestSuite =
             \_ ->
                 let
                     fresh =
-                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
 
                     staged =
                         { baseModel | registry = [ fresh ] }
@@ -1650,7 +1691,7 @@ stateRequestSuite =
             \_ ->
                 let
                     fresh =
-                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 999999, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 999999, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
 
                     staged =
                         { baseModel | registry = [ fresh ] }
@@ -1692,6 +1733,66 @@ stateRequestSuite =
                         Encode.object
                             [ ( "tag", Encode.string "BeginScreen" )
                             , ( "nextScreen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 1 ) ] )
+                            ]
+                in
+                cmd
+                    |> Expect.equal
+                        (Cmd.batch
+                            [ writeRegistry m.registry
+                            , sendToClient { clientId = "c1", payload = stateEnvelope expectedWrapped }
+                            , sendToClient { clientId = "c1", payload = timerSyncEnvelope 999999 }
+                            ]
+                        )
+        , test "a player who already confirmed the song ended for their current question resumes onto QuestionScreen, not a replayed BlankScreen (#90)" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.empty
+                            , quizProgress = Dict.singleton "uuid1" 1
+                            , registry = [ { base | timerEndsAt = Just 999999, quizSongEndedIdx = Just 1 } ]
+                        }
+
+                    ( m, cmd ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    expectedWrapped =
+                        Encode.object
+                            [ ( "tag", Encode.string "BeginScreen" )
+                            , ( "nextScreen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 1 ), ( "s", Encode.string "" ) ] )
+                            ]
+                in
+                cmd
+                    |> Expect.equal
+                        (Cmd.batch
+                            [ writeRegistry m.registry
+                            , sendToClient { clientId = "c1", payload = stateEnvelope expectedWrapped }
+                            , sendToClient { clientId = "c1", payload = timerSyncEnvelope 999999 }
+                            ]
+                        )
+        , test "a song-ended confirmation for a stale (already-passed) idx does not skip the current question's BlankScreen (#90)" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.empty
+                            , quizProgress = Dict.singleton "uuid1" 2
+                            , registry = [ { base | timerEndsAt = Just 999999, quizSongEndedIdx = Just 1 } ]
+                        }
+
+                    ( m, cmd ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    expectedWrapped =
+                        Encode.object
+                            [ ( "tag", Encode.string "BeginScreen" )
+                            , ( "nextScreen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 2 ) ] )
                             ]
                 in
                 cmd
@@ -2973,6 +3074,7 @@ editedIqBeginSuite =
                             , timerEndsAt = Nothing
                             , quizQuestions = Nothing
                             , iqOfferUsed = False
+                            , quizSongEndedIdx = Nothing
                             }
 
                     ( m, _ ) =
@@ -3408,7 +3510,15 @@ quizSongEndedRoutingSuite =
                 in
                 Expect.all
                     [ \_ -> Dict.get "uuid1" m.quizSongEnded |> Expect.equal (Just 0)
-                    , \_ -> cmd |> Expect.equal (sendToClient { clientId = "c1", payload = quizSongEndedAckEnvelope 0 })
+                    , \_ -> m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.map .quizSongEndedIdx |> Expect.equal [ Just 0 ]
+                    , \_ ->
+                        cmd
+                            |> Expect.equal
+                                (Cmd.batch
+                                    [ writeRegistry m.registry
+                                    , sendToClient { clientId = "c1", payload = quizSongEndedAckEnvelope 0 }
+                                    ]
+                                )
                     ]
                     ()
         , test "a mismatched (out-of-order) idx is ignored, nothing tracked" <|
@@ -3711,17 +3821,24 @@ deriveQuizScreenSuite =
     describe "deriveQuizScreen"
         [ test "derives the earned slide's BlankScreen, decodable by Sync's real decoder" <|
             \_ ->
-                deriveQuizScreen { progress = 1, total = 3 }
+                deriveQuizScreen { progress = 1, total = 3, songEnded = False }
                     |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
                     |> Expect.equal (Just (BlankScreen 1))
+        , test "songEnded True derives QuestionScreen instead of BlankScreen, decodable by Sync's real decoder (#90)" <|
+            \_ ->
+                deriveQuizScreen { progress = 1, total = 3, songEnded = True }
+                    |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
+                    |> Expect.equal (Just (QuestionScreen 1 ""))
         , test "progress at total (quiz complete) is not derivable -- the client's WinScreen report stays authoritative" <|
-            \_ -> deriveQuizScreen { progress = 3, total = 3 } |> Expect.equal Nothing
+            \_ -> deriveQuizScreen { progress = 3, total = 3, songEnded = False } |> Expect.equal Nothing
         , test "progress past total is not derivable" <|
-            \_ -> deriveQuizScreen { progress = 9, total = 3 } |> Expect.equal Nothing
+            \_ -> deriveQuizScreen { progress = 9, total = 3, songEnded = False } |> Expect.equal Nothing
         , test "a negative progress (hand-mangled registry) is not derivable" <|
-            \_ -> deriveQuizScreen { progress = -1, total = 3 } |> Expect.equal Nothing
+            \_ -> deriveQuizScreen { progress = -1, total = 3, songEnded = False } |> Expect.equal Nothing
         , test "total 0 (config unread) is never derivable, even at progress 0" <|
-            \_ -> deriveQuizScreen { progress = 0, total = 0 } |> Expect.equal Nothing
+            \_ -> deriveQuizScreen { progress = 0, total = 0, songEnded = False } |> Expect.equal Nothing
+        , test "songEnded True at progress past total is still not derivable" <|
+            \_ -> deriveQuizScreen { progress = 9, total = 3, songEnded = True } |> Expect.equal Nothing
         ]
 
 
@@ -3745,12 +3862,17 @@ deriveQuizOrWinScreenSuite =
     describe "deriveQuizOrWinScreen"
         [ test "derives the earned slide while progress is in range" <|
             \_ ->
-                deriveQuizOrWinScreen "hello reward" { progress = 1, total = 3 }
+                deriveQuizOrWinScreen "hello reward" { progress = 1, total = 3, songEnded = False }
                     |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
                     |> Expect.equal (Just (BlankScreen 1))
+        , test "songEnded True derives the earned slide's QuestionScreen instead (#90)" <|
+            \_ ->
+                deriveQuizOrWinScreen "hello reward" { progress = 1, total = 3, songEnded = True }
+                    |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
+                    |> Expect.equal (Just (QuestionScreen 1 ""))
         , test "falls back to the derived WinScreen (with the real text embedded) once progress reaches total" <|
             \_ ->
-                deriveQuizOrWinScreen "hello reward" { progress = 3, total = 3 }
+                deriveQuizOrWinScreen "hello reward" { progress = 3, total = 3, songEnded = False }
                     |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
                     |> Expect.equal (Just (WinScreen "hello reward"))
         ]
@@ -3815,6 +3937,7 @@ quizEditSuite =
                             , timerEndsAt = Nothing
                             , quizQuestions = Nothing
                             , iqOfferUsed = False
+                            , quizSongEndedIdx = Nothing
                             }
 
                     ( m, _ ) =
@@ -3836,7 +3959,7 @@ quizEditSuite =
 
                     editedState =
                         encodeServerStateFields
-                            { winText = "", iqTimer = Nothing, quizProgress = 9, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False }
+                            { winText = "", iqTimer = Nothing, quizProgress = 9, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False, quizSongEndedIdx = Nothing }
 
                     ( m, _ ) =
                         update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
@@ -3850,7 +3973,7 @@ quizEditSuite =
 
                     editedState =
                         encodeServerStateFields
-                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = True }
+                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = True, quizSongEndedIdx = Nothing }
 
                     ( m, _ ) =
                         update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
