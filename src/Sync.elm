@@ -16,7 +16,7 @@ type ServerEnvelope
     | ServerAuth
     | ServerRejected String
     | ServerIqCountdownTick Int
-    | ServerIqCountdownComplete
+    | ServerIqCountdownComplete Int
     | ServerIqDing { fake : Bool, trap : Bool, dingCount : Int, totalDings : Int }
     | ServerIqStartLoud
     | ServerIqTestComplete
@@ -60,7 +60,10 @@ decodeServerEnvelope =
                             |> Decode.map ServerIqCountdownTick
 
                     "iqCountdownComplete" ->
-                        Decode.succeed ServerIqCountdownComplete
+                        -- protobufjs omits default (0) scalar fields, so dingCount may be
+                        -- absent on a fresh test; treat a missing count as 0.
+                        Decode.oneOf [ Decode.at [ "iqCountdownComplete", "dingCount" ] Decode.int, Decode.succeed 0 ]
+                            |> Decode.map ServerIqCountdownComplete
 
                     "iqDing" ->
                         Decode.map4
@@ -269,6 +272,7 @@ encodeIQTestScreenState s =
     Encode.object
         [ ( "questionIdx", Encode.int s.questionIdx )
         , ( "totalDings", Encode.int s.totalDings )
+        , ( "pendingSkipOffer", s.pendingSkipOffer |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
         ]
 
 
@@ -496,9 +500,17 @@ decodeIQSkipAnimState =
 decodeIQTestScreenState : Decoder IQTestScreenState
 decodeIQTestScreenState =
     Decode.map2
-        (\qi td -> { questionIdx = qi, totalDings = td })
+        (\qi td ->
+            \pendingSkipOffer -> { questionIdx = qi, totalDings = td, pendingSkipOffer = pendingSkipOffer }
+        )
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "totalDings" Decode.int)
+        |> Decode.andThen
+            (\partial ->
+                -- older persisted rows predate this field; treat missing as Nothing.
+                Decode.map partial
+                    (Decode.oneOf [ Decode.field "pendingSkipOffer" (Decode.nullable Decode.int), Decode.succeed Nothing ])
+            )
 
 
 decodeIQTestCountdownState : Decoder IQTestCountdownState

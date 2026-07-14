@@ -1,7 +1,7 @@
 module MainTest exposing (..)
 
 import Expect
-import Game.IQTest exposing (FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, iqQuestionCount)
+import Game.IQTest exposing (FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, iqLoudDelay, iqQuestionCount)
 import Json.Encode as Encode
 import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
 import Sync
@@ -23,6 +23,16 @@ stateUpdateEnvelope innerJson =
 validModelJson : String
 validModelJson =
     """{"tag":"BlankScreen","idx":0}"""
+
+
+decisionEnvelope : Bool -> Int -> String
+decisionEnvelope granted totalDings =
+    Encode.encode 0
+        (Encode.object
+            [ ( "payload", Encode.string "iqOfferDecision" )
+            , ( "iqOfferDecision", Encode.object [ ( "granted", Encode.bool granted ), ( "totalDings", Encode.int totalDings ) ] )
+            ]
+        )
 
 
 baseModel : Model
@@ -59,6 +69,14 @@ pendingReconnectFireAt : Model -> Maybe Float
 pendingReconnectFireAt model =
     model.pending
         |> List.filter (\e -> e.msg == WsReconnect)
+        |> List.map .fireAt
+        |> List.head
+
+
+pendingStartLoudMusicFireAt : Model -> Maybe Float
+pendingStartLoudMusicFireAt model =
+    model.pending
+        |> List.filter (\e -> e.msg == StartLoudMusic)
         |> List.map .fireAt
         |> List.head
 
@@ -157,9 +175,9 @@ beginPressedSuite =
                 let
                     ( result, _ ) =
                         update BeginPressed
-                            { baseModel | screen = BeginScreen (IQTestScreen { questionIdx = 1, totalDings = iqQuestionCount }) }
+                            { baseModel | screen = BeginScreen (IQTestScreen { questionIdx = 1, totalDings = iqQuestionCount, pendingSkipOffer = Nothing }) }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 1, totalDings = iqQuestionCount })
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 1, totalDings = iqQuestionCount, pendingSkipOffer = Nothing })
         , test "clears any stray leftover local scheduling defensively" <|
             \_ ->
                 let
@@ -471,7 +489,7 @@ fakeFlashNextPhaseSuite =
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 3, totalDings = 20 })
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 3, totalDings = 20, pendingSkipOffer = Nothing })
         , test "FfCounterOut lands on the skip-offer screen instead, when the server already granted it" <|
             \_ ->
                 let
@@ -481,7 +499,7 @@ fakeFlashNextPhaseSuite =
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
                 in
-                result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 3, totalDings = 20 })
+                result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 3, totalDings = 20, pendingSkipOffer = Nothing })
         ]
 
 
@@ -748,25 +766,15 @@ serverQuizSongEndedAckSuite =
 
 serverIqOfferDecisionSuite : Test
 serverIqOfferDecisionSuite =
-    let
-        decisionEnvelope : Bool -> Int -> String
-        decisionEnvelope granted totalDings =
-            Encode.encode 0
-                (Encode.object
-                    [ ( "payload", Encode.string "iqOfferDecision" )
-                    , ( "iqOfferDecision", Encode.object [ ( "granted", Encode.bool granted ), ( "totalDings", Encode.int totalDings ) ] )
-                    ]
-                )
-    in
     describe "ServerIqOfferDecision (via WsDataReceived)"
-        [ test "granted, on the active IQ screen, transitions to the skip-offer screen" <|
+        [ test "granted, on the active IQ screen, transitions to the instructions screen with the offer stashed as pending (issue #93)" <|
             \_ ->
                 let
                     ( result, _ ) =
                         update (WsDataReceived (decisionEnvelope True 42))
                             { baseModel | screen = IQTestActiveScreen { iqActiveState | questionIdx = 2 } }
                 in
-                result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 42 })
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42 })
         , test "not granted, on the active IQ screen, transitions to the plain begin screen" <|
             \_ ->
                 let
@@ -774,7 +782,7 @@ serverIqOfferDecisionSuite =
                         update (WsDataReceived (decisionEnvelope False 42))
                             { baseModel | screen = IQTestActiveScreen { iqActiveState | questionIdx = 2 } }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42 })
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Nothing })
         , test "granted, on the fake-flash-caught screen, stashes the decision without transitioning yet" <|
             \_ ->
                 let
@@ -813,7 +821,7 @@ iqSkipOfferAcceptedSuite =
                 let
                     ( result, _ ) =
                         update IQSkipOfferAccepted
-                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 } }
+                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing } }
                 in
                 result.screen
                     |> Expect.equal
@@ -836,10 +844,10 @@ iqSkipOfferDeclinedSuite =
                 let
                     ( result, cmd ) =
                         update IQSkipOfferDeclined
-                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 } }
+                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing } }
                 in
                 Expect.all
-                    [ \_ -> result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 100 })
+                    [ \_ -> result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing })
                     , \_ -> cmd |> Expect.equal (sendWs baseModel Sync.iqOfferDeclinedEnvelope)
                     ]
                     ()
@@ -989,7 +997,7 @@ continuePressedSuite =
                     ( result, _ ) =
                         update ContinuePressed { baseModel | screen = WrongAnswerScreen 2 "Alpha" }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = iqQuestionCount })
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = iqQuestionCount, pendingSkipOffer = Nothing })
         , test "ignored off the wrong-answer screen" <|
             \_ ->
                 let
@@ -1003,13 +1011,28 @@ continuePressedSuite =
 iqTestBeginPressedSuite : Test
 iqTestBeginPressedSuite =
     describe "IQTestBeginPressed"
-        [ test "starts the countdown from the IQ begin screen" <|
+        [ test "starts the countdown from the IQ begin screen, when there's no pending skip offer" <|
             \_ ->
                 let
-                    ( result, _ ) =
-                        update IQTestBeginPressed { baseModel | screen = IQTestScreen { questionIdx = 0, totalDings = iqQuestionCount } }
+                    ( result, cmd ) =
+                        update IQTestBeginPressed { baseModel | screen = IQTestScreen { questionIdx = 0, totalDings = iqQuestionCount, pendingSkipOffer = Nothing } }
                 in
-                result.screen |> Expect.equal (IQTestCountdownScreen { questionIdx = 0, totalDings = iqQuestionCount, countdown = iqQuestionCount })
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (IQTestCountdownScreen { questionIdx = 0, totalDings = iqQuestionCount, countdown = iqQuestionCount })
+                    , \_ -> cmd |> Expect.equal (sendWs baseModel Sync.iqStartCountdownEnvelope)
+                    ]
+                    ()
+        , test "goes straight to the skip-offer screen instead, when a grant is pending (issue #93)" <|
+            \_ ->
+                let
+                    ( result, cmd ) =
+                        update IQTestBeginPressed { baseModel | screen = IQTestScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Just 100 } }
+                in
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing })
+                    , \_ -> cmd |> Expect.equal Cmd.none
+                    ]
+                    ()
         , test "ignored off the IQ begin screen" <|
             \_ ->
                 let
@@ -1446,16 +1469,55 @@ wsDataReceivedSuite =
                         update (WsDataReceived """{"payload":"iqCountdownTick","iqCountdownTick":{"remaining":3}}""") { baseModel | screen = BlankScreen 0 }
                 in
                 result.screen |> Expect.equal (BlankScreen 0)
-        , test "iqCountdownComplete enters the active test" <|
+        , test "iqCountdownComplete enters the active test, preserving a nonzero dingCount" <|
             \_ ->
                 let
                     state =
                         { questionIdx = 1, totalDings = iqQuestionCount, countdown = 0 }
 
                     ( result, _ ) =
-                        update (WsDataReceived """{"payload":"iqCountdownComplete"}""") { baseModel | screen = IQTestCountdownScreen state }
+                        update (WsDataReceived """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":5}}""") { baseModel | screen = IQTestCountdownScreen state }
                 in
-                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | questionIdx = 1 })
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | questionIdx = 1, dingCount = 5 })
+        , test "iqCountdownComplete below the loud threshold does not schedule the loud video" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, totalDings = iqQuestionCount, countdown = 0 }
+
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":3}}""") { baseModel | screen = IQTestCountdownScreen state }
+                in
+                pendingStartLoudMusicFireAt result |> Expect.equal Nothing
+        , test "iqCountdownComplete at/above the loud threshold schedules (but doesn't yet start) the loud video" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, totalDings = iqQuestionCount, countdown = 0 }
+
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":5}}""")
+                            { baseModel | screen = IQTestCountdownScreen state }
+                in
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | questionIdx = 1, dingCount = 5 })
+                    , \_ -> pendingStartLoudMusicFireAt result |> Expect.equal (Just (result.now + iqLoudDelay))
+                    ]
+                    ()
+        , test "iqCountdownComplete's scheduled loud video actually starts once fired" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, totalDings = iqQuestionCount, countdown = 0 }
+
+                    ( afterCountdown, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":5}}""")
+                            { baseModel | screen = IQTestCountdownScreen state }
+
+                    ( result, _ ) =
+                        update StartLoudMusic afterCountdown
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | questionIdx = 1, dingCount = 5, loudPlaying = True })
         , test "iqCountdownComplete elsewhere is ignored" <|
             \_ ->
                 let
@@ -1725,4 +1787,81 @@ resumeVideoKickRoutingSuite =
                         update BeginPressed { baseModel | now = 6000, screen = BeginScreen (BlankScreen 0) }
                 in
                 result.pending |> Expect.equal []
+        ]
+
+
+{-| Issue #93: a granted IQ-offer used to jump straight from the fail/catch to
+the offer screen, skipping the instructions screen. These reproduce the
+issue's own two test cases end to end, chaining `update` calls the same way a
+real play session would fire the underlying Msgs.
+-}
+issue93Suite : Test
+issue93Suite =
+    describe "Issue #93: IQ offer appears after instructions, not immediately"
+        [ test "IQ offer appears after instructions" <|
+            \_ ->
+                let
+                    afterFail =
+                        update SpaceBarPressed { baseModel | screen = IQTestActiveScreen { iqActiveState | dingCount = 5, totalDings = 100 } }
+                            |> Tuple.first
+
+                    afterDecision =
+                        update (WsDataReceived (decisionEnvelope True 100)) afterFail
+                            |> Tuple.first
+
+                    afterBegin =
+                        update IQTestBeginPressed afterDecision
+                            |> Tuple.first
+                in
+                Expect.all
+                    [ \_ -> afterDecision.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 100, pendingSkipOffer = Just 100 })
+                    , \_ -> afterBegin.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 0, totalDings = 100, pendingSkipOffer = Nothing })
+                    ]
+                    ()
+        , test "IQ Test occurs after animation" <|
+            \_ ->
+                let
+                    trapState =
+                        { iqActiveState | fakeFlashActive = True, fakeIsTrap = True, dingCount = 3, totalDings = 50 }
+
+                    afterCatch =
+                        update SpaceBarPressed { baseModel | screen = IQTestActiveScreen trapState }
+                            |> Tuple.first
+
+                    afterDecision =
+                        update (WsDataReceived (decisionEnvelope True 50)) afterCatch
+                            |> Tuple.first
+
+                    -- "Wait for the animation to finish": jump straight to the terminal
+                    -- phase, mirroring fakeFlashNextPhaseSuite's existing style.
+                    atCounterOut =
+                        case afterDecision.screen of
+                            FakeFlashCaughtScreen s ->
+                                { afterDecision | screen = FakeFlashCaughtScreen { s | phase = FfCounterOut } }
+
+                            _ ->
+                                afterDecision
+
+                    afterAnimation =
+                        update FakeFlashNextPhase atCounterOut
+                            |> Tuple.first
+
+                    afterDecline =
+                        update IQSkipOfferDeclined afterAnimation
+                            |> Tuple.first
+                in
+                Expect.all
+                    [ \_ ->
+                        afterCatch.screen
+                            |> Expect.equal
+                                (FakeFlashCaughtScreen
+                                    { questionIdx = 0, originalTotal = 50, displayNumerator = 3, displayDenominator = 50, phase = FfDelay, skipOffer = Nothing }
+                                )
+                    , \_ ->
+                        -- Correct, unchanged behavior: the catch path lands directly on the
+                        -- offer screen once the cutscene finishes -- a regression guard.
+                        afterAnimation.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 0, totalDings = 50, pendingSkipOffer = Nothing })
+                    , \_ -> afterDecline.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 50, pendingSkipOffer = Nothing })
+                    ]
+                    ()
         ]

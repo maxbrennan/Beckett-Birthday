@@ -69,7 +69,31 @@ screenRoundTripTests =
         , test "WrongAnswerScreen carries its index but deliberately drops the reveal text on encode (never persisted)" <|
             \_ -> Expect.equal (WrongAnswerScreen 5 "") (roundTripScreen (WrongAnswerScreen 5 "top secret answer"))
         , test "IQTestScreen carries its state" <|
-            \_ -> Expect.equal (IQTestScreen { questionIdx = 1, totalDings = 100 }) (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100 }))
+            \_ ->
+                Expect.equal
+                    (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Nothing })
+                    (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Nothing }))
+        , test "IQTestScreen carries a pending skip offer too" <|
+            \_ ->
+                Expect.equal
+                    (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Just 200 })
+                    (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Just 200 }))
+        , test "IQTestScreen's pendingSkipOffer defaults to Nothing for an older persisted row missing the field" <|
+            \_ ->
+                let
+                    oldShapeJson =
+                        Encode.object
+                            [ ( "tag", Encode.string "IQTestScreen" )
+                            , ( "state"
+                              , Encode.object
+                                    [ ( "questionIdx", Encode.int 1 )
+                                    , ( "totalDings", Encode.int 100 )
+                                    ]
+                              )
+                            ]
+                in
+                Decode.decodeValue decodeScreen oldShapeJson
+                    |> Expect.equal (Ok (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Nothing }))
         , test "IQTestCountdownScreen carries its state" <|
             \_ ->
                 Expect.equal
@@ -121,7 +145,10 @@ screenRoundTripTests =
                             )
                         )
         , test "IQTestSkipOfferScreen carries its state" <|
-            \_ -> Expect.equal (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 }) (roundTripScreen (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100 }))
+            \_ ->
+                Expect.equal
+                    (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing })
+                    (roundTripScreen (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing }))
         , test "IQTestSkipAnimScreen carries its state" <|
             \_ ->
                 let
@@ -351,10 +378,14 @@ serverEnvelopeTests =
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"iqCountdownTick","iqCountdownTick":{"remaining":3}}"""
                     |> Expect.equal (Ok (ServerIqCountdownTick 3))
-        , test "iqCountdownComplete" <|
+        , test "iqCountdownComplete carries the ding count" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":5}}"""
+                    |> Expect.equal (Ok (ServerIqCountdownComplete 5))
+        , test "iqCountdownComplete defaults dingCount to 0 when protobufjs omits it" <|
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"iqCountdownComplete"}"""
-                    |> Expect.equal (Ok ServerIqCountdownComplete)
+                    |> Expect.equal (Ok (ServerIqCountdownComplete 0))
         , test "iqDing with all fields present" <|
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"iqDing","iqDing":{"fake":true,"trap":true,"dingCount":5,"totalDings":100}}"""

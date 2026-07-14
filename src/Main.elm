@@ -418,6 +418,7 @@ update msg model =
                                 IQTestScreen
                                     { questionIdx = idx
                                     , totalDings = iqQuestionCount
+                                    , pendingSkipOffer = Nothing
                                     }
                         }
                     , Cmd.none
@@ -429,18 +430,38 @@ update msg model =
         IQTestBeginPressed ->
             case model.screen of
                 IQTestScreen iqScreen ->
-                    -- Enter the countdown screen and ask the server to run it. The
-                    -- server owns the count and all timing; the client just renders.
-                    ( { model
-                        | screen =
-                            IQTestCountdownScreen
-                                { questionIdx = iqScreen.questionIdx
-                                , totalDings = iqScreen.totalDings
-                                , countdown = iqScreen.totalDings
+                    case iqScreen.pendingSkipOffer of
+                        -- A grant is already sitting here (from ServerIqOfferDecision, or
+                        -- re-derived fresh on reconnect by Server.elm's deriveIqScreen) --
+                        -- show the offer screen instead of starting the countdown. Purely
+                        -- local: the server already recorded the grant when it decided it,
+                        -- so there's nothing new to report.
+                        Just totalDings ->
+                            ( clearPending
+                                { model
+                                    | screen =
+                                        IQTestSkipOfferScreen
+                                            { questionIdx = iqScreen.questionIdx
+                                            , totalDings = totalDings
+                                            , pendingSkipOffer = Nothing
+                                            }
                                 }
-                      }
-                    , sendWs model iqStartCountdownEnvelope
-                    )
+                            , Cmd.none
+                            )
+
+                        Nothing ->
+                            -- Enter the countdown screen and ask the server to run it. The
+                            -- server owns the count and all timing; the client just renders.
+                            ( { model
+                                | screen =
+                                    IQTestCountdownScreen
+                                        { questionIdx = iqScreen.questionIdx
+                                        , totalDings = iqScreen.totalDings
+                                        , countdown = iqScreen.totalDings
+                                        }
+                              }
+                            , sendWs model iqStartCountdownEnvelope
+                            )
 
                 _ ->
                     ( model, Cmd.none )
@@ -547,7 +568,15 @@ update msg model =
                                     -- handling of ServerIqOfferDecision.
                                     case state.skipOffer of
                                         Just totalDings ->
-                                            ( clearPending { model | screen = IQTestSkipOfferScreen { questionIdx = state.questionIdx, totalDings = totalDings } }
+                                            ( clearPending
+                                                { model
+                                                    | screen =
+                                                        IQTestSkipOfferScreen
+                                                            { questionIdx = state.questionIdx
+                                                            , totalDings = totalDings
+                                                            , pendingSkipOffer = Nothing
+                                                            }
+                                                }
                                             , Cmd.none
                                             )
 
@@ -589,7 +618,15 @@ update msg model =
                     -- Model.iqOfferGrants) so a subsequent Begin press isn't blocked --
                     -- the one-time flag was already committed server-side at grant
                     -- time, so this is the only thing left to report.
-                    ( clearPending { model | screen = IQTestScreen { questionIdx = s.questionIdx, totalDings = s.totalDings } }
+                    ( clearPending
+                        { model
+                            | screen =
+                                IQTestScreen
+                                    { questionIdx = s.questionIdx
+                                    , totalDings = s.totalDings
+                                    , pendingSkipOffer = Nothing
+                                    }
+                        }
                     , sendWs model iqOfferDeclinedEnvelope
                     )
 
@@ -744,24 +781,38 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
-                Ok ServerIqCountdownComplete ->
+                Ok (ServerIqCountdownComplete dingCount) ->
                     -- Countdown done: enter the active test and request the first ding.
+                    -- dingCount is the server's authoritative count (nonzero if edit:state
+                    -- set it while the countdown was running); render it directly instead
+                    -- of assuming a fresh test's 0, and if it's already at/above the loud
+                    -- threshold, arm the loud gag now rather than waiting on a
+                    -- ServerIqStartLoud that (having already passed that threshold) will
+                    -- never arrive.
                     case model.screen of
                         IQTestCountdownScreen state ->
-                            ( clearPending
-                                { model
-                                    | screen =
-                                        IQTestActiveScreen
-                                            { questionIdx = state.questionIdx
-                                            , dingCount = 0
-                                            , totalDings = state.totalDings
-                                            , isFlashing = False
-                                            , dingActive = False
-                                            , fakeFlashActive = False
-                                            , fakeIsTrap = False
-                                            , loudPlaying = False
-                                            }
-                                }
+                            let
+                                withActiveScreen =
+                                    clearPending
+                                        { model
+                                            | screen =
+                                                IQTestActiveScreen
+                                                    { questionIdx = state.questionIdx
+                                                    , dingCount = dingCount
+                                                    , totalDings = state.totalDings
+                                                    , isFlashing = False
+                                                    , dingActive = False
+                                                    , fakeFlashActive = False
+                                                    , fakeIsTrap = False
+                                                    , loudPlaying = False
+                                                    }
+                                        }
+                            in
+                            ( if dingCount >= iqLoudDingThreshold then
+                                withActiveScreen |> schedule iqLoudDelay StartLoudMusic
+
+                              else
+                                withActiveScreen
                             , sendWs model iqReadyForDingEnvelope
                             )
 
@@ -803,7 +854,7 @@ update msg model =
                     -- (kept client-side to match the original timing).
                     case model.screen of
                         IQTestActiveScreen _ ->
-                            ( model |> schedule 3000 StartLoudMusic, Cmd.none )
+                            ( model |> schedule iqLoudDelay StartLoudMusic, Cmd.none )
 
                         _ ->
                             ( model, Cmd.none )
@@ -896,21 +947,31 @@ update msg model =
                     -- The server's authoritative reply to iqFailedEnvelope (a plain fail)
                     -- or iqCaughtEnvelope (a trap catch) -- see Server.elm's decideIqOffer.
                     -- On IQTestActiveScreen (the plain-fail case, frozen there by iqFail
-                    -- above) this is what actually transitions off it, to the offer screen
-                    -- if granted or the plain begin screen otherwise. On
-                    -- FakeFlashCaughtScreen (the catch case) the cutscene is still ~10s
-                    -- from its end, so just stash the decision for FfCounterOut to read.
-                    -- Any other screen: a stale/late reply after the screen already moved
-                    -- on (e.g. a race with a reconnect) -- ignore.
+                    -- above) this is what actually transitions off it, to the instructions
+                    -- screen either way -- a granted offer is stashed as pendingSkipOffer
+                    -- rather than jumping straight to the offer screen, so the player always
+                    -- sees the instructions first and only reaches the offer via
+                    -- IQTestBeginPressed (see issue #93). On FakeFlashCaughtScreen (the catch
+                    -- case) the cutscene is still ~10s from its end, so just stash the
+                    -- decision for FfCounterOut to read -- that path lands directly on the
+                    -- offer screen once the cutscene finishes, which is the correct/desired
+                    -- behavior there, unlike the plain-fail case. Any other screen: a
+                    -- stale/late reply after the screen already moved on (e.g. a race with a
+                    -- reconnect) -- ignore.
                     case model.screen of
                         IQTestActiveScreen state ->
                             ( { model
                                 | screen =
-                                    if d.granted then
-                                        IQTestSkipOfferScreen { questionIdx = state.questionIdx, totalDings = d.totalDings }
+                                    IQTestScreen
+                                        { questionIdx = state.questionIdx
+                                        , totalDings = d.totalDings
+                                        , pendingSkipOffer =
+                                            if d.granted then
+                                                Just d.totalDings
 
-                                    else
-                                        IQTestScreen { questionIdx = state.questionIdx, totalDings = d.totalDings }
+                                            else
+                                                Nothing
+                                        }
                               }
                             , Cmd.none
                             )

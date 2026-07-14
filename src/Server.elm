@@ -36,11 +36,14 @@ type alias Model =
     -- Per-uuid confirmation that the song/video for this idx has actually
     -- finished playing (see ClientQuizSongEnded), required before
     -- ClientQuizAnswerSubmitted accepts an answer for the same idx -- a
-    -- crafted client can no longer submit before any song plays. In memory
-    -- only, deliberately never persisted to RegistryEntry/builds.json: a
-    -- reconnect always re-derives BlankScreen and replays the song from
-    -- scratch anyway (see ClientStateRequest clearing this on connect), so
-    -- there is nothing worth surviving a restart for.
+    -- crafted client can no longer submit before any song plays. This
+    -- in-memory copy is deliberately cleared on every reconnect
+    -- (ClientStateRequest) and rebuilt from a fresh report -- the real
+    -- durable fact lives in RegistryEntry.quizSongEndedIdx, which is what
+    -- deriveQuizScreen consults to resume straight onto QuestionScreen
+    -- instead of replaying an already-heard song (#90); the client's
+    -- resumeCmd re-sends ClientQuizSongEnded on landing there, which
+    -- repopulates this Dict too.
     , quizSongEnded : Dict String Int
 
     -- Per-uuid: a granted-but-not-yet-consumed IQ-test skip offer, mapping to the
@@ -225,7 +228,7 @@ advanceOnClear s =
 
         else
             Advanced
-                { startLoud = newDingCount == 4
+                { startLoud = newDingCount == IQTest.iqLoudDingThreshold
                 , state = { s | dingCount = newDingCount }
                 }
 
@@ -321,27 +324,40 @@ quizJustCompleted { next, total } =
 
 
 {-| Project a player's confirmed quiz progress onto the exact JSON shape
-`Sync.elm`'s `encodeScreen` produces for `BlankScreen`, so the persisted
-quiz-slide screen can be derived from server state instead of the client's own
-report (the quiz analogue of `deriveIqScreen`). `BlankScreen progress` is the
-start of the slide the player has earned but not yet passed -- the client
-replays that slide's song/video from the top on resume, deliberately
-collapsing finer-grained transient state (a typed-but-unsubmitted answer, a
-mid-playback position, a wrong-answer reveal) that only ever existed
-client-side. `Nothing` when progress is out of the playable range: at or past
-`total` the quiz is complete and the client's own `WinScreen` report stays
-authoritative (`BlankScreen total` names no question and would strand the
-player on a slide with nothing to play), and `total <= 0` means the question
-config was never read -- same fail-safe convention as `quizJustCompleted`.
+`Sync.elm`'s `encodeScreen` produces for `BlankScreen`/`QuestionScreen`, so the
+persisted quiz-slide screen can be derived from server state instead of the
+client's own report (the quiz analogue of `deriveIqScreen`). `BlankScreen
+progress` is the start of the slide the player has earned but not yet passed
+-- the client replays that slide's song/video from the top on resume. When
+`songEnded` is `True` (the server has an independently-confirmed
+`ClientQuizSongEnded` report on file for this exact `progress` idx -- see
+`RegistryEntry.quizSongEndedIdx`), the song/video has already been heard, so
+`QuestionScreen progress ""` is derived instead, skipping the replay (#90).
+Either way this deliberately collapses finer-grained transient state (a
+typed-but-unsubmitted answer, a mid-playback position, a wrong-answer reveal)
+that only ever existed client-side. `Nothing` when progress is out of the
+playable range: at or past `total` the quiz is complete and the client's own
+`WinScreen` report stays authoritative (`BlankScreen total` names no question
+and would strand the player on a slide with nothing to play), and
+`total <= 0` means the question config was never read -- same fail-safe
+convention as `quizJustCompleted`.
 -}
-deriveQuizScreen : { progress : Int, total : Int } -> Maybe Encode.Value
-deriveQuizScreen { progress, total } =
+deriveQuizScreen : { progress : Int, total : Int, songEnded : Bool } -> Maybe Encode.Value
+deriveQuizScreen { progress, total, songEnded } =
     if 0 <= progress && progress < total then
         Just <|
-            Encode.object
-                [ ( "tag", Encode.string "BlankScreen" )
-                , ( "idx", Encode.int progress )
-                ]
+            if songEnded then
+                Encode.object
+                    [ ( "tag", Encode.string "QuestionScreen" )
+                    , ( "idx", Encode.int progress )
+                    , ( "s", Encode.string "" )
+                    ]
+
+            else
+                Encode.object
+                    [ ( "tag", Encode.string "BlankScreen" )
+                    , ( "idx", Encode.int progress )
+                    ]
 
     else
         Nothing
@@ -383,14 +399,14 @@ deriveWinScreen winText { progress, total } =
 reached the end -- the one combined function that covers every derivable state
 of the quiz-progress family, from the first slide through the win screen.
 -}
-deriveQuizOrWinScreen : String -> { progress : Int, total : Int } -> Maybe Encode.Value
+deriveQuizOrWinScreen : String -> { progress : Int, total : Int, songEnded : Bool } -> Maybe Encode.Value
 deriveQuizOrWinScreen winText args =
     case deriveQuizScreen args of
         Just screen ->
             Just screen
 
         Nothing ->
-            deriveWinScreen winText args
+            deriveWinScreen winText { progress = args.progress, total = args.total }
 
 
 {-| The screen tags whose persisted value is server-derived via
@@ -455,9 +471,19 @@ animation had actually reached -- a reconnect mid-cutscene replays the cutscene
 from the top instead of resuming it precisely, the same category of accepted
 coarse-resume trade as the quiz-slide family's `WrongAnswerScreen` collapse
 (see `deriveQuizScreen`).
+
+`hasSkipOfferGrant` (true iff `Model.iqOfferGrants` holds a live, matching
+grant for this player -- see the caller) threads the one-time skip offer's
+pending state into the two idle branches (`IqIdleNotStarted`'s
+`pendingSkipOffer`, `IqIdleCaught`'s `skipOffer`) so a disconnect between a
+granted fail/catch and the player actually reaching the offer screen doesn't
+strand the grant: without this, `IQTestBeginPressed`/`IQSkipOfferAccepted`
+never message the server, so the grant would otherwise survive server-side
+while every re-derived screen forgot about it, permanently blocking the
+`ClientIqStartCountdown` guard.
 -}
-deriveIqScreen : IqTimerState -> Maybe Encode.Value
-deriveIqScreen state =
+deriveIqScreen : Bool -> IqTimerState -> Maybe Encode.Value
+deriveIqScreen hasSkipOfferGrant state =
     case state.phase of
         IqCounting ->
             Just <|
@@ -495,6 +521,13 @@ deriveIqScreen state =
                       , Encode.object
                             [ ( "questionIdx", Encode.int state.questionIdx )
                             , ( "totalDings", Encode.int state.totalDings )
+                            , ( "pendingSkipOffer"
+                              , if hasSkipOfferGrant then
+                                    Encode.int state.totalDings
+
+                                else
+                                    Encode.null
+                              )
                             ]
                       )
                     ]
@@ -520,6 +553,13 @@ deriveIqScreen state =
                             , ( "displayNumerator", Encode.int 0 )
                             , ( "displayDenominator", Encode.int originalTotal )
                             , ( "phase", Encode.string "FfDelay" )
+                            , ( "skipOffer"
+                              , if hasSkipOfferGrant then
+                                    Encode.int state.totalDings
+
+                                else
+                                    Encode.null
+                              )
                             ]
                       )
                     ]
@@ -538,7 +578,7 @@ deriveIqActiveScreen state flags =
                 , ( "dingActive", Encode.bool flags.dingActive )
                 , ( "fakeFlashActive", Encode.bool flags.fakeFlashActive )
                 , ( "fakeIsTrap", Encode.bool flags.fakeIsTrap )
-                , ( "loudPlaying", Encode.bool (state.dingCount >= 4) )
+                , ( "loudPlaying", Encode.bool (state.dingCount >= IQTest.iqLoudDingThreshold) )
                 ]
           )
         ]
@@ -708,6 +748,26 @@ synthesized fresh at connect time from this field (see `ClientStateRequest`);
 persistIqTimerInRegistry : String -> Maybe IqTimerState -> List RegistryEntry -> List RegistryEntry
 persistIqTimerInRegistry uuid maybeState registry =
     updateEntryIqTimer uuid (Maybe.map encodeIqTimerStateFull maybeState) registry
+
+
+{-| What "the player is no longer live" does to an in-flight IqTimerState,
+shared by every path that pauses a player's timer without them actively
+finishing the test (a plain disconnect, or an admin starting a state edit --
+see `ClientDisconnected` and `performStateEdit`). A ding shown and unresolved
+is rewound, not just paused: phase goes back to `IqDingScheduled` so the next
+resume (`resumeIqTimer`) replays `dingDelay`'s preserved wait and the ding
+re-fires as if it hadn't happened yet, rather than the player either dodging
+it or seeing it resent immediately. Every other phase just bumps `epoch` so
+any in-flight `Process.sleep` becomes a stale no-op when it fires, keeping
+every other field so a reconnect picks up exactly where they left off.
+-}
+pauseIqTimerState : IqTimerState -> IqTimerState
+pauseIqTimerState s =
+    if s.phase == IqDingShown then
+        { s | epoch = s.epoch + 1, phase = IqDingScheduled }
+
+    else
+        { s | epoch = s.epoch + 1 }
 
 
 {-| Record a live IqTimerState change both in-memory and in the registry (so it
@@ -957,6 +1017,14 @@ encodeServerStateFields; there is no separate screen field, since it's always
 derived fresh from these), and move the admin into the EditingState stage
 (which authorizes the following distStateEditSave). Runs only from
 AuthCompleted (post level-2 auth).
+
+Applies `pauseIqTimerState` to a live `IqDingShown` entry itself, rather than
+relying on the disconnect this triggers to do it: `closeClient` below only
+requests the socket close, and the real `ClientDisconnected` that would
+otherwise run the same rewind arrives in a later, separate Msg. Without doing
+it here first, the admin would be handed the pre-rewind `IqDingShown`
+snapshot, and an unchanged save would overwrite the correct rewind right back
+to it once the real disconnect actually lands (issue #52).
 -}
 performStateEdit : String -> String -> Model -> ( Model, Cmd Msg )
 performStateEdit uuid clientId model =
@@ -964,8 +1032,27 @@ performStateEdit uuid clientId model =
         maybePlayerClientId =
             Dict.get uuid model.connectedPlayers
 
+        maybePausedIqTimer =
+            Dict.get uuid model.iqTimers |> Maybe.map pauseIqTimerState
+
+        pausedIqTimers =
+            case maybePausedIqTimer of
+                Just paused ->
+                    Dict.insert uuid paused model.iqTimers
+
+                Nothing ->
+                    model.iqTimers
+
+        registryWithPausedIqTimer =
+            case maybePausedIqTimer of
+                Just paused ->
+                    persistIqTimerInRegistry uuid (Just paused) model.registry
+
+                Nothing ->
+                    model.registry
+
         maybeEntry =
-            model.registry |> List.filter (\e -> e.uuid == uuid) |> List.head
+            registryWithPausedIqTimer |> List.filter (\e -> e.uuid == uuid) |> List.head
 
         currentState =
             case maybeEntry of
@@ -977,16 +1064,18 @@ performStateEdit uuid clientId model =
                         , timerEndsAt = entry.timerEndsAt
                         , quizQuestions = entry.quizQuestions
                         , iqOfferUsed = entry.iqOfferUsed
+                        , quizSongEndedIdx = entry.quizSongEndedIdx
                         }
 
                 Nothing ->
                     Encode.object []
 
         newRegistry =
-            setPendingStateEdit uuid model.registry
+            setPendingStateEdit uuid registryWithPausedIqTimer
     in
     ( { model
-        | pendingStateEdits = Set.insert uuid model.pendingStateEdits
+        | iqTimers = pausedIqTimers
+        , pendingStateEdits = Set.insert uuid model.pendingStateEdits
         , registry = newRegistry
         , distClients = Dict.insert clientId (EditingState uuid) model.distClients
       }
@@ -1056,13 +1145,7 @@ update msg model =
                     case Dict.get uuid model.iqTimers of
                         Just s ->
                             if s.phase == IqDingShown then
-                                -- Disconnecting while a ding is shown and unresolved
-                                -- rewinds it, not just pauses it: phase goes back to
-                                -- IqDingScheduled so the resume (resumeIqTimer) replays
-                                -- dingDelay's preserved wait and the ding re-fires as if
-                                -- it hadn't happened yet, rather than the player either
-                                -- dodging it or seeing it resent immediately.
-                                setIqTimer uuid { s | epoch = s.epoch + 1, phase = IqDingScheduled } baseModel
+                                setIqTimer uuid (pauseIqTimerState s) baseModel
 
                             else
                                 -- Pause (don't drop) the live IQ timer: bump its epoch
@@ -1070,7 +1153,7 @@ update msg model =
                                 -- when it fires, but keep every other field so a
                                 -- reconnect (ClientIqResume) picks up exactly where
                                 -- they left off.
-                                ( { baseModel | iqTimers = Dict.insert uuid { s | epoch = s.epoch + 1 } model.iqTimers }, Cmd.none )
+                                ( { baseModel | iqTimers = Dict.insert uuid (pauseIqTimerState s) model.iqTimers }, Cmd.none )
 
                         Nothing ->
                             ( baseModel, Cmd.none )
@@ -1138,6 +1221,14 @@ update msg model =
                                         progress =
                                             Dict.get uuid model.quizProgress |> Maybe.withDefault 0
 
+                                        -- True only when the server has an independently-confirmed
+                                        -- ClientQuizSongEnded report on file for this exact progress
+                                        -- idx (see RegistryEntry.quizSongEndedIdx) -- lets
+                                        -- deriveQuizScreen resume straight onto QuestionScreen
+                                        -- instead of replaying a song the player already heard (#90).
+                                        songEnded =
+                                            entry.quizSongEndedIdx == Just progress
+
                                         -- Every player-facing screen is synthesized fresh here,
                                         -- straight from the server's own authoritative fields --
                                         -- there is nothing cached to read back (see RegistryEntry's
@@ -1152,14 +1243,16 @@ update msg model =
                                         derived =
                                             case Dict.get uuid model.iqTimers of
                                                 Just iqState ->
-                                                    deriveIqScreen iqState
+                                                    deriveIqScreen
+                                                        (Dict.get uuid model.iqOfferGrants == Just iqState.questionIdx)
+                                                        iqState
 
                                                 Nothing ->
                                                     if total > 0 && progress >= total then
                                                         Just (Encode.object [ ( "tag", Encode.string "WinScreen" ), ( "text", Encode.string entry.winText ) ])
 
                                                     else
-                                                        case deriveQuizOrWinScreen entry.winText { progress = progress, total = total } of
+                                                        case deriveQuizOrWinScreen entry.winText { progress = progress, total = total, songEnded = songEnded } of
                                                             Just s ->
                                                                 Just s
 
@@ -1262,6 +1355,7 @@ update msg model =
                                             , quizQuestions = Nothing
                                             , iqOfferDisabled = False
                                             , iqOfferUsed = False
+                                            , quizSongEndedIdx = Nothing
                                             }
 
                                         newRegistry =
@@ -1305,6 +1399,7 @@ update msg model =
                                         , quizQuestions = Just quizQuestions
                                         , iqOfferDisabled = iqOfferDisabled
                                         , iqOfferUsed = False
+                                        , quizSongEndedIdx = Nothing
                                         }
 
                                     newRegistry =
@@ -1363,6 +1458,7 @@ update msg model =
                                                                 , timerEndsAt = edited.timerEndsAt
                                                                 , quizQuestions = edited.quizQuestions
                                                                 , iqOfferUsed = edited.iqOfferUsed
+                                                                , quizSongEndedIdx = edited.quizSongEndedIdx
                                                             }
 
                                                         else
@@ -1461,6 +1557,11 @@ update msg model =
                                         -- it forward like iqTimer/quizProgress/timerEndsAt above, not
                                         -- reset it like winText/quizQuestions/iqOfferDisabled above.
                                         , iqOfferUsed = oldEntry |> Maybe.map .iqOfferUsed |> Maybe.withDefault False
+
+                                        -- Same rationale as quizProgress above: whether the player
+                                        -- already heard the song for their current question is real
+                                        -- progress, not per-build authoring -- carry it forward.
+                                        , quizSongEndedIdx = oldEntry |> Maybe.andThen .quizSongEndedIdx
                                         }
 
                                     newRegistry =
@@ -1754,8 +1855,10 @@ update msg model =
                     -- only if idx is exactly the player's current expected question --
                     -- a stale/out-of-order report is silently ignored, same as a
                     -- mismatched ClientQuizAdvanced/ClientQuizAnswerSubmitted idx.
-                    -- Recorded in memory only (see Model.quizSongEnded); required by
-                    -- ClientQuizAnswerSubmitted below before it accepts an answer.
+                    -- Tracked in memory (Model.quizSongEnded) for ClientQuizAnswerSubmitted's
+                    -- gate below, and durably in RegistryEntry.quizSongEndedIdx so
+                    -- deriveQuizScreen can resume straight onto QuestionScreen instead of
+                    -- replaying the song on a later reconnect (#90).
                     case findUuidByClient clientId model.connectedPlayers of
                         Nothing ->
                             ( model, Cmd.none )
@@ -1770,8 +1873,18 @@ update msg model =
                                         Dict.get uuid model.quizProgress |> Maybe.withDefault 0
                                 in
                                 if idx == current then
-                                    ( { model | quizSongEnded = Dict.insert uuid idx model.quizSongEnded }
-                                    , sendToClient { clientId = clientId, payload = quizSongEndedAckEnvelope idx }
+                                    let
+                                        newRegistry =
+                                            updateEntryQuizSongEnded uuid idx model.registry
+                                    in
+                                    ( { model
+                                        | quizSongEnded = Dict.insert uuid idx model.quizSongEnded
+                                        , registry = newRegistry
+                                      }
+                                    , Cmd.batch
+                                        [ writeRegistry newRegistry
+                                        , sendToClient { clientId = clientId, payload = quizSongEndedAckEnvelope idx }
+                                        ]
                                     )
 
                                 else
@@ -2134,7 +2247,7 @@ update msg model =
                                     setIqTimer uuid { state | countdownRemaining = 0, phase = IqAwaitingReady } model
                             in
                             ( withTimer
-                            , Cmd.batch [ persistCmd, sendToPlayer uuid model iqCountdownCompleteEnvelope ]
+                            , Cmd.batch [ persistCmd, sendToPlayer uuid model (iqCountdownCompleteEnvelope state.dingCount) ]
                             )
 
                     else

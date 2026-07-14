@@ -48,6 +48,7 @@ import Server.Protocol
         ( ClientEnvelope(..)
         , decodeClientEnvelope
         , distListResultEnvelope
+        , iqCountdownCompleteEnvelope
         , iqDingEnvelope
         , distRegisterAckEnvelope
         , iqOfferDecisionEnvelope
@@ -71,6 +72,7 @@ import Server.Registry
         , findUuidByClient
         , isExpired
         , registryFilePath
+        , updateEntryQuizSongEnded
         , updateEntryTimer
         )
 import Sync exposing (decodeFakeFlashCaughtState, decodeIQTestCountdownState, decodeIQTestScreenState, decodeIQTestState, decodeScreen)
@@ -91,7 +93,7 @@ registrySuite =
     describe "RegistryEntry winText codec"
         [ test "round-trips winText through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -159,7 +161,7 @@ iqOfferRegistrySuite =
                     base =
                         entry "u1"
                 in
-                { base | iqOfferUsed = True }
+                { base | iqOfferUsed = True, quizSongEndedIdx = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -177,6 +179,42 @@ iqOfferRegistrySuite =
                     |> Decode.decodeString decodeRegistryEntry
                     |> Result.map .iqOfferUsed
                     |> Expect.equal (Ok False)
+        ]
+
+
+quizSongEndedRegistrySuite : Test
+quizSongEndedRegistrySuite =
+    describe "RegistryEntry.quizSongEndedIdx codec (#90)"
+        [ test "round-trips a confirmed idx through encode/decode" <|
+            \_ ->
+                let
+                    base =
+                        entry "u1"
+                in
+                { base | quizSongEndedIdx = Just 2 }
+                    |> encodeRegistryEntry
+                    |> Encode.encode 0
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .quizSongEndedIdx
+                    |> Expect.equal (Ok (Just 2))
+        , test "defaults quizSongEndedIdx to Nothing for older rows missing the field" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .quizSongEndedIdx
+                    |> Expect.equal (Ok Nothing)
+        , test "defaults quizSongEndedIdx to Nothing when explicitly serialized as null" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false,"serverState":{"quizSongEndedIdx":null}}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .quizSongEndedIdx
+                    |> Expect.equal (Ok Nothing)
+        , test "updateEntryQuizSongEnded sets the confirmed idx only on the matching uuid" <|
+            \_ ->
+                [ entry "uuid1", entry "uuid2" ]
+                    |> updateEntryQuizSongEnded "uuid1" 2
+                    |> List.map (\e -> ( e.uuid, e.quizSongEndedIdx ))
+                    |> Expect.equal [ ( "uuid1", Just 2 ), ( "uuid2", Nothing ) ]
         ]
 
 
@@ -228,7 +266,7 @@ encodeRegistryTests =
                     |> Expect.equal (Ok [])
         , test "encodeRegistry output is newline-terminated" <|
             \_ ->
-                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False } ]
+                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing } ]
                     |> String.endsWith "\n"
                     |> Expect.equal True
         ]
@@ -254,8 +292,8 @@ decodeRegistryTests =
             \_ ->
                 let
                     entries =
-                        [ { uuid = "u1", filename = "f1", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
-                        , { uuid = "u2", filename = "f2", platform = "win", pendingStateEdit = True, winText = "you win", iqTimer = Nothing, quizProgress = 3, timerEndsAt = Just 42, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                        [ { uuid = "u1", filename = "f1", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                        , { uuid = "u2", filename = "f2", platform = "win", pendingStateEdit = True, winText = "you win", iqTimer = Nothing, quizProgress = 3, timerEndsAt = Just 42, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                         ]
                 in
                 entries
@@ -284,7 +322,7 @@ timerSuite =
     describe "RegistryEntry.timerEndsAt"
         [ test "round-trips a set deadline through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -309,12 +347,12 @@ timerSuite =
                     |> Expect.equal False
         , test "isExpired is False before the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                     |> isExpired 1000
                     |> Expect.equal False
         , test "isExpired is True once now reaches the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
                     |> isExpired 1000
                     |> Expect.equal True
         , test "timerSyncEnvelope carries the deadline under timerSync.timerEndsAt" <|
@@ -507,6 +545,7 @@ entry uuid =
     , quizQuestions = Just (encodeTestQuestions baseQuizQuestions)
     , iqOfferDisabled = False
     , iqOfferUsed = False
+    , quizSongEndedIdx = Nothing
     }
 
 
@@ -691,6 +730,41 @@ adminOpSuite =
                         , \mm -> Expect.equal (Just (EditingState "uuid1")) (Dict.get "c1" mm.distClients)
                         ]
                         m
+            , test "admin auth success on a uuid mid-ding rewinds it to IqDingScheduled immediately, not just on the later disconnect (issue #52)" <|
+                \_ ->
+                    -- performStateEdit runs synchronously here, in the same update call
+                    -- that queues the player's closeClient -- the real disconnect (and its
+                    -- own IqDingShown -> IqDingScheduled rewind) only arrives as a later,
+                    -- separate ClientDisconnected message. Without performStateEdit doing
+                    -- this rewind itself, the admin would be handed a stale "IqDingShown"
+                    -- snapshot, and an unchanged save would clobber the later rewind right
+                    -- back to it.
+                    let
+                        staged =
+                            { baseModel
+                                | distClients = Dict.singleton "c1" (AwaitingStateEditAuth "uuid1")
+                                , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, phase = IqDingShown, dingCount = 10, dingDelay = Just 11000 }
+                            }
+
+                        ( m, _ ) =
+                            update (authDone "c1" True 2) staged
+                    in
+                    Dict.get "uuid1" m.iqTimers
+                        |> Expect.equal (Just { iqState | epoch = 2, phase = IqDingScheduled, dingCount = 10, dingDelay = Just 11000 })
+            , test "admin auth success on a uuid not mid-ding bumps its epoch (invalidating any in-flight schedule) but leaves phase/fields alone" <|
+                \_ ->
+                    let
+                        staged =
+                            { baseModel
+                                | distClients = Dict.singleton "c1" (AwaitingStateEditAuth "uuid1")
+                                , iqTimers = Dict.singleton "uuid1" { iqState | epoch = 1, phase = IqAwaitingReady, dingCount = 10 }
+                            }
+
+                        ( m, _ ) =
+                            update (authDone "c1" True 2) staged
+                    in
+                    Dict.get "uuid1" m.iqTimers
+                        |> Expect.equal (Just { iqState | epoch = 2, phase = IqAwaitingReady, dingCount = 10 })
             , test "save with valid JSON while EditingState clears the stage and pending flag" <|
                 \_ ->
                     let
@@ -955,6 +1029,14 @@ iqUpdateSuite =
                     , \_ -> Expect.equal (Ok 200) (intAt "totalDings")
                     ]
                     ()
+        , test "iqCountdownCompleteEnvelope round-trips dingCount" <|
+            \_ ->
+                let
+                    env =
+                        iqCountdownCompleteEnvelope 5
+                in
+                Decode.decodeValue (Decode.at [ "iqCountdownComplete", "dingCount" ] Decode.int) env
+                    |> Expect.equal (Ok 5)
         , test "iqStartCountdown initializes the server's own count at iqQuestionCount" <|
             \_ ->
                 let
@@ -1197,6 +1279,7 @@ iqEditSuite =
                             , timerEndsAt = Nothing
                             , quizQuestions = Nothing
                             , iqOfferUsed = False
+                            , quizSongEndedIdx = Nothing
                             }
 
                     ( m, _ ) =
@@ -1221,7 +1304,7 @@ iqEditSuite =
 
                     editedState =
                         encodeServerStateFields
-                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False }
+                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False, quizSongEndedIdx = Nothing }
 
                     ( m, _ ) =
                         update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
@@ -1306,13 +1389,13 @@ deriveIqScreenSuite =
         [ test "IqCounting derives an IQTestCountdownScreen decodable by Sync's real decoder" <|
             \_ ->
                 { iqState | phase = IqCounting, countdownRemaining = 42, totalDings = 100, questionIdx = 3 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestCountdownState) >> Result.toMaybe)
                     |> Expect.equal (Just { questionIdx = 3, totalDings = 100, countdown = 42 })
         , test "IqAwaitingReady derives an inactive IQTestActiveScreen" <|
             \_ ->
                 { iqState | phase = IqAwaitingReady, dingCount = 3, totalDings = 100, questionIdx = 2 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1329,14 +1412,14 @@ deriveIqScreenSuite =
         , test "IqDingScheduled also derives an inactive IQTestActiveScreen" <|
             \_ ->
                 { iqState | phase = IqDingScheduled, dingCount = 3, totalDings = 100 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Maybe.map .isFlashing
                     |> Expect.equal (Just False)
         , test "IqDingShown with a real ding derives an active flash; loudPlaying kicks in at dingCount 4" <|
             \_ ->
                 { iqState | phase = IqDingShown, lastDing = RealDing, dingCount = 4, totalDings = 100 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1353,27 +1436,33 @@ deriveIqScreenSuite =
         , test "IqDingShown with a trap fake derives a fake flash with fakeIsTrap" <|
             \_ ->
                 { iqState | phase = IqDingShown, lastDing = TrapFake, dingCount = 1 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Maybe.map (\s -> ( s.dingActive, s.fakeFlashActive, s.fakeIsTrap ))
                     |> Expect.equal (Just ( False, True, True ))
         , test "IqDingShown with a phase fake derives a fake flash without fakeIsTrap" <|
             \_ ->
                 { iqState | phase = IqDingShown, lastDing = PhaseFake, dingCount = 1 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Maybe.map (\s -> ( s.fakeFlashActive, s.fakeIsTrap ))
                     |> Expect.equal (Just ( True, False ))
-        , test "IqIdleNotStarted derives an IQTestScreen" <|
+        , test "IqIdleNotStarted derives an IQTestScreen, with no pending skip offer when there's no grant" <|
             \_ ->
                 { iqState | phase = IqIdleNotStarted, questionIdx = 2, totalDings = 100 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestScreenState) >> Result.toMaybe)
-                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100 })
-        , test "IqIdleCaught derives a FakeFlashCaughtScreen restarted at FfDelay" <|
+                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing })
+        , test "IqIdleNotStarted derives a pending skip offer when a grant is live (issue #93 reconnect fix)" <|
+            \_ ->
+                { iqState | phase = IqIdleNotStarted, questionIdx = 2, totalDings = 100 }
+                    |> deriveIqScreen True
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestScreenState) >> Result.toMaybe)
+                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100, pendingSkipOffer = Just 100 })
+        , test "IqIdleCaught derives a FakeFlashCaughtScreen restarted at FfDelay, with no skip offer when there's no grant" <|
             \_ ->
                 { iqState | phase = IqIdleCaught, questionIdx = 2, totalDings = 200 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeFakeFlashCaughtState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1383,6 +1472,21 @@ deriveIqScreenSuite =
                             , displayDenominator = 100
                             , phase = IQTest.FfDelay
                             , skipOffer = Nothing
+                            }
+                        )
+        , test "IqIdleCaught derives a skip offer when a grant is live (twin reconnect fix)" <|
+            \_ ->
+                { iqState | phase = IqIdleCaught, questionIdx = 2, totalDings = 200 }
+                    |> deriveIqScreen True
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeFakeFlashCaughtState) >> Result.toMaybe)
+                    |> Expect.equal
+                        (Just
+                            { questionIdx = 2
+                            , originalTotal = 100
+                            , displayNumerator = 0
+                            , displayDenominator = 100
+                            , phase = IQTest.FfDelay
+                            , skipOffer = Just 200
                             }
                         )
         ]
@@ -1406,6 +1510,7 @@ persistIqTimerInRegistrySuite =
                           , quizQuestions = Nothing
                           , iqOfferDisabled = False
                           , iqOfferUsed = False
+                          , quizSongEndedIdx = Nothing
                           }
                         ]
 
@@ -1434,6 +1539,7 @@ persistIqTimerInRegistrySuite =
                           , quizQuestions = Nothing
                           , iqOfferDisabled = False
                           , iqOfferUsed = False
+                          , quizSongEndedIdx = Nothing
                           }
                         ]
 
@@ -1624,7 +1730,7 @@ stateRequestSuite =
             \_ ->
                 let
                     fresh =
-                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
 
                     staged =
                         { baseModel | registry = [ fresh ] }
@@ -1641,7 +1747,7 @@ stateRequestSuite =
             \_ ->
                 let
                     fresh =
-                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 999999, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False }
+                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 999999, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
 
                     staged =
                         { baseModel | registry = [ fresh ] }
@@ -1683,6 +1789,66 @@ stateRequestSuite =
                         Encode.object
                             [ ( "tag", Encode.string "BeginScreen" )
                             , ( "nextScreen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 1 ) ] )
+                            ]
+                in
+                cmd
+                    |> Expect.equal
+                        (Cmd.batch
+                            [ writeRegistry m.registry
+                            , sendToClient { clientId = "c1", payload = stateEnvelope expectedWrapped }
+                            , sendToClient { clientId = "c1", payload = timerSyncEnvelope 999999 }
+                            ]
+                        )
+        , test "a player who already confirmed the song ended for their current question resumes onto QuestionScreen, not a replayed BlankScreen (#90)" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.empty
+                            , quizProgress = Dict.singleton "uuid1" 1
+                            , registry = [ { base | timerEndsAt = Just 999999, quizSongEndedIdx = Just 1 } ]
+                        }
+
+                    ( m, cmd ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    expectedWrapped =
+                        Encode.object
+                            [ ( "tag", Encode.string "BeginScreen" )
+                            , ( "nextScreen", Encode.object [ ( "tag", Encode.string "QuestionScreen" ), ( "idx", Encode.int 1 ), ( "s", Encode.string "" ) ] )
+                            ]
+                in
+                cmd
+                    |> Expect.equal
+                        (Cmd.batch
+                            [ writeRegistry m.registry
+                            , sendToClient { clientId = "c1", payload = stateEnvelope expectedWrapped }
+                            , sendToClient { clientId = "c1", payload = timerSyncEnvelope 999999 }
+                            ]
+                        )
+        , test "a song-ended confirmation for a stale (already-passed) idx does not skip the current question's BlankScreen (#90)" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.empty
+                            , quizProgress = Dict.singleton "uuid1" 2
+                            , registry = [ { base | timerEndsAt = Just 999999, quizSongEndedIdx = Just 1 } ]
+                        }
+
+                    ( m, cmd ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    expectedWrapped =
+                        Encode.object
+                            [ ( "tag", Encode.string "BeginScreen" )
+                            , ( "nextScreen", Encode.object [ ( "tag", Encode.string "BlankScreen" ), ( "idx", Encode.int 2 ) ] )
                             ]
                 in
                 cmd
@@ -1741,7 +1907,73 @@ stateRequestSuite =
                         update (stateRequestMsg "c1" "uuid1") staged
 
                     expectedInner =
-                        deriveIqScreen { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                        deriveIqScreen False { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                            |> Maybe.withDefault (Encode.object [])
+
+                    expectedWrapped =
+                        Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", expectedInner ) ]
+                in
+                cmd
+                    |> Expect.equal
+                        (Cmd.batch
+                            [ writeRegistry m.registry
+                            , sendToClient { clientId = "c1", payload = stateEnvelope expectedWrapped }
+                            , sendToClient { clientId = "c1", payload = timerSyncEnvelope 999999 }
+                            ]
+                        )
+        , test "a reconnect with a live, matching skip-offer grant re-derives IQTestScreen with pendingSkipOffer restored (issue #93 reconnect fix)" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.empty
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                            , iqOfferGrants = Dict.singleton "uuid1" 1
+                            , quizProgress = Dict.singleton "uuid1" 1
+                            , registry = [ { base | timerEndsAt = Just 999999 } ]
+                        }
+
+                    ( m, cmd ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    expectedInner =
+                        deriveIqScreen True { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                            |> Maybe.withDefault (Encode.object [])
+
+                    expectedWrapped =
+                        Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", expectedInner ) ]
+                in
+                cmd
+                    |> Expect.equal
+                        (Cmd.batch
+                            [ writeRegistry m.registry
+                            , sendToClient { clientId = "c1", payload = stateEnvelope expectedWrapped }
+                            , sendToClient { clientId = "c1", payload = timerSyncEnvelope 999999 }
+                            ]
+                        )
+        , test "a reconnect mid-cutscene with a live, matching skip-offer grant re-derives FakeFlashCaughtScreen with skipOffer restored (twin reconnect fix)" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.empty
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdleCaught, questionIdx = 1, totalDings = 100 }
+                            , iqOfferGrants = Dict.singleton "uuid1" 1
+                            , quizProgress = Dict.singleton "uuid1" 1
+                            , registry = [ { base | timerEndsAt = Just 999999 } ]
+                        }
+
+                    ( m, cmd ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    expectedInner =
+                        deriveIqScreen True { iqState | phase = IqIdleCaught, questionIdx = 1, totalDings = 100 }
                             |> Maybe.withDefault (Encode.object [])
 
                     expectedWrapped =
@@ -2964,6 +3196,7 @@ editedIqBeginSuite =
                             , timerEndsAt = Nothing
                             , quizQuestions = Nothing
                             , iqOfferUsed = False
+                            , quizSongEndedIdx = Nothing
                             }
 
                     ( m, _ ) =
@@ -3399,7 +3632,15 @@ quizSongEndedRoutingSuite =
                 in
                 Expect.all
                     [ \_ -> Dict.get "uuid1" m.quizSongEnded |> Expect.equal (Just 0)
-                    , \_ -> cmd |> Expect.equal (sendToClient { clientId = "c1", payload = quizSongEndedAckEnvelope 0 })
+                    , \_ -> m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.map .quizSongEndedIdx |> Expect.equal [ Just 0 ]
+                    , \_ ->
+                        cmd
+                            |> Expect.equal
+                                (Cmd.batch
+                                    [ writeRegistry m.registry
+                                    , sendToClient { clientId = "c1", payload = quizSongEndedAckEnvelope 0 }
+                                    ]
+                                )
                     ]
                     ()
         , test "a mismatched (out-of-order) idx is ignored, nothing tracked" <|
@@ -3702,17 +3943,24 @@ deriveQuizScreenSuite =
     describe "deriveQuizScreen"
         [ test "derives the earned slide's BlankScreen, decodable by Sync's real decoder" <|
             \_ ->
-                deriveQuizScreen { progress = 1, total = 3 }
+                deriveQuizScreen { progress = 1, total = 3, songEnded = False }
                     |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
                     |> Expect.equal (Just (BlankScreen 1))
+        , test "songEnded True derives QuestionScreen instead of BlankScreen, decodable by Sync's real decoder (#90)" <|
+            \_ ->
+                deriveQuizScreen { progress = 1, total = 3, songEnded = True }
+                    |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
+                    |> Expect.equal (Just (QuestionScreen 1 ""))
         , test "progress at total (quiz complete) is not derivable -- the client's WinScreen report stays authoritative" <|
-            \_ -> deriveQuizScreen { progress = 3, total = 3 } |> Expect.equal Nothing
+            \_ -> deriveQuizScreen { progress = 3, total = 3, songEnded = False } |> Expect.equal Nothing
         , test "progress past total is not derivable" <|
-            \_ -> deriveQuizScreen { progress = 9, total = 3 } |> Expect.equal Nothing
+            \_ -> deriveQuizScreen { progress = 9, total = 3, songEnded = False } |> Expect.equal Nothing
         , test "a negative progress (hand-mangled registry) is not derivable" <|
-            \_ -> deriveQuizScreen { progress = -1, total = 3 } |> Expect.equal Nothing
+            \_ -> deriveQuizScreen { progress = -1, total = 3, songEnded = False } |> Expect.equal Nothing
         , test "total 0 (config unread) is never derivable, even at progress 0" <|
-            \_ -> deriveQuizScreen { progress = 0, total = 0 } |> Expect.equal Nothing
+            \_ -> deriveQuizScreen { progress = 0, total = 0, songEnded = False } |> Expect.equal Nothing
+        , test "songEnded True at progress past total is still not derivable" <|
+            \_ -> deriveQuizScreen { progress = 9, total = 3, songEnded = True } |> Expect.equal Nothing
         ]
 
 
@@ -3736,12 +3984,17 @@ deriveQuizOrWinScreenSuite =
     describe "deriveQuizOrWinScreen"
         [ test "derives the earned slide while progress is in range" <|
             \_ ->
-                deriveQuizOrWinScreen "hello reward" { progress = 1, total = 3 }
+                deriveQuizOrWinScreen "hello reward" { progress = 1, total = 3, songEnded = False }
                     |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
                     |> Expect.equal (Just (BlankScreen 1))
+        , test "songEnded True derives the earned slide's QuestionScreen instead (#90)" <|
+            \_ ->
+                deriveQuizOrWinScreen "hello reward" { progress = 1, total = 3, songEnded = True }
+                    |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
+                    |> Expect.equal (Just (QuestionScreen 1 ""))
         , test "falls back to the derived WinScreen (with the real text embedded) once progress reaches total" <|
             \_ ->
-                deriveQuizOrWinScreen "hello reward" { progress = 3, total = 3 }
+                deriveQuizOrWinScreen "hello reward" { progress = 3, total = 3, songEnded = False }
                     |> Maybe.andThen (Decode.decodeValue decodeScreen >> Result.toMaybe)
                     |> Expect.equal (Just (WinScreen "hello reward"))
         ]
@@ -3806,6 +4059,7 @@ quizEditSuite =
                             , timerEndsAt = Nothing
                             , quizQuestions = Nothing
                             , iqOfferUsed = False
+                            , quizSongEndedIdx = Nothing
                             }
 
                     ( m, _ ) =
@@ -3827,7 +4081,7 @@ quizEditSuite =
 
                     editedState =
                         encodeServerStateFields
-                            { winText = "", iqTimer = Nothing, quizProgress = 9, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False }
+                            { winText = "", iqTimer = Nothing, quizProgress = 9, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False, quizSongEndedIdx = Nothing }
 
                     ( m, _ ) =
                         update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
@@ -3841,7 +4095,7 @@ quizEditSuite =
 
                     editedState =
                         encodeServerStateFields
-                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = True }
+                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = True, quizSongEndedIdx = Nothing }
 
                     ( m, _ ) =
                         update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
