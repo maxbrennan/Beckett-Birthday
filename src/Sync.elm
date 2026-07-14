@@ -272,6 +272,7 @@ encodeIQTestScreenState s =
     Encode.object
         [ ( "questionIdx", Encode.int s.questionIdx )
         , ( "totalDings", Encode.int s.totalDings )
+        , ( "pendingSkipOffer", s.pendingSkipOffer |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
         ]
 
 
@@ -499,9 +500,17 @@ decodeIQSkipAnimState =
 decodeIQTestScreenState : Decoder IQTestScreenState
 decodeIQTestScreenState =
     Decode.map2
-        (\qi td -> { questionIdx = qi, totalDings = td })
+        (\qi td ->
+            \pendingSkipOffer -> { questionIdx = qi, totalDings = td, pendingSkipOffer = pendingSkipOffer }
+        )
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "totalDings" Decode.int)
+        |> Decode.andThen
+            (\partial ->
+                -- older persisted rows predate this field; treat missing as Nothing.
+                Decode.map partial
+                    (Decode.oneOf [ Decode.field "pendingSkipOffer" (Decode.nullable Decode.int), Decode.succeed Nothing ])
+            )
 
 
 decodeIQTestCountdownState : Decoder IQTestCountdownState

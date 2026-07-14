@@ -1354,13 +1354,13 @@ deriveIqScreenSuite =
         [ test "IqCounting derives an IQTestCountdownScreen decodable by Sync's real decoder" <|
             \_ ->
                 { iqState | phase = IqCounting, countdownRemaining = 42, totalDings = 100, questionIdx = 3 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestCountdownState) >> Result.toMaybe)
                     |> Expect.equal (Just { questionIdx = 3, totalDings = 100, countdown = 42 })
         , test "IqAwaitingReady derives an inactive IQTestActiveScreen" <|
             \_ ->
                 { iqState | phase = IqAwaitingReady, dingCount = 3, totalDings = 100, questionIdx = 2 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1377,14 +1377,14 @@ deriveIqScreenSuite =
         , test "IqDingScheduled also derives an inactive IQTestActiveScreen" <|
             \_ ->
                 { iqState | phase = IqDingScheduled, dingCount = 3, totalDings = 100 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Maybe.map .isFlashing
                     |> Expect.equal (Just False)
         , test "IqDingShown with a real ding derives an active flash; loudPlaying kicks in at dingCount 4" <|
             \_ ->
                 { iqState | phase = IqDingShown, lastDing = RealDing, dingCount = 4, totalDings = 100 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1401,27 +1401,33 @@ deriveIqScreenSuite =
         , test "IqDingShown with a trap fake derives a fake flash with fakeIsTrap" <|
             \_ ->
                 { iqState | phase = IqDingShown, lastDing = TrapFake, dingCount = 1 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Maybe.map (\s -> ( s.dingActive, s.fakeFlashActive, s.fakeIsTrap ))
                     |> Expect.equal (Just ( False, True, True ))
         , test "IqDingShown with a phase fake derives a fake flash without fakeIsTrap" <|
             \_ ->
                 { iqState | phase = IqDingShown, lastDing = PhaseFake, dingCount = 1 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Maybe.map (\s -> ( s.fakeFlashActive, s.fakeIsTrap ))
                     |> Expect.equal (Just ( True, False ))
-        , test "IqIdleNotStarted derives an IQTestScreen" <|
+        , test "IqIdleNotStarted derives an IQTestScreen, with no pending skip offer when there's no grant" <|
             \_ ->
                 { iqState | phase = IqIdleNotStarted, questionIdx = 2, totalDings = 100 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestScreenState) >> Result.toMaybe)
-                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100 })
-        , test "IqIdleCaught derives a FakeFlashCaughtScreen restarted at FfDelay" <|
+                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing })
+        , test "IqIdleNotStarted derives a pending skip offer when a grant is live (issue #93 reconnect fix)" <|
+            \_ ->
+                { iqState | phase = IqIdleNotStarted, questionIdx = 2, totalDings = 100 }
+                    |> deriveIqScreen True
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestScreenState) >> Result.toMaybe)
+                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100, pendingSkipOffer = Just 100 })
+        , test "IqIdleCaught derives a FakeFlashCaughtScreen restarted at FfDelay, with no skip offer when there's no grant" <|
             \_ ->
                 { iqState | phase = IqIdleCaught, questionIdx = 2, totalDings = 200 }
-                    |> deriveIqScreen
+                    |> deriveIqScreen False
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeFakeFlashCaughtState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1431,6 +1437,21 @@ deriveIqScreenSuite =
                             , displayDenominator = 100
                             , phase = IQTest.FfDelay
                             , skipOffer = Nothing
+                            }
+                        )
+        , test "IqIdleCaught derives a skip offer when a grant is live (twin reconnect fix)" <|
+            \_ ->
+                { iqState | phase = IqIdleCaught, questionIdx = 2, totalDings = 200 }
+                    |> deriveIqScreen True
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeFakeFlashCaughtState) >> Result.toMaybe)
+                    |> Expect.equal
+                        (Just
+                            { questionIdx = 2
+                            , originalTotal = 100
+                            , displayNumerator = 0
+                            , displayDenominator = 100
+                            , phase = IQTest.FfDelay
+                            , skipOffer = Just 200
                             }
                         )
         ]
@@ -1851,7 +1872,73 @@ stateRequestSuite =
                         update (stateRequestMsg "c1" "uuid1") staged
 
                     expectedInner =
-                        deriveIqScreen { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                        deriveIqScreen False { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                            |> Maybe.withDefault (Encode.object [])
+
+                    expectedWrapped =
+                        Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", expectedInner ) ]
+                in
+                cmd
+                    |> Expect.equal
+                        (Cmd.batch
+                            [ writeRegistry m.registry
+                            , sendToClient { clientId = "c1", payload = stateEnvelope expectedWrapped }
+                            , sendToClient { clientId = "c1", payload = timerSyncEnvelope 999999 }
+                            ]
+                        )
+        , test "a reconnect with a live, matching skip-offer grant re-derives IQTestScreen with pendingSkipOffer restored (issue #93 reconnect fix)" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.empty
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                            , iqOfferGrants = Dict.singleton "uuid1" 1
+                            , quizProgress = Dict.singleton "uuid1" 1
+                            , registry = [ { base | timerEndsAt = Just 999999 } ]
+                        }
+
+                    ( m, cmd ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    expectedInner =
+                        deriveIqScreen True { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                            |> Maybe.withDefault (Encode.object [])
+
+                    expectedWrapped =
+                        Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", expectedInner ) ]
+                in
+                cmd
+                    |> Expect.equal
+                        (Cmd.batch
+                            [ writeRegistry m.registry
+                            , sendToClient { clientId = "c1", payload = stateEnvelope expectedWrapped }
+                            , sendToClient { clientId = "c1", payload = timerSyncEnvelope 999999 }
+                            ]
+                        )
+        , test "a reconnect mid-cutscene with a live, matching skip-offer grant re-derives FakeFlashCaughtScreen with skipOffer restored (twin reconnect fix)" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.empty
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdleCaught, questionIdx = 1, totalDings = 100 }
+                            , iqOfferGrants = Dict.singleton "uuid1" 1
+                            , quizProgress = Dict.singleton "uuid1" 1
+                            , registry = [ { base | timerEndsAt = Just 999999 } ]
+                        }
+
+                    ( m, cmd ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    expectedInner =
+                        deriveIqScreen True { iqState | phase = IqIdleCaught, questionIdx = 1, totalDings = 100 }
                             |> Maybe.withDefault (Encode.object [])
 
                     expectedWrapped =
