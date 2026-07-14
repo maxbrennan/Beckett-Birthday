@@ -750,6 +750,26 @@ persistIqTimerInRegistry uuid maybeState registry =
     updateEntryIqTimer uuid (Maybe.map encodeIqTimerStateFull maybeState) registry
 
 
+{-| What "the player is no longer live" does to an in-flight IqTimerState,
+shared by every path that pauses a player's timer without them actively
+finishing the test (a plain disconnect, or an admin starting a state edit --
+see `ClientDisconnected` and `performStateEdit`). A ding shown and unresolved
+is rewound, not just paused: phase goes back to `IqDingScheduled` so the next
+resume (`resumeIqTimer`) replays `dingDelay`'s preserved wait and the ding
+re-fires as if it hadn't happened yet, rather than the player either dodging
+it or seeing it resent immediately. Every other phase just bumps `epoch` so
+any in-flight `Process.sleep` becomes a stale no-op when it fires, keeping
+every other field so a reconnect picks up exactly where they left off.
+-}
+pauseIqTimerState : IqTimerState -> IqTimerState
+pauseIqTimerState s =
+    if s.phase == IqDingShown then
+        { s | epoch = s.epoch + 1, phase = IqDingScheduled }
+
+    else
+        { s | epoch = s.epoch + 1 }
+
+
 {-| Record a live IqTimerState change both in-memory and in the registry (so it
 survives a restart). Returns the `writeRegistry` Cmd to batch alongside
 whatever else the caller already returns.
@@ -997,6 +1017,14 @@ encodeServerStateFields; there is no separate screen field, since it's always
 derived fresh from these), and move the admin into the EditingState stage
 (which authorizes the following distStateEditSave). Runs only from
 AuthCompleted (post level-2 auth).
+
+Applies `pauseIqTimerState` to a live `IqDingShown` entry itself, rather than
+relying on the disconnect this triggers to do it: `closeClient` below only
+requests the socket close, and the real `ClientDisconnected` that would
+otherwise run the same rewind arrives in a later, separate Msg. Without doing
+it here first, the admin would be handed the pre-rewind `IqDingShown`
+snapshot, and an unchanged save would overwrite the correct rewind right back
+to it once the real disconnect actually lands (issue #52).
 -}
 performStateEdit : String -> String -> Model -> ( Model, Cmd Msg )
 performStateEdit uuid clientId model =
@@ -1004,8 +1032,27 @@ performStateEdit uuid clientId model =
         maybePlayerClientId =
             Dict.get uuid model.connectedPlayers
 
+        maybePausedIqTimer =
+            Dict.get uuid model.iqTimers |> Maybe.map pauseIqTimerState
+
+        pausedIqTimers =
+            case maybePausedIqTimer of
+                Just paused ->
+                    Dict.insert uuid paused model.iqTimers
+
+                Nothing ->
+                    model.iqTimers
+
+        registryWithPausedIqTimer =
+            case maybePausedIqTimer of
+                Just paused ->
+                    persistIqTimerInRegistry uuid (Just paused) model.registry
+
+                Nothing ->
+                    model.registry
+
         maybeEntry =
-            model.registry |> List.filter (\e -> e.uuid == uuid) |> List.head
+            registryWithPausedIqTimer |> List.filter (\e -> e.uuid == uuid) |> List.head
 
         currentState =
             case maybeEntry of
@@ -1024,10 +1071,11 @@ performStateEdit uuid clientId model =
                     Encode.object []
 
         newRegistry =
-            setPendingStateEdit uuid model.registry
+            setPendingStateEdit uuid registryWithPausedIqTimer
     in
     ( { model
-        | pendingStateEdits = Set.insert uuid model.pendingStateEdits
+        | iqTimers = pausedIqTimers
+        , pendingStateEdits = Set.insert uuid model.pendingStateEdits
         , registry = newRegistry
         , distClients = Dict.insert clientId (EditingState uuid) model.distClients
       }
@@ -1097,13 +1145,7 @@ update msg model =
                     case Dict.get uuid model.iqTimers of
                         Just s ->
                             if s.phase == IqDingShown then
-                                -- Disconnecting while a ding is shown and unresolved
-                                -- rewinds it, not just pauses it: phase goes back to
-                                -- IqDingScheduled so the resume (resumeIqTimer) replays
-                                -- dingDelay's preserved wait and the ding re-fires as if
-                                -- it hadn't happened yet, rather than the player either
-                                -- dodging it or seeing it resent immediately.
-                                setIqTimer uuid { s | epoch = s.epoch + 1, phase = IqDingScheduled } baseModel
+                                setIqTimer uuid (pauseIqTimerState s) baseModel
 
                             else
                                 -- Pause (don't drop) the live IQ timer: bump its epoch
@@ -1111,7 +1153,7 @@ update msg model =
                                 -- when it fires, but keep every other field so a
                                 -- reconnect (ClientIqResume) picks up exactly where
                                 -- they left off.
-                                ( { baseModel | iqTimers = Dict.insert uuid { s | epoch = s.epoch + 1 } model.iqTimers }, Cmd.none )
+                                ( { baseModel | iqTimers = Dict.insert uuid (pauseIqTimerState s) model.iqTimers }, Cmd.none )
 
                         Nothing ->
                             ( baseModel, Cmd.none )

@@ -138,4 +138,85 @@ describe('edit state', () => {
         });
         expect(entry.quizProgress).toBe(2);
     }, 10000);
+
+    // Issue #52: starting edit:state while a ding is actively shown to a connected
+    // player must not let an unchanged save clobber the disconnect-triggered rewind
+    // (IqDingShown -> IqDingScheduled, see #63) with the pre-rewind snapshot.
+    // performStateEdit reads the player's state *before* closeClient's kick actually
+    // reaches ClientDisconnected (a separate, later message) -- without its own
+    // proactive rewind, the admin would be handed (and could resave) a stale
+    // "IqDingShown" snapshot, resurrecting the already-cleared ding on reconnect.
+    test('an unchanged edit:state save while a ding is showing does not resurrect it on reconnect', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'Ryan Birthday-3.0.3-universal.dmg',
+        });
+
+        const shownIqTimer = {
+            epoch: 1,
+            phase: 'IqDingShown',
+            questionIdx: 0,
+            countdownRemaining: 0,
+            dingCount: 3,
+            totalDings: 100,
+            fakeFlashPoint: 9999,
+            fakeFlashUsed: false,
+            in50PercentPhase: false,
+            lastDing: 'RealDing',
+            dingDelay: 6.5,
+        };
+
+        // Stage the ding as already showing, before any player connects.
+        {
+            const { conn, json } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
+            const edited = { ...JSON.parse(json), iqTimer: shownIqTimer };
+            const saveResult = await distClient.saveStateEdit(conn, build.uuid, JSON.stringify(edited));
+            expect(saveResult.payload).toBe('distStateEditSaveAck');
+            await conn.close();
+        }
+
+        // Connect as the player: the server derives the ding actively flashing.
+        const { conn: playerConn, result: firstState } = await connectAsPlayer(TEST_PORT, build.uuid);
+        const firstScreen = JSON.parse(firstState.stateUpdate.json);
+        expect(firstScreen.nextScreen.tag).toBe('IQTestActiveScreen');
+        expect(firstScreen.nextScreen.state.isFlashing).toBe(true);
+        expect(firstScreen.nextScreen.state.dingActive).toBe(true);
+        expect(firstScreen.nextScreen.state.dingCount).toBe(3);
+
+        // Admin starts edit:state while the player is still connected and mid-ding.
+        // This kicks the player (playerConn closes) -- the fix means the snapshot
+        // handed back here is already rewound, not the raw IqDingShown above.
+        const { authResult, conn: adminConn, json } = await distClient.requestStateEdit(TEST_PORT, admin, build.uuid);
+        expect(authResult.success).toBe(true);
+        const fetched = JSON.parse(json);
+        expect(fetched.iqTimer.phase).toBe('IqDingScheduled');
+        expect(fetched.iqTimer.dingDelay).toBe(6.5);
+        expect(fetched.iqTimer.dingCount).toBe(3);
+
+        await playerConn.closed();
+
+        // Make no changes and save.
+        const saveResult = await distClient.saveStateEdit(adminConn, build.uuid, JSON.stringify(fetched));
+        expect(saveResult.payload).toBe('distStateEditSaveAck');
+        await adminConn.close();
+
+        // Reconnect as the same player: the ding must not still be showing, and the
+        // count must be exactly what it was before -- not resent/re-counted.
+        const { conn: reconnected, result: secondState } = await connectAsPlayer(TEST_PORT, build.uuid);
+        try {
+            const secondScreen = JSON.parse(secondState.stateUpdate.json);
+            expect(secondScreen.nextScreen.tag).toBe('IQTestActiveScreen');
+            expect(secondScreen.nextScreen.state.isFlashing).toBe(false);
+            expect(secondScreen.nextScreen.state.dingActive).toBe(false);
+            expect(secondScreen.nextScreen.state.dingCount).toBe(3);
+        } finally {
+            await reconnected.close();
+        }
+
+        const entry = await waitUntil(() => {
+            const e = readRegistry().find((row) => row.uuid === build.uuid);
+            return e && e.iqTimer && e.iqTimer.phase === 'IqDingScheduled' ? e : null;
+        });
+        expect(entry.iqTimer.dingCount).toBe(3);
+    }, 15000);
 });
