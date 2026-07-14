@@ -139,7 +139,9 @@ describe('IQ-test one-time skip offer', () => {
         const decision = await conn.waitFor((m) => m.payload === 'iqOfferDecision');
         expect(decision.iqOfferDecision.granted).toBe(false);
 
-        const entry = readRegistry().find((e) => e.uuid === build.uuid);
+        // The ack and the registry write aren't sequenced relative to each other (see
+        // waitUntil's doc comment) -- poll rather than assume the write already landed.
+        const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
         expect(entry.iqOfferUsed).toBe(false);
 
         await conn.close();
