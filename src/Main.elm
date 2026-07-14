@@ -769,6 +769,18 @@ update msg model =
                         WinScreen _ ->
                             ( { model | screen = WinScreen winText }, Cmd.none )
 
+                        -- The wrong-answer -> IQ-test-penalty -> pass path
+                        -- (ServerIqTestComplete / IQSkipAnimNextPhase's
+                        -- SkipCounterOut) advances straight to BlankScreen
+                        -- nextIdx without checking whether nextIdx is in
+                        -- range, so on the last question it strands the
+                        -- player there with no song to play. winText only
+                        -- ever arrives once the server's own tally confirms
+                        -- quizJustCompleted, so honoring it here can't
+                        -- misfire on a legitimate mid-quiz BlankScreen.
+                        BlankScreen _ ->
+                            ( { model | screen = WinScreen winText }, Cmd.none )
+
                         _ ->
                             ( model, Cmd.none )
 

@@ -1445,13 +1445,20 @@ wsDataReceivedSuite =
                         update (WsDataReceived """{"payload":"winText","winText":{"text":"yay"}}""") { baseModel | screen = WinScreen "" }
                 in
                 result.screen |> Expect.equal (WinScreen "yay")
+        , test "winText on BlankScreen reveals the win screen (stuck after IQ-test penalty on the last question)" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"winText","winText":{"text":"yay"}}""") { baseModel | screen = BlankScreen 3 }
+                in
+                result.screen |> Expect.equal (WinScreen "yay")
         , test "winText elsewhere is ignored" <|
             \_ ->
                 let
                     ( result, _ ) =
-                        update (WsDataReceived """{"payload":"winText","winText":{"text":"yay"}}""") { baseModel | screen = BlankScreen 0 }
+                        update (WsDataReceived """{"payload":"winText","winText":{"text":"yay"}}""") { baseModel | screen = QuestionScreen 0 "" }
                 in
-                result.screen |> Expect.equal (BlankScreen 0)
+                result.screen |> Expect.equal (QuestionScreen 0 "")
         , test "iqCountdownTick updates the displayed countdown" <|
             \_ ->
                 let
