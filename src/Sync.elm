@@ -22,7 +22,7 @@ type ServerEnvelope
     | ServerIqTestComplete
     | ServerQuizAnswerResult { idx : Int, correct : Bool, revealAnswer : String }
     | ServerQuizSongEndedAck Int
-    | ServerIqOfferDecision { granted : Bool, totalDings : Int }
+    | ServerIqOfferDecision { granted : Bool, totalDings : Int, isLastChance : Bool }
     | ServerTimerSync Float
     | ServerTimedOut
     | ServerUnknown
@@ -95,12 +95,15 @@ decodeServerEnvelope =
                             |> Decode.map ServerQuizSongEndedAck
 
                     "iqOfferDecision" ->
-                        Decode.map2
-                            (\granted totalDings -> ServerIqOfferDecision { granted = granted, totalDings = totalDings })
+                        Decode.map3
+                            (\granted totalDings isLastChance -> ServerIqOfferDecision { granted = granted, totalDings = totalDings, isLastChance = isLastChance })
                             -- protobufjs omits default (false) scalar fields, so granted
                             -- may be absent; treat a missing flag as false (denied).
                             (Decode.oneOf [ Decode.at [ "iqOfferDecision", "granted" ] Decode.bool, Decode.succeed False ])
                             (Decode.oneOf [ Decode.at [ "iqOfferDecision", "totalDings" ] Decode.int, Decode.succeed 0 ])
+                            -- protobufjs omits default (false) scalar fields, so
+                            -- isLastChance may be absent; treat a missing flag as false.
+                            (Decode.oneOf [ Decode.at [ "iqOfferDecision", "isLastChance" ] Decode.bool, Decode.succeed False ])
 
                     "timerSync" ->
                         -- protobufjs omits a scalar field left at its zero value, but
@@ -273,6 +276,7 @@ encodeIQTestScreenState s =
         [ ( "questionIdx", Encode.int s.questionIdx )
         , ( "totalDings", Encode.int s.totalDings )
         , ( "pendingSkipOffer", s.pendingSkipOffer |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
+        , ( "offerIsLastChance", Encode.bool s.offerIsLastChance )
         ]
 
 
@@ -308,7 +312,59 @@ encodeFakeFlashCaughtState s =
         , ( "displayDenominator", Encode.int s.displayDenominator )
         , ( "phase", encodeFakeFlashPhase s.phase )
         , ( "skipOffer", s.skipOffer |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
+        , ( "offerIsLastChance", Encode.bool s.offerIsLastChance )
         ]
+
+
+encodeOfferGrantTrigger : OfferGrantTrigger -> Encode.Value
+encodeOfferGrantTrigger trigger =
+    Encode.string <|
+        case trigger of
+            FailTrigger ->
+                "fail"
+
+            CatchTrigger ->
+                "catch"
+
+
+-- The local offer-grant cache file's whole contents (see CachedOfferGrant's doc
+-- comment) -- unlike every other codec in this module, this never goes over the
+-- wire, only to/from local disk via Main.elm's writeFile/readFile ports.
+encodeCachedOfferGrant : CachedOfferGrant -> Encode.Value
+encodeCachedOfferGrant grant =
+    Encode.object
+        [ ( "questionIdx", Encode.int grant.questionIdx )
+        , ( "totalDings", Encode.int grant.totalDings )
+        , ( "trigger", encodeOfferGrantTrigger grant.trigger )
+        , ( "offerIsLastChance", Encode.bool grant.offerIsLastChance )
+        ]
+
+
+decodeOfferGrantTrigger : Decoder OfferGrantTrigger
+decodeOfferGrantTrigger =
+    Decode.string
+        |> Decode.andThen
+            (\s ->
+                case s of
+                    "fail" ->
+                        Decode.succeed FailTrigger
+
+                    "catch" ->
+                        Decode.succeed CatchTrigger
+
+                    _ ->
+                        Decode.fail ("unknown OfferGrantTrigger: " ++ s)
+            )
+
+
+decodeCachedOfferGrant : Decoder CachedOfferGrant
+decodeCachedOfferGrant =
+    Decode.map4
+        (\qi td trigger lastChance -> { questionIdx = qi, totalDings = td, trigger = trigger, offerIsLastChance = lastChance })
+        (Decode.field "questionIdx" Decode.int)
+        (Decode.field "totalDings" Decode.int)
+        (Decode.field "trigger" decodeOfferGrantTrigger)
+        (Decode.field "offerIsLastChance" Decode.bool)
 
 
 encodeScreen : Screen -> Encode.Value
@@ -501,15 +557,17 @@ decodeIQTestScreenState : Decoder IQTestScreenState
 decodeIQTestScreenState =
     Decode.map2
         (\qi td ->
-            \pendingSkipOffer -> { questionIdx = qi, totalDings = td, pendingSkipOffer = pendingSkipOffer }
+            \pendingSkipOffer offerIsLastChance -> { questionIdx = qi, totalDings = td, pendingSkipOffer = pendingSkipOffer, offerIsLastChance = offerIsLastChance }
         )
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "totalDings" Decode.int)
         |> Decode.andThen
             (\partial ->
-                -- older persisted rows predate this field; treat missing as Nothing.
-                Decode.map partial
+                Decode.map2 partial
+                    -- older persisted rows predate this field; treat missing as Nothing.
                     (Decode.oneOf [ Decode.field "pendingSkipOffer" (Decode.nullable Decode.int), Decode.succeed Nothing ])
+                    -- older persisted rows predate this field; treat missing as False.
+                    (Decode.oneOf [ Decode.field "offerIsLastChance" Decode.bool, Decode.succeed False ])
             )
 
 
@@ -544,8 +602,8 @@ decodeFakeFlashCaughtState : Decoder FakeFlashCaughtState
 decodeFakeFlashCaughtState =
     Decode.map5
         (\qi ot dn dd ph ->
-            \skipOffer ->
-                { questionIdx = qi, originalTotal = ot, displayNumerator = dn, displayDenominator = dd, phase = ph, skipOffer = skipOffer }
+            \skipOffer offerIsLastChance ->
+                { questionIdx = qi, originalTotal = ot, displayNumerator = dn, displayDenominator = dd, phase = ph, skipOffer = skipOffer, offerIsLastChance = offerIsLastChance }
         )
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "originalTotal" Decode.int)
@@ -554,10 +612,12 @@ decodeFakeFlashCaughtState =
         (Decode.field "phase" decodeFakeFlashPhase)
         |> Decode.andThen
             (\partial ->
-                -- older persisted rows predate this field; treat missing as Nothing (no
-                -- decision yet/denied).
-                Decode.map partial
+                Decode.map2 partial
+                    -- older persisted rows predate this field; treat missing as Nothing (no
+                    -- decision yet/denied).
                     (Decode.oneOf [ Decode.field "skipOffer" (Decode.nullable Decode.int), Decode.succeed Nothing ])
+                    -- older persisted rows predate this field; treat missing as False.
+                    (Decode.oneOf [ Decode.field "offerIsLastChance" Decode.bool, Decode.succeed False ])
             )
 
 

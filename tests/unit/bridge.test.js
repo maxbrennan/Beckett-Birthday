@@ -4,7 +4,7 @@
 // Elm.init/port-wiring block when `document` exists (see the require.main-style guard
 // in client/bridge.js) — under plain Jest/Node there's no DOM, so requiring it here
 // only exposes the pure helpers below.
-const { computeWsUrl, resolveReadFilePath, decodeIncomingWsMessage, handleReadFileResult, handleReadDirResult } = require('../../client/bridge.js');
+const { computeWsUrl, resolveReadFilePath, decodeIncomingWsMessage, handleReadFileResult, handleReadDirResult, handleWriteCacheFileResult } = require('../../client/bridge.js');
 
 describe('computeWsUrl', () => {
     test('dev mode always uses localhost regardless of PROD_SERVER_HOST', () => {
@@ -72,5 +72,17 @@ describe('handleReadDirResult', () => {
     test('a null file list from fs.readdir defaults to empty', () => {
         expect(handleReadDirResult(null, null, 'assets/songs'))
             .toEqual({ path: 'assets/songs', files: [], error: null });
+    });
+});
+
+describe('handleWriteCacheFileResult', () => {
+    test('maps a write error to an error result', () => {
+        expect(handleWriteCacheFileResult(new Error('EACCES'), 'iq-offer-grant.json'))
+            .toEqual({ path: 'iq-offer-grant.json', ok: false, error: 'EACCES' });
+    });
+
+    test('maps a successful write to an ok result', () => {
+        expect(handleWriteCacheFileResult(null, 'iq-offer-grant.json'))
+            .toEqual({ path: 'iq-offer-grant.json', ok: true, error: null });
     });
 });

@@ -653,7 +653,7 @@ viewNonBeginScreen model =
                     [ text "But there was no ding..." ]
                 ]
 
-        IQTestSkipOfferScreen _ ->
+        IQTestSkipOfferScreen state ->
             let
                 offerButton label msg =
                     button
@@ -696,7 +696,13 @@ viewNonBeginScreen model =
                     , style "line-height" "1.6"
                     , style "font-weight" "bold"
                     ]
-                    [ text "This offer is made only once. If you decline, it will not come back." ]
+                    [ text <|
+                        if state.offerIsLastChance then
+                            "This offer is made only once. If you decline, it will not come back."
+
+                        else
+                            "If you decline, this particular offer will not come back — but you may receive an offer like this one more time later."
+                    ]
                 , div
                     [ style "display" "flex"
                     , style "gap" "24px"

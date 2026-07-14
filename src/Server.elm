@@ -48,12 +48,12 @@ type alias Model =
 
     -- Per-uuid: a granted-but-not-yet-consumed IQ-test skip offer, mapping to the
     -- exact questionIdx it was granted for (see decideIqOffer / ClientIqFailed /
-    -- ClientIqCaught). In memory only, deliberately never persisted: a reconnect
-    -- always re-derives IQTestScreen/FakeFlashCaughtScreen fresh via deriveIqScreen,
-    -- which can't reconstruct the transient offer/anim screens anyway, so there's
-    -- nothing worth surviving a restart for -- same rationale as quizSongEnded above.
-    -- Consumed by ClientQuizAdvanced when accepted (see the bypass there), or
-    -- released by ClientIqOfferDeclined when declined.
+    -- ClientIqCaught). Mirrored durably in RegistryEntry.iqOfferGrant so a server
+    -- restart doesn't strand an outstanding grant -- see init/FileRead's
+    -- rehydratedIqOfferGrants and persistIqOfferGrantInRegistry, called alongside
+    -- every insert/remove here so the two never drift. Consumed by ClientQuizAdvanced
+    -- when accepted (see the bypass there), or released by ClientIqOfferDeclined when
+    -- declined.
     , iqOfferGrants : Dict String Int
     }
 
@@ -247,17 +247,37 @@ applyCatch s =
 
 
 {-| Decide whether a qualifying fail (ClientIqFailed) or trap catch (ClientIqCaught)
-grants the one-time skip offer: the build must not have it config-disabled, this
-player must not have already been granted it once before (ever, regardless of
-accept/decline -- see RegistryEntry.iqOfferUsed), and the run must have cleared at
+grants this trigger's one-time skip offer: the build must not have it
+config-disabled, this player must not have already been granted *this trigger's*
+offer once before (ever, regardless of accept/decline -- see
+RegistryEntry.iqOfferUsedFail/iqOfferUsedCatch), and the run must have cleared at
 least iqOfferMinDings real dings. totalDings always echoes back the count at the
 moment of the fail/catch (already-doubled for a catch, since the caller passes
 `applyCatch`'s output) so the caller can render the right N either way.
+
+Each of the two triggers grants independently -- `thisTriggerUsed`/`otherTriggerUsed`
+are the caller's own trigger's flag and the *other* trigger's flag, respectively (see
+the two call sites). `isLastChance` is true iff this grant is the second-ever: since
+each trigger can grant at most once in a player's lifetime, "the other trigger already
+fired" at the moment this one grants is exactly "this is the last of the (at most) two
+offers this player will ever see."
 -}
-decideIqOffer : { dingCountAtFail : Int, totalDingsAtFail : Int, offerDisabled : Bool, offerUsed : Bool } -> { granted : Bool, totalDings : Int }
-decideIqOffer { dingCountAtFail, totalDingsAtFail, offerDisabled, offerUsed } =
-    { granted = not offerDisabled && not offerUsed && dingCountAtFail >= IQTest.iqOfferMinDings
+decideIqOffer :
+    { dingCountAtFail : Int
+    , totalDingsAtFail : Int
+    , offerDisabled : Bool
+    , thisTriggerUsed : Bool
+    , otherTriggerUsed : Bool
+    }
+    -> { granted : Bool, totalDings : Int, isLastChance : Bool }
+decideIqOffer { dingCountAtFail, totalDingsAtFail, offerDisabled, thisTriggerUsed, otherTriggerUsed } =
+    let
+        granted =
+            not offerDisabled && not thisTriggerUsed && dingCountAtFail >= IQTest.iqOfferMinDings
+    in
+    { granted = granted
     , totalDings = totalDingsAtFail
+    , isLastChance = granted && otherTriggerUsed
     }
 
 
@@ -481,9 +501,17 @@ strand the grant: without this, `IQTestBeginPressed`/`IQSkipOfferAccepted`
 never message the server, so the grant would otherwise survive server-side
 while every re-derived screen forgot about it, permanently blocking the
 `ClientIqStartCountdown` guard.
+
+`offerIsLastChance` (true iff *both* `RegistryEntry.iqOfferUsedFail`/
+`iqOfferUsedCatch` are true for this player -- see the caller) reproduces, at
+reconnect time, the same "is this the second-ever grant" fact `decideIqOffer`
+computed at grant time (see its `isLastChance`): since each trigger grants at
+most once ever, and the flags never clear except an explicit admin edit, both
+being true at any point after a grant is equivalent to "the other trigger had
+already fired when this one granted."
 -}
-deriveIqScreen : Bool -> IqTimerState -> Maybe Encode.Value
-deriveIqScreen hasSkipOfferGrant state =
+deriveIqScreen : { hasSkipOfferGrant : Bool, offerIsLastChance : Bool } -> IqTimerState -> Maybe Encode.Value
+deriveIqScreen { hasSkipOfferGrant, offerIsLastChance } state =
     case state.phase of
         IqCounting ->
             Just <|
@@ -528,6 +556,7 @@ deriveIqScreen hasSkipOfferGrant state =
                                 else
                                     Encode.null
                               )
+                            , ( "offerIsLastChance", Encode.bool offerIsLastChance )
                             ]
                       )
                     ]
@@ -560,6 +589,7 @@ deriveIqScreen hasSkipOfferGrant state =
                                 else
                                     Encode.null
                               )
+                            , ( "offerIsLastChance", Encode.bool offerIsLastChance )
                             ]
                       )
                     ]
@@ -748,6 +778,18 @@ synthesized fresh at connect time from this field (see `ClientStateRequest`);
 persistIqTimerInRegistry : String -> Maybe IqTimerState -> List RegistryEntry -> List RegistryEntry
 persistIqTimerInRegistry uuid maybeState registry =
     updateEntryIqTimer uuid (Maybe.map encodeIqTimerStateFull maybeState) registry
+
+
+{-| Projects one player's live skip-offer grant (the questionIdx it's held
+against, mirroring `Model.iqOfferGrants`) onto their registry row's
+`iqOfferGrant` field, the same shape of helper as `persistIqTimerInRegistry`
+just above -- so `init`/`FileRead` can rehydrate `iqOfferGrants` after a
+restart instead of silently stranding an outstanding grant. `Nothing` clears
+it (consumed via accept, or released via decline).
+-}
+persistIqOfferGrantInRegistry : String -> Maybe Int -> List RegistryEntry -> List RegistryEntry
+persistIqOfferGrantInRegistry uuid maybeQuestionIdx registry =
+    updateEntryIqOfferGrant uuid maybeQuestionIdx registry
 
 
 {-| What "the player is no longer live" does to an in-flight IqTimerState,
@@ -1063,7 +1105,9 @@ performStateEdit uuid clientId model =
                         , quizProgress = entry.quizProgress
                         , timerEndsAt = entry.timerEndsAt
                         , quizQuestions = entry.quizQuestions
-                        , iqOfferUsed = entry.iqOfferUsed
+                        , iqOfferUsedFail = entry.iqOfferUsedFail
+                        , iqOfferUsedCatch = entry.iqOfferUsedCatch
+                        , iqOfferGrant = entry.iqOfferGrant
                         , quizSongEndedIdx = entry.quizSongEndedIdx
                         }
 
@@ -1244,7 +1288,9 @@ update msg model =
                                             case Dict.get uuid model.iqTimers of
                                                 Just iqState ->
                                                     deriveIqScreen
-                                                        (Dict.get uuid model.iqOfferGrants == Just iqState.questionIdx)
+                                                        { hasSkipOfferGrant = Dict.get uuid model.iqOfferGrants == Just iqState.questionIdx
+                                                        , offerIsLastChance = entry.iqOfferUsedFail && entry.iqOfferUsedCatch
+                                                        }
                                                         iqState
 
                                                 Nothing ->
@@ -1354,7 +1400,9 @@ update msg model =
                                             -- iqOfferDisabled.
                                             , quizQuestions = Nothing
                                             , iqOfferDisabled = False
-                                            , iqOfferUsed = False
+                                            , iqOfferUsedFail = False
+                                            , iqOfferUsedCatch = False
+                                            , iqOfferGrant = Nothing
                                             , quizSongEndedIdx = Nothing
                                             }
 
@@ -1398,7 +1446,9 @@ update msg model =
                                         , timerEndsAt = Nothing
                                         , quizQuestions = Just quizQuestions
                                         , iqOfferDisabled = iqOfferDisabled
-                                        , iqOfferUsed = False
+                                        , iqOfferUsedFail = False
+                                        , iqOfferUsedCatch = False
+                                        , iqOfferGrant = Nothing
                                         , quizSongEndedIdx = Nothing
                                         }
 
@@ -1457,7 +1507,9 @@ update msg model =
                                                                 , quizProgress = edited.quizProgress
                                                                 , timerEndsAt = edited.timerEndsAt
                                                                 , quizQuestions = edited.quizQuestions
-                                                                , iqOfferUsed = edited.iqOfferUsed
+                                                                , iqOfferUsedFail = edited.iqOfferUsedFail
+                                                                , iqOfferUsedCatch = edited.iqOfferUsedCatch
+                                                                , iqOfferGrant = edited.iqOfferGrant
                                                                 , quizSongEndedIdx = edited.quizSongEndedIdx
                                                             }
 
@@ -1484,11 +1536,24 @@ update msg model =
 
                                                 Nothing ->
                                                     Dict.remove editUuid model.iqTimers
+
+                                        -- Same rationale as newQuizProgress/newIqTimers above: an
+                                        -- admin-edited grant must also update the live in-memory
+                                        -- Model.iqOfferGrants -- the actual authority while a player
+                                        -- is connected -- not just the registry.
+                                        newIqOfferGrants =
+                                            case edited.iqOfferGrant of
+                                                Just questionIdx ->
+                                                    Dict.insert editUuid questionIdx model.iqOfferGrants
+
+                                                Nothing ->
+                                                    Dict.remove editUuid model.iqOfferGrants
                                     in
                                     ( { model
                                         | registry = newRegistry
                                         , quizProgress = newQuizProgress
                                         , iqTimers = newIqTimers
+                                        , iqOfferGrants = newIqOfferGrants
                                         , pendingStateEdits = Set.remove editUuid model.pendingStateEdits
                                         , distClients = clearedDist
                                       }
@@ -1552,11 +1617,16 @@ update msg model =
                                         -- extra time on the 7-day clock.
                                         , timerEndsAt = oldEntry |> Maybe.andThen .timerEndsAt
 
-                                        -- The one-time-ever skip-offer-granted fact is the real
+                                        -- The one-time-ever skip-offer-granted facts are the real
                                         -- player's permanent state, not per-build authoring -- carry
-                                        -- it forward like iqTimer/quizProgress/timerEndsAt above, not
-                                        -- reset it like winText/quizQuestions/iqOfferDisabled above.
-                                        , iqOfferUsed = oldEntry |> Maybe.map .iqOfferUsed |> Maybe.withDefault False
+                                        -- them forward like iqTimer/quizProgress/timerEndsAt above,
+                                        -- not reset them like winText/quizQuestions/iqOfferDisabled
+                                        -- above. Same for a still-outstanding grant itself (iqOfferGrant)
+                                        -- -- an unresolved offer shouldn't be silently forgotten just
+                                        -- because the build was replaced.
+                                        , iqOfferUsedFail = oldEntry |> Maybe.map .iqOfferUsedFail |> Maybe.withDefault False
+                                        , iqOfferUsedCatch = oldEntry |> Maybe.map .iqOfferUsedCatch |> Maybe.withDefault False
+                                        , iqOfferGrant = oldEntry |> Maybe.andThen .iqOfferGrant
 
                                         -- Same rationale as quizProgress above: whether the player
                                         -- already heard the song for their current question is real
@@ -1720,7 +1790,8 @@ update msg model =
                                                     { dingCountAtFail = state.dingCount
                                                     , totalDingsAtFail = caught.totalDings
                                                     , offerDisabled = offerEntry |> Maybe.map .iqOfferDisabled |> Maybe.withDefault False
-                                                    , offerUsed = offerEntry |> Maybe.map .iqOfferUsed |> Maybe.withDefault False
+                                                    , thisTriggerUsed = offerEntry |> Maybe.map .iqOfferUsedCatch |> Maybe.withDefault False
+                                                    , otherTriggerUsed = offerEntry |> Maybe.map .iqOfferUsedFail |> Maybe.withDefault False
                                                     }
 
                                             registryWithTimer =
@@ -1728,7 +1799,8 @@ update msg model =
 
                                             finalRegistry =
                                                 if decision.granted then
-                                                    updateEntryIqOfferUsed uuid registryWithTimer
+                                                    updateEntryIqOfferUsedCatch uuid registryWithTimer
+                                                        |> persistIqOfferGrantInRegistry uuid (Just state.questionIdx)
 
                                                 else
                                                     registryWithTimer
@@ -1800,7 +1872,8 @@ update msg model =
                                                     { dingCountAtFail = state.dingCount
                                                     , totalDingsAtFail = state.totalDings
                                                     , offerDisabled = offerEntry |> Maybe.map .iqOfferDisabled |> Maybe.withDefault False
-                                                    , offerUsed = offerEntry |> Maybe.map .iqOfferUsed |> Maybe.withDefault False
+                                                    , thisTriggerUsed = offerEntry |> Maybe.map .iqOfferUsedFail |> Maybe.withDefault False
+                                                    , otherTriggerUsed = offerEntry |> Maybe.map .iqOfferUsedCatch |> Maybe.withDefault False
                                                     }
 
                                             registryWithTimer =
@@ -1808,7 +1881,8 @@ update msg model =
 
                                             finalRegistry =
                                                 if decision.granted then
-                                                    updateEntryIqOfferUsed uuid registryWithTimer
+                                                    updateEntryIqOfferUsedFail uuid registryWithTimer
+                                                        |> persistIqOfferGrantInRegistry uuid (Just state.questionIdx)
 
                                                 else
                                                     registryWithTimer
@@ -1848,7 +1922,13 @@ update msg model =
                             ( model, Cmd.none )
 
                         Just uuid ->
-                            ( { model | iqOfferGrants = Dict.remove uuid model.iqOfferGrants }, Cmd.none )
+                            let
+                                newRegistry =
+                                    persistIqOfferGrantInRegistry uuid Nothing model.registry
+                            in
+                            ( { model | iqOfferGrants = Dict.remove uuid model.iqOfferGrants, registry = newRegistry }
+                            , writeRegistry newRegistry
+                            )
 
                 Ok (ClientQuizSongEnded idx) ->
                     -- "The song/video for question idx just finished playing." Accepted
@@ -1931,7 +2011,9 @@ update msg model =
                                             { model
                                                 | iqTimers = Dict.remove uuid model.iqTimers
                                                 , iqOfferGrants = Dict.remove uuid model.iqOfferGrants
-                                                , registry = persistIqTimerInRegistry uuid Nothing model.registry
+                                                , registry =
+                                                    persistIqTimerInRegistry uuid Nothing model.registry
+                                                        |> persistIqOfferGrantInRegistry uuid Nothing
                                             }
 
                                         else
@@ -2196,12 +2278,25 @@ update msg model =
                                 parsedRegistry
                                     |> List.map (\e -> ( e.uuid, e.quizProgress ))
                                     |> Dict.fromList
+
+                            -- Rehydrate any outstanding skip-offer grant the same way (see
+                            -- RegistryEntry.iqOfferGrant / persistIqOfferGrantInRegistry), so a
+                            -- restart doesn't strand a player who was granted but hadn't yet
+                            -- consumed/declined the offer. No epoch/pause concern here (that's
+                            -- an iqTimers-only concept) -- the grant is just a questionIdx keyed
+                            -- by uuid, checked for equality against whatever iqTimers also
+                            -- rehydrates to above.
+                            rehydratedIqOfferGrants =
+                                parsedRegistry
+                                    |> List.filterMap (\e -> e.iqOfferGrant |> Maybe.map (\idx -> ( e.uuid, idx )))
+                                    |> Dict.fromList
                         in
                         ( { model
                             | registry = parsedRegistry
                             , pendingStateEdits = rehydratedPendingStateEdits
                             , iqTimers = rehydratedIqTimers
                             , quizProgress = rehydratedQuizProgress
+                            , iqOfferGrants = rehydratedIqOfferGrants
                           }
                         , Cmd.none
                         )

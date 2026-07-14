@@ -32,7 +32,18 @@ function handleReadDirResult(err, files, dirPath) {
     : { path: dirPath, files: files || [], error: null }
 }
 
-module.exports = { computeWsUrl, resolveReadFilePath, decodeIncomingWsMessage, handleReadFileResult, handleReadDirResult }
+// Mirrors server/index.js's writeFile port handler, minus its write queue -- this
+// is only ever used for the local IQ-offer-grant cache (a single small file with
+// no concurrent writers, and a pure rendering accelerator, not authoritative
+// state -- see Main.elm's offerGrantCachePath), so a rare interleaved write just
+// means a stale cache that self-heals on the next successful server reconcile.
+// Named writeCacheFile (not writeFile) to avoid an elm-test port-name collision
+// with Server.elm's own writeFile port -- see Main.elm's port declaration comment.
+function handleWriteCacheFileResult(err, filePath) {
+  return { path: filePath, ok: !err, error: err ? err.message : null }
+}
+
+module.exports = { computeWsUrl, resolveReadFilePath, decodeIncomingWsMessage, handleReadFileResult, handleReadDirResult, handleWriteCacheFileResult }
 
 // Loaded via a plain <script src="client/bridge.js"> tag in index.html (nodeIntegration
 // on, contextIsolation off) rather than as a required CommonJS module — Electron resolves
@@ -133,6 +144,16 @@ if (typeof document !== 'undefined') {
     const fullPath = resolveReadFilePath(dirPath, __dirname)
     fs.readdir(fullPath, (err, files) => {
       app.ports.readDirResult.send(handleReadDirResult(err, files, dirPath))
+    })
+  })
+
+  app.ports.writeCacheFile.subscribe(({ path: filePath, contents, encoding, append }) => {
+    const fullPath = resolveReadFilePath(filePath, __dirname)
+    fs.mkdir(path.dirname(fullPath), { recursive: true }, () => {
+      const writer = append ? fs.appendFile : fs.writeFile
+      writer(fullPath, contents, encoding, (err) => {
+        app.ports.writeCacheFileResult.send(handleWriteCacheFileResult(err, filePath))
+      })
     })
   })
 }

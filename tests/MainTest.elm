@@ -1,9 +1,9 @@
 module MainTest exposing (..)
 
 import Expect
-import Game.IQTest exposing (FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, iqLoudDelay, iqQuestionCount)
+import Game.IQTest exposing (CachedOfferGrant, FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, OfferGrantTrigger(..), iqLoudDelay, iqQuestionCount)
 import Json.Encode as Encode
-import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
+import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, offerGrantCachePath, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
 import Sync
 import Test exposing (Test, describe, test)
 import Time
@@ -25,12 +25,18 @@ validModelJson =
     """{"tag":"BlankScreen","idx":0}"""
 
 
-decisionEnvelope : Bool -> Int -> String
-decisionEnvelope granted totalDings =
+decisionEnvelope : Bool -> Int -> Bool -> String
+decisionEnvelope granted totalDings isLastChance =
     Encode.encode 0
         (Encode.object
             [ ( "payload", Encode.string "iqOfferDecision" )
-            , ( "iqOfferDecision", Encode.object [ ( "granted", Encode.bool granted ), ( "totalDings", Encode.int totalDings ) ] )
+            , ( "iqOfferDecision"
+              , Encode.object
+                    [ ( "granted", Encode.bool granted )
+                    , ( "totalDings", Encode.int totalDings )
+                    , ( "isLastChance", Encode.bool isLastChance )
+                    ]
+              )
             ]
         )
 
@@ -175,9 +181,9 @@ beginPressedSuite =
                 let
                     ( result, _ ) =
                         update BeginPressed
-                            { baseModel | screen = BeginScreen (IQTestScreen { questionIdx = 1, totalDings = iqQuestionCount, pendingSkipOffer = Nothing }) }
+                            { baseModel | screen = BeginScreen (IQTestScreen { questionIdx = 1, totalDings = iqQuestionCount, pendingSkipOffer = Nothing, offerIsLastChance = False }) }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 1, totalDings = iqQuestionCount, pendingSkipOffer = Nothing })
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 1, totalDings = iqQuestionCount, pendingSkipOffer = Nothing , offerIsLastChance = False })
         , test "clears any stray leftover local scheduling defensively" <|
             \_ ->
                 let
@@ -414,7 +420,7 @@ spaceBarPressedSuite =
                 result.screen
                     |> Expect.equal
                         (FakeFlashCaughtScreen
-                            { questionIdx = 0, originalTotal = 50, displayNumerator = 3, displayDenominator = 50, phase = FfDelay, skipOffer = Nothing }
+                            { questionIdx = 0, originalTotal = 50, displayNumerator = 3, displayDenominator = 50, phase = FfDelay, skipOffer = Nothing , offerIsLastChance = False }
                         )
         , test "pressing a 50%-phase fake freezes on the active screen (flags cleared) and reports the fail" <|
             \_ ->
@@ -464,7 +470,7 @@ fakeFlashNextPhaseSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
@@ -474,7 +480,7 @@ fakeFlashNextPhaseSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfCounterIn, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfCounterIn, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
@@ -484,22 +490,22 @@ fakeFlashNextPhaseSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 3, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut, skipOffer = Nothing }
+                        { questionIdx = 3, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 3, totalDings = 20, pendingSkipOffer = Nothing })
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 3, totalDings = 20, pendingSkipOffer = Nothing , offerIsLastChance = False })
         , test "FfCounterOut lands on the skip-offer screen instead, when the server already granted it" <|
             \_ ->
                 let
                     state =
-                        { questionIdx = 3, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut, skipOffer = Just 20 }
+                        { questionIdx = 3, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfCounterOut, skipOffer = Just 20 , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
                 in
-                result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 3, totalDings = 20, pendingSkipOffer = Nothing })
+                result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 3, totalDings = 20, pendingSkipOffer = Nothing , offerIsLastChance = False })
         ]
 
 
@@ -770,44 +776,82 @@ serverIqOfferDecisionSuite =
         [ test "granted, on the active IQ screen, transitions to the instructions screen with the offer stashed as pending (issue #93)" <|
             \_ ->
                 let
-                    ( result, _ ) =
-                        update (WsDataReceived (decisionEnvelope True 42))
+                    ( result, cmd ) =
+                        update (WsDataReceived (decisionEnvelope True 42 False))
                             { baseModel | screen = IQTestActiveScreen { iqActiveState | questionIdx = 2 } }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42 })
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = False })
+                    , \_ ->
+                        -- Also mirrors the grant into the local cache (see
+                        -- Main.offerGrantCacheSyncCmd) so a later app relaunch can seed
+                        -- straight back to this same screen without a server round trip.
+                        cmd
+                            |> Expect.equal
+                                (Main.writeOfferGrantCache
+                                    { questionIdx = 2, totalDings = 42, trigger = FailTrigger, offerIsLastChance = False }
+                                )
+                    ]
+                    ()
+        , test "granted with isLastChance, on the active IQ screen, carries offerIsLastChance through" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (decisionEnvelope True 42 True))
+                            { baseModel | screen = IQTestActiveScreen { iqActiveState | questionIdx = 2 } }
+                in
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = True })
         , test "not granted, on the active IQ screen, transitions to the plain begin screen" <|
             \_ ->
                 let
                     ( result, _ ) =
-                        update (WsDataReceived (decisionEnvelope False 42))
+                        update (WsDataReceived (decisionEnvelope False 42 False))
                             { baseModel | screen = IQTestActiveScreen { iqActiveState | questionIdx = 2 } }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Nothing })
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Nothing, offerIsLastChance = False })
+        , test "not granted ignores a stray isLastChance=true (denied always wins)" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (decisionEnvelope False 42 True))
+                            { baseModel | screen = IQTestActiveScreen { iqActiveState | questionIdx = 2 } }
+                in
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Nothing, offerIsLastChance = False })
         , test "granted, on the fake-flash-caught screen, stashes the decision without transitioning yet" <|
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfDelay, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfDelay, skipOffer = Nothing, offerIsLastChance = False }
 
                     ( result, _ ) =
-                        update (WsDataReceived (decisionEnvelope True 20)) { baseModel | screen = FakeFlashCaughtScreen state }
+                        update (WsDataReceived (decisionEnvelope True 20 False)) { baseModel | screen = FakeFlashCaughtScreen state }
                 in
                 result.screen |> Expect.equal (FakeFlashCaughtScreen { state | skipOffer = Just 20 })
+        , test "granted with isLastChance, on the fake-flash-caught screen, carries offerIsLastChance through" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfDelay, skipOffer = Nothing, offerIsLastChance = False }
+
+                    ( result, _ ) =
+                        update (WsDataReceived (decisionEnvelope True 20 True)) { baseModel | screen = FakeFlashCaughtScreen state }
+                in
+                result.screen |> Expect.equal (FakeFlashCaughtScreen { state | skipOffer = Just 20, offerIsLastChance = True })
         , test "not granted, on the fake-flash-caught screen, stashes Nothing" <|
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfDelay, skipOffer = Just 999 }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfDelay, skipOffer = Just 999, offerIsLastChance = False }
 
                     ( result, _ ) =
-                        update (WsDataReceived (decisionEnvelope False 20)) { baseModel | screen = FakeFlashCaughtScreen state }
+                        update (WsDataReceived (decisionEnvelope False 20 False)) { baseModel | screen = FakeFlashCaughtScreen state }
                 in
                 result.screen |> Expect.equal (FakeFlashCaughtScreen { state | skipOffer = Nothing })
         , test "ignored off both screens" <|
             \_ ->
                 let
                     ( result, _ ) =
-                        update (WsDataReceived (decisionEnvelope True 42)) { baseModel | screen = WsErrorScreen }
+                        update (WsDataReceived (decisionEnvelope True 42 False)) { baseModel | screen = WsErrorScreen }
                 in
                 result.screen |> Expect.equal WsErrorScreen
         ]
@@ -821,7 +865,7 @@ iqSkipOfferAcceptedSuite =
                 let
                     ( result, _ ) =
                         update IQSkipOfferAccepted
-                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing } }
+                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = False } }
                 in
                 result.screen
                     |> Expect.equal
@@ -844,11 +888,11 @@ iqSkipOfferDeclinedSuite =
                 let
                     ( result, cmd ) =
                         update IQSkipOfferDeclined
-                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing } }
+                            { baseModel | screen = IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = True } }
                 in
                 Expect.all
-                    [ \_ -> result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing })
-                    , \_ -> cmd |> Expect.equal (sendWs baseModel Sync.iqOfferDeclinedEnvelope)
+                    [ \_ -> result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = False })
+                    , \_ -> cmd |> Expect.equal (Cmd.batch [ sendWs baseModel Sync.iqOfferDeclinedEnvelope, Main.clearOfferGrantCache ])
                     ]
                     ()
         , test "ignored off the skip-offer screen" <|
@@ -997,7 +1041,7 @@ continuePressedSuite =
                     ( result, _ ) =
                         update ContinuePressed { baseModel | screen = WrongAnswerScreen 2 "Alpha" }
                 in
-                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = iqQuestionCount, pendingSkipOffer = Nothing })
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = iqQuestionCount, pendingSkipOffer = Nothing , offerIsLastChance = False })
         , test "ignored off the wrong-answer screen" <|
             \_ ->
                 let
@@ -1015,7 +1059,7 @@ iqTestBeginPressedSuite =
             \_ ->
                 let
                     ( result, cmd ) =
-                        update IQTestBeginPressed { baseModel | screen = IQTestScreen { questionIdx = 0, totalDings = iqQuestionCount, pendingSkipOffer = Nothing } }
+                        update IQTestBeginPressed { baseModel | screen = IQTestScreen { questionIdx = 0, totalDings = iqQuestionCount, pendingSkipOffer = Nothing, offerIsLastChance = False } }
                 in
                 Expect.all
                     [ \_ -> result.screen |> Expect.equal (IQTestCountdownScreen { questionIdx = 0, totalDings = iqQuestionCount, countdown = iqQuestionCount })
@@ -1026,10 +1070,10 @@ iqTestBeginPressedSuite =
             \_ ->
                 let
                     ( result, cmd ) =
-                        update IQTestBeginPressed { baseModel | screen = IQTestScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Just 100 } }
+                        update IQTestBeginPressed { baseModel | screen = IQTestScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Just 100, offerIsLastChance = True } }
                 in
                 Expect.all
-                    [ \_ -> result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing })
+                    [ \_ -> result.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = True })
                     , \_ -> cmd |> Expect.equal Cmd.none
                     ]
                     ()
@@ -1151,7 +1195,7 @@ fakeFlashNextPhaseMoreSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickDelay, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickDelay, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1161,7 +1205,7 @@ fakeFlashNextPhaseMoreSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 5, displayDenominator = 10, phase = FfTickNumerator, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 5, displayDenominator = 10, phase = FfTickNumerator, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashNextPhase { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1309,7 +1353,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 3, displayDenominator = 10, phase = FfTickNumerator, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 3, displayDenominator = 10, phase = FfTickNumerator, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1319,7 +1363,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickNumerator, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfTickNumerator, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1329,7 +1373,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 15, phase = FfTickDenominator, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 15, phase = FfTickDenominator, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1339,7 +1383,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfTickDenominator, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 20, phase = FfTickDenominator, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1349,7 +1393,7 @@ fakeFlashCounterTickSuite =
             \_ ->
                 let
                     state =
-                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing }
+                        { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update FakeFlashCounterTick { baseModel | screen = FakeFlashCaughtScreen state }
@@ -1683,7 +1727,7 @@ remainingEdgeCasesSuite =
             \_ ->
                 let
                     savedScreen =
-                        FakeFlashCaughtScreen { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing }
+                        FakeFlashCaughtScreen { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing , offerIsLastChance = False }
 
                     ( result, _ ) =
                         update BeginPressed { baseModel | screen = BeginScreen savedScreen }
@@ -1813,7 +1857,7 @@ issue93Suite =
                             |> Tuple.first
 
                     afterDecision =
-                        update (WsDataReceived (decisionEnvelope True 100)) afterFail
+                        update (WsDataReceived (decisionEnvelope True 100 False)) afterFail
                             |> Tuple.first
 
                     afterBegin =
@@ -1821,8 +1865,8 @@ issue93Suite =
                             |> Tuple.first
                 in
                 Expect.all
-                    [ \_ -> afterDecision.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 100, pendingSkipOffer = Just 100 })
-                    , \_ -> afterBegin.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 0, totalDings = 100, pendingSkipOffer = Nothing })
+                    [ \_ -> afterDecision.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 100, pendingSkipOffer = Just 100 , offerIsLastChance = False })
+                    , \_ -> afterBegin.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 0, totalDings = 100, pendingSkipOffer = Nothing , offerIsLastChance = False })
                     ]
                     ()
         , test "IQ Test occurs after animation" <|
@@ -1836,7 +1880,7 @@ issue93Suite =
                             |> Tuple.first
 
                     afterDecision =
-                        update (WsDataReceived (decisionEnvelope True 50)) afterCatch
+                        update (WsDataReceived (decisionEnvelope True 50 False)) afterCatch
                             |> Tuple.first
 
                     -- "Wait for the animation to finish": jump straight to the terminal
@@ -1862,13 +1906,128 @@ issue93Suite =
                         afterCatch.screen
                             |> Expect.equal
                                 (FakeFlashCaughtScreen
-                                    { questionIdx = 0, originalTotal = 50, displayNumerator = 3, displayDenominator = 50, phase = FfDelay, skipOffer = Nothing }
+                                    { questionIdx = 0, originalTotal = 50, displayNumerator = 3, displayDenominator = 50, phase = FfDelay, skipOffer = Nothing , offerIsLastChance = False }
                                 )
                     , \_ ->
                         -- Correct, unchanged behavior: the catch path lands directly on the
                         -- offer screen once the cutscene finishes -- a regression guard.
-                        afterAnimation.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 0, totalDings = 50, pendingSkipOffer = Nothing })
-                    , \_ -> afterDecline.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 50, pendingSkipOffer = Nothing })
+                        afterAnimation.screen |> Expect.equal (IQTestSkipOfferScreen { questionIdx = 0, totalDings = 50, pendingSkipOffer = Nothing , offerIsLastChance = False })
+                    , \_ -> afterDecline.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 50, pendingSkipOffer = Nothing , offerIsLastChance = False })
                     ]
                     ()
+        ]
+
+
+-- Covers the local offer-grant cache (see Game.IQTest.CachedOfferGrant's doc
+-- comment): decodeReadFileResult's path-switching, OfferGrantCacheLoaded's
+-- optimistic BeginScreen seeding (mirroring Server.elm's deriveIqScreen formula
+-- exactly), and the WsClientReady/ServerStateUpdate guard relaxation that lets a
+-- seeded guess survive the connection handshake and still get reconciled.
+offerGrantCacheSuite : Test
+offerGrantCacheSuite =
+    describe "Offer-grant cache (decodeReadFileResult / OfferGrantCacheLoaded / reconcile guards)"
+        [ test "decodeReadFileResult routes offerGrantCachePath to OfferGrantCacheLoaded, decoding a valid cache" <|
+            \_ ->
+                decodeReadFileResult
+                    { path = offerGrantCachePath
+                    , contents = Just """{"questionIdx":2,"totalDings":42,"trigger":"fail","offerIsLastChance":true}"""
+                    , error = Nothing
+                    }
+                    |> Expect.equal
+                        (OfferGrantCacheLoaded
+                            (Just { questionIdx = 2, totalDings = 42, trigger = FailTrigger, offerIsLastChance = True })
+                        )
+        , test "decodeReadFileResult treats a missing offerGrantCachePath file as no cache" <|
+            \_ ->
+                decodeReadFileResult { path = offerGrantCachePath, contents = Nothing, error = Just "ENOENT" }
+                    |> Expect.equal (OfferGrantCacheLoaded Nothing)
+        , test "decodeReadFileResult treats a cleared (\"null\") cache file as no cache" <|
+            \_ ->
+                decodeReadFileResult { path = offerGrantCachePath, contents = Just "null", error = Nothing }
+                    |> Expect.equal (OfferGrantCacheLoaded Nothing)
+        , test "decodeReadFileResult still routes app-uuid.json to UuidLoaded, unaffected by the new path" <|
+            \_ ->
+                decodeReadFileResult { path = "app-uuid.json", contents = Just """{"uuid":"abc"}""", error = Nothing }
+                    |> Expect.equal (UuidLoaded (Just "abc"))
+        , test "OfferGrantCacheLoaded Nothing is a no-op" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (OfferGrantCacheLoaded Nothing) baseModel
+                in
+                result.screen |> Expect.equal baseModel.screen
+        , test "OfferGrantCacheLoaded (fail trigger) seeds a BeginScreen-gated IQTestScreen with the offer pending" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update
+                            (OfferGrantCacheLoaded (Just { questionIdx = 2, totalDings = 42, trigger = FailTrigger, offerIsLastChance = True }))
+                            baseModel
+                in
+                result.screen
+                    |> Expect.equal
+                        (BeginScreen
+                            (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = True })
+                        )
+        , test "OfferGrantCacheLoaded (catch trigger) seeds a BeginScreen-gated FakeFlashCaughtScreen, matching Server.elm's deriveIqScreen coarse-resume formula" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update
+                            (OfferGrantCacheLoaded (Just { questionIdx = 1, totalDings = 51, trigger = CatchTrigger, offerIsLastChance = False }))
+                            baseModel
+                in
+                result.screen
+                    |> Expect.equal
+                        (BeginScreen
+                            (FakeFlashCaughtScreen
+                                { questionIdx = 1
+                                , originalTotal = 25
+                                , displayNumerator = 0
+                                , displayDenominator = 25
+                                , phase = FfDelay
+                                , skipOffer = Just 51
+                                , offerIsLastChance = False
+                                }
+                            )
+                        )
+        , test "WsClientReady preserves an optimistically-seeded BeginScreen instead of resetting to WsLoadingScreen" <|
+            \_ ->
+                let
+                    seeded =
+                        { baseModel | screen = BeginScreen (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = False }) }
+
+                    ( result, _ ) =
+                        update (WsClientReady "ws1") seeded
+                in
+                result.screen |> Expect.equal seeded.screen
+        , test "WsClientReady still resets a plain WsConnectingScreen (no cache) to WsLoadingScreen" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsClientReady "ws1") { baseModel | screen = WsConnectingScreen }
+                in
+                result.screen |> Expect.equal WsLoadingScreen
+        , test "ServerStateUpdate reconciles a still-showing optimistic BeginScreen guess in place, not just WsLoadingScreen" <|
+            \_ ->
+                let
+                    seeded =
+                        { baseModel | screen = BeginScreen (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = False }) }
+
+                    ( result, _ ) =
+                        update (WsDataReceived (stateUpdateEnvelope validModelJson)) seeded
+                in
+                -- decodeModel's tolerant "{}"-shape fallback (see decodeReadFileResult's
+                -- sibling comment) means this authoritative (but minimal) reply resolves to
+                -- BeginScreen (BlankScreen 0) -- the point here is only that it was applied
+                -- at all (the cached guess didn't get stuck because the screen wasn't
+                -- WsLoadingScreen), not the specific resulting screen.
+                result.screen |> Expect.notEqual seeded.screen
+        , test "ServerStateUpdate is still ignored off an unrelated live screen (not WsLoadingScreen or BeginScreen)" <|
+            \_ ->
+                let
+                    ( result, _ ) =
+                        update (WsDataReceived (stateUpdateEnvelope validModelJson)) { baseModel | screen = BlankScreen 0 }
+                in
+                result.screen |> Expect.equal (BlankScreen 0)
         ]

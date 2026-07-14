@@ -52,6 +52,35 @@ port readDir : String -> Cmd msg
 
 port readDirResult : ({ path : String, files : List String, error : Maybe String } -> msg) -> Sub msg
 
+-- Mirrors Server.elm's writeFile/writeFileResult port shape (same record fields),
+-- but under a different name -- used only for the local offer-grant cache (see
+-- offerGrantCachePath), a pure rendering accelerator, not authoritative state.
+-- Named distinctly from Server.elm's own writeFile/writeFileResult (not just for
+-- clarity: elm-test compiles every test module into one combined program, and
+-- unlike readFile/readFileResult -- which only ever fire from inside init, so
+-- only one of Main's/Server's survives dead-code elimination when a test run
+-- exercises just one of the two -- this port is called directly by
+-- writeOfferGrantCache/clearOfferGrantCache below, which MainTest.elm unit-tests
+-- outside of init; reusing Server.elm's exact port name here would make both
+-- same-named ports genuinely reachable at once and crash at runtime ("There can
+-- only be one port named `writeFile`"), the same category of hazard already
+-- documented for readFile in CLAUDE.md's test-coverage-conventions section.
+-- writeCacheFileResult is deliberately not subscribed to: a failed write just
+-- means the next launch falls back to the normal (slightly slower) server round
+-- trip, nothing to react to.
+port writeCacheFile : { path : String, contents : String, encoding : String, append : Bool } -> Cmd msg
+
+port writeCacheFileResult : ({ path : String, ok : Bool, error : Maybe String } -> msg) -> Sub msg
+
+
+-- Local on-disk cache of an outstanding IQ-test skip-offer grant (see
+-- Game.IQTest.CachedOfferGrant's doc comment) -- read at launch (init below)
+-- and kept in sync by every write/clear trigger in `update` (search for this
+-- constant).
+offerGrantCachePath : String
+offerGrantCachePath =
+    "iq-offer-grant.json"
+
 
 init : String -> ( Model, Cmd Msg )
 init wsUrl =
@@ -70,10 +99,105 @@ init wsUrl =
       }
     , Cmd.batch
         [ readFile "app-uuid.json"
+        , readFile offerGrantCachePath
         , readDir "assets/songs"
         , Task.perform tickFromPosix Time.now
         ]
     )
+
+
+writeOfferGrantCache : CachedOfferGrant -> Cmd Msg
+writeOfferGrantCache grant =
+    writeCacheFile
+        { path = offerGrantCachePath
+        , contents = Encode.encode 0 (encodeCachedOfferGrant grant)
+        , encoding = "utf8"
+        , append = False
+        }
+
+
+clearOfferGrantCache : Cmd Msg
+clearOfferGrantCache =
+    writeCacheFile
+        { path = offerGrantCachePath
+        , contents = "null"
+        , encoding = "utf8"
+        , append = False
+        }
+
+
+-- Keeps the local offer-grant cache in sync with a bare (unwrapped) Screen that
+-- may or may not carry a pending offer -- called both right after a live
+-- ServerIqOfferDecision (see its handler) and, unwrapped from BeginScreen, after
+-- every ServerStateUpdate (see applyServerStateUpdate) so a reconnect that finds
+-- a different grant state than what was last cached corrects it.
+offerGrantCacheSyncCmd : Screen -> Cmd Msg
+offerGrantCacheSyncCmd scr =
+    case scr of
+        IQTestScreen s ->
+            case s.pendingSkipOffer of
+                Just totalDings ->
+                    writeOfferGrantCache
+                        { questionIdx = s.questionIdx
+                        , totalDings = totalDings
+                        , trigger = FailTrigger
+                        , offerIsLastChance = s.offerIsLastChance
+                        }
+
+                Nothing ->
+                    clearOfferGrantCache
+
+        FakeFlashCaughtScreen s ->
+            case s.skipOffer of
+                Just totalDings ->
+                    writeOfferGrantCache
+                        { questionIdx = s.questionIdx
+                        , totalDings = totalDings
+                        , trigger = CatchTrigger
+                        , offerIsLastChance = s.offerIsLastChance
+                        }
+
+                Nothing ->
+                    clearOfferGrantCache
+
+        _ ->
+            Cmd.none
+
+
+-- Decodes a ServerStateUpdate's inner JSON and merges it into the live Model,
+-- carrying forward session/connection-local fields decodeModel can't know (see
+-- inline comment below) -- shared by both valid states WsDataReceived accepts a
+-- ServerStateUpdate from (WsLoadingScreen, and a still-showing optimistic
+-- BeginScreen guess from the local cache -- see WsClientReady's guard). Also
+-- syncs the local offer-grant cache to whatever the authoritative reply says,
+-- so a stale/wrong optimistic guess (or one that's simply gone stale since it
+-- was last written) is corrected going forward too.
+applyServerStateUpdate : Model -> String -> ( Model, Cmd Msg )
+applyServerStateUpdate model inner =
+    case Decode.decodeString decodeModel inner of
+        Ok newModel ->
+            let
+                merged =
+                    { newModel
+                        | wsClientId = model.wsClientId
+                        , myUuid = model.myUuid
+                        , wsUrl = model.wsUrl
+                        , questions = model.questions
+                        , timerEndsAt = model.timerEndsAt
+                    }
+
+                cacheCmd =
+                    case merged.screen of
+                        BeginScreen unwrapped ->
+                            offerGrantCacheSyncCmd unwrapped
+
+                        _ ->
+                            Cmd.none
+            in
+            ( merged, cacheCmd )
+
+        Err _ ->
+            ( model, Cmd.none )
 
 
 -- Converts an animation-frame/Time.now Posix into the Tick Msg it drives.
@@ -419,6 +543,7 @@ update msg model =
                                     { questionIdx = idx
                                     , totalDings = iqQuestionCount
                                     , pendingSkipOffer = Nothing
+                                    , offerIsLastChance = False
                                     }
                         }
                     , Cmd.none
@@ -444,6 +569,7 @@ update msg model =
                                             { questionIdx = iqScreen.questionIdx
                                             , totalDings = totalDings
                                             , pendingSkipOffer = Nothing
+                                            , offerIsLastChance = iqScreen.offerIsLastChance
                                             }
                                 }
                             , Cmd.none
@@ -575,6 +701,7 @@ update msg model =
                                                             { questionIdx = state.questionIdx
                                                             , totalDings = totalDings
                                                             , pendingSkipOffer = Nothing
+                                                            , offerIsLastChance = state.offerIsLastChance
                                                             }
                                                 }
                                             , Cmd.none
@@ -605,7 +732,7 @@ update msg model =
                                     }
                         }
                         |> schedule 700 IQSkipAnimNextPhase
-                    , Cmd.none
+                    , clearOfferGrantCache
                     )
 
                 _ ->
@@ -625,9 +752,10 @@ update msg model =
                                     { questionIdx = s.questionIdx
                                     , totalDings = s.totalDings
                                     , pendingSkipOffer = Nothing
+                                    , offerIsLastChance = False
                                     }
                         }
-                    , sendWs model iqOfferDeclinedEnvelope
+                    , Cmd.batch [ sendWs model iqOfferDeclinedEnvelope, clearOfferGrantCache ]
                     )
 
                 _ ->
@@ -699,7 +827,21 @@ update msg model =
         WsClientReady wsId ->
             let
                 newModel =
-                    { model | wsClientId = Just wsId, screen = WsLoadingScreen }
+                    { model
+                        | wsClientId = Just wsId
+                        , screen =
+                            case model.screen of
+                                -- Preserve an optimistically-seeded cache guess (see
+                                -- OfferGrantCacheLoaded) instead of stomping it back to a
+                                -- generic loading screen -- WsDataReceived's
+                                -- ServerStateUpdate handling below still reconciles it
+                                -- (silently, in place) once the real reply lands.
+                                BeginScreen _ ->
+                                    model.screen
+
+                                _ ->
+                                    WsLoadingScreen
+                    }
             in
             case model.myUuid of
                 Just uuid ->
@@ -713,31 +855,29 @@ update msg model =
         WsDataReceived envelopeJson ->
             case Decode.decodeString decodeServerEnvelope envelopeJson of
                 Ok (ServerStateUpdate inner) ->
+                    -- decodeModel is tolerant of the brand-new-player "{}" shape (screen
+                    -- defaults to BeginScreen (BlankScreen 0)), so every case -- fresh
+                    -- player or resume -- goes through the same decode; there's no
+                    -- separate empty-object sentinel branch. dingKey isn't carried
+                    -- forward in applyServerStateUpdate: 0 is exactly correct for a
+                    -- freshly (re)connected session, nothing ding-related survives a
+                    -- disconnect.
                     case model.screen of
                         WsLoadingScreen ->
-                            -- decodeModel is tolerant of the brand-new-player "{}" shape
-                            -- (screen defaults to BeginScreen (BlankScreen 0)), so every
-                            -- case -- fresh player or resume -- goes through the same
-                            -- decode; there's no separate empty-object sentinel branch.
-                            case Decode.decodeString decodeModel inner of
-                                Ok newModel ->
-                                    -- Session/connection-local facts decodeModel can't know
-                                    -- (it always fills them with fresh-connection defaults)
-                                    -- carry forward from the live model instead. dingKey isn't
-                                    -- included: 0 is exactly correct for a freshly (re)connected
-                                    -- session, nothing ding-related survives a disconnect.
-                                    ( { newModel
-                                        | wsClientId = model.wsClientId
-                                        , myUuid = model.myUuid
-                                        , wsUrl = model.wsUrl
-                                        , questions = model.questions
-                                        , timerEndsAt = model.timerEndsAt
-                                      }
-                                    , Cmd.none
-                                    )
+                            applyServerStateUpdate model inner
 
-                                Err _ ->
-                                    ( model, Cmd.none )
+                        -- A still-showing optimistic guess seeded from the local cache
+                        -- (see OfferGrantCacheLoaded/WsClientReady's preserving guard) is
+                        -- also a valid state to reconcile from -- this is what actually
+                        -- corrects a stale/wrong cached guess in place, invisibly, once
+                        -- the real reply lands. Accepted residual risk: if the player
+                        -- already presses Begin and unwraps the guess before this
+                        -- arrives, the correction can no longer apply since the screen
+                        -- is no longer BeginScreen _ -- cosmetic only, since accept/
+                        -- decline stay fully server-enforced via Server.elm's
+                        -- Model.iqOfferGrants regardless of what the client displays.
+                        BeginScreen _ ->
+                            applyServerStateUpdate model inner
 
                         _ ->
                             ( model, Cmd.none )
@@ -972,8 +1112,8 @@ update msg model =
                     -- reconnect) -- ignore.
                     case model.screen of
                         IQTestActiveScreen state ->
-                            ( { model
-                                | screen =
+                            let
+                                newScreen =
                                     IQTestScreen
                                         { questionIdx = state.questionIdx
                                         , totalDings = d.totalDings
@@ -983,15 +1123,21 @@ update msg model =
 
                                             else
                                                 Nothing
+                                        , offerIsLastChance = d.granted && d.isLastChance
                                         }
-                              }
-                            , Cmd.none
-                            )
+                            in
+                            ( { model | screen = newScreen }, offerGrantCacheSyncCmd newScreen )
 
                         FakeFlashCaughtScreen state ->
-                            ( { model | screen = FakeFlashCaughtScreen { state | skipOffer = if d.granted then Just d.totalDings else Nothing } }
-                            , Cmd.none
-                            )
+                            let
+                                newScreen =
+                                    FakeFlashCaughtScreen
+                                        { state
+                                            | skipOffer = if d.granted then Just d.totalDings else Nothing
+                                            , offerIsLastChance = d.granted && d.isLastChance
+                                        }
+                            in
+                            ( { model | screen = newScreen }, offerGrantCacheSyncCmd newScreen )
 
                         _ ->
                             ( model, Cmd.none )
@@ -1063,6 +1209,50 @@ update msg model =
         QuestionsLoaded loadedQuestions ->
             ( { model | questions = loadedQuestions }, Cmd.none )
 
+        OfferGrantCacheLoaded maybeGrant ->
+            -- Optimistically seed the starting screen from the local cache (see
+            -- offerGrantCachePath/CachedOfferGrant's doc comment) so the very first
+            -- render is already offer-eligible instead of a generic connecting
+            -- screen, while the WebSocket round trip is still in flight. Mirrors
+            -- Server.elm's deriveIqScreen's own derivation formula exactly (down to
+            -- the FfDelay/0-numerator coarse-resume shape for a catch-triggered
+            -- grant) so the optimistic guess and the eventual authoritative
+            -- ServerStateUpdate render identically when the cache wasn't stale --
+            -- see WsClientReady/WsDataReceived's BeginScreen-preserving guards,
+            -- which are what actually reconcile it once the real reply lands.
+            case maybeGrant of
+                Nothing ->
+                    ( model, Cmd.none )
+
+                Just grant ->
+                    let
+                        derived =
+                            case grant.trigger of
+                                FailTrigger ->
+                                    IQTestScreen
+                                        { questionIdx = grant.questionIdx
+                                        , totalDings = grant.totalDings
+                                        , pendingSkipOffer = Just grant.totalDings
+                                        , offerIsLastChance = grant.offerIsLastChance
+                                        }
+
+                                CatchTrigger ->
+                                    let
+                                        originalTotal =
+                                            grant.totalDings // 2
+                                    in
+                                    FakeFlashCaughtScreen
+                                        { questionIdx = grant.questionIdx
+                                        , originalTotal = originalTotal
+                                        , displayNumerator = 0
+                                        , displayDenominator = originalTotal
+                                        , phase = FfDelay
+                                        , skipOffer = Just grant.totalDings
+                                        , offerIsLastChance = grant.offerIsLastChance
+                                        }
+                    in
+                    ( { model | screen = BeginScreen derived }, Cmd.none )
+
         NoOp ->
             ( model, Cmd.none )
 
@@ -1133,22 +1323,33 @@ update msg model =
 
 
 
--- Decides what Msg a readFile port response becomes: app-uuid.json is read for
--- its "uuid" field (it's the only file this port is still used for -- the quiz
--- no longer reads any config/ JSON client-side, see #54/#70's review).
+-- Decides what Msg a readFile port response becomes: app-uuid.json (its "uuid"
+-- field) and offerGrantCachePath (a CachedOfferGrant, see its doc comment) are
+-- the only two files this port is used for -- the quiz no longer reads any
+-- config/ JSON client-side, see #54/#70's review. Switches on `path` since a
+-- single readFileResult subscription (see subscriptions) handles both.
 decodeReadFileResult : { path : String, contents : Maybe String, error : Maybe String } -> Msg
-decodeReadFileResult { contents } =
-    case contents of
-        Just raw ->
-            case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
-                Ok uuid ->
-                    UuidLoaded (Just uuid)
+decodeReadFileResult { path, contents } =
+    if path == offerGrantCachePath then
+        case contents of
+            Just raw ->
+                OfferGrantCacheLoaded (Decode.decodeString decodeCachedOfferGrant raw |> Result.toMaybe)
 
-                Err _ ->
-                    UuidLoaded Nothing
+            Nothing ->
+                OfferGrantCacheLoaded Nothing
 
-        Nothing ->
-            UuidLoaded Nothing
+    else
+        case contents of
+            Just raw ->
+                case Decode.decodeString (Decode.field "uuid" Decode.string) raw of
+                    Ok uuid ->
+                        UuidLoaded (Just uuid)
+
+                    Err _ ->
+                        UuidLoaded Nothing
+
+            Nothing ->
+                UuidLoaded Nothing
 
 
 -- Decides what Msg a readDir port response becomes: assets/songs/'s listing,

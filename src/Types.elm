@@ -115,4 +115,5 @@ type Msg
     | WsReconnect
     | UuidLoaded (Maybe String)
     | QuestionsLoaded (List String)
+    | OfferGrantCacheLoaded (Maybe CachedOfferGrant)
     | NoOp
