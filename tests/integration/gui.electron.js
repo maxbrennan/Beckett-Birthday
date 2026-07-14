@@ -240,7 +240,11 @@ async function main() {
         console.log('  ✓ a real SpaceBarFailed (no ding active) grants the offer and renders IQTestSkipOfferScreen');
 
         await iqWindow.getByRole('button', { name: 'Accept' }).click();
-        await waitForBodyTextIncluding(iqWindow, 'Listen carefully...', { timeoutMs: 8000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        // The count-up animation now genuinely ticks displayCount from 0 to totalDings
+        // (100 here) at counterTickMs (80ms) per step -- ~8s of ticking alone, plus the
+        // surrounding phase delays -- so this needs real headroom, not the old ~8s
+        // budget that only worked because of the jump-straight-to-total bug (#94).
+        await waitForBodyTextIncluding(iqWindow, 'Listen carefully...', { timeoutMs: 16000, intervalMs: GUI_WAIT_OPTS.intervalMs });
         console.log('  ✓ Accept runs the real skip animation through to the quiz (IQTestSkipAnimScreen -> BlankScreen)');
 
         await electronApp.close().catch(() => {});
