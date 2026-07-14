@@ -39,5 +39,9 @@ app-uuid.json
 app-builds/*
 !app-builds/.gitkeep
 
+# Local client-side cache of an outstanding IQ-test skip-offer grant (see
+# Main.elm's offerGrantCachePath) -- runtime data, never committed.
+iq-offer-grant.json
+
 # Claude Code worktree scratch directories (local only, never commit)
 .claude/worktrees/

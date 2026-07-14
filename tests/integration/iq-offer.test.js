@@ -74,7 +74,8 @@ async function connectAsPlayerRetrying(uuid, { timeoutMs = 2000 } = {}) {
 // offer to skip the test -- see Server.elm's decideIqOffer / Model.iqOfferGrants. This
 // closes the same class of client-trust gap song-ended.test.js closes for TrackEnded:
 // the server, not the client, decides and durably remembers whether the offer was ever
-// granted (RegistryEntry.iqOfferUsed).
+// granted -- independently per trigger (RegistryEntry.iqOfferUsedFail/iqOfferUsedCatch),
+// and the live grant itself also durably survives a restart (RegistryEntry.iqOfferGrant).
 describe('IQ-test one-time skip offer', () => {
     beforeAll(async () => {
         server = await startTestServer({
@@ -102,14 +103,15 @@ describe('IQ-test one-time skip offer', () => {
 
         const entry = await waitUntil(() => {
             const found = readRegistry().find((e) => e.uuid === build.uuid);
-            return found && found.iqOfferUsed ? found : null;
+            return found && found.iqOfferUsedFail ? found : null;
         });
-        expect(entry.iqOfferUsed).toBe(true);
+        expect(entry.iqOfferUsedFail).toBe(true);
+        expect(entry.iqOfferUsedCatch).toBe(false);
 
         await conn.close();
     }, 10000);
 
-    test('a second fail on the same uuid is denied -- the offer is only ever granted once', async () => {
+    test('a second fail on the same uuid is denied -- the fail trigger only ever grants once (independent of the catch trigger)', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, { platform: 'mac', filename: 'iq-offer-once.dmg' });
         await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
 
@@ -144,7 +146,7 @@ describe('IQ-test one-time skip offer', () => {
         // torn/empty file; poll like the sibling "granted" test above instead of
         // reading once.
         const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid) || null);
-        expect(entry.iqOfferUsed).toBe(false);
+        expect(entry.iqOfferUsedFail).toBe(false);
 
         await conn.close();
     }, 10000);
@@ -179,9 +181,137 @@ describe('IQ-test one-time skip offer', () => {
         const decision = await conn.waitFor((m) => m.payload === 'iqOfferDecision');
         expect(decision.iqOfferDecision.granted).toBe(true);
         expect(decision.iqOfferDecision.totalDings).toBe(200);
+        expect(decision.iqOfferDecision.isLastChance).toBe(false);
 
         await conn.close();
     }, 10000);
+
+    test('fail-then-catch: both triggers grant independently for the same player, and the second reports isLastChance = true', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, { platform: 'mac', filename: 'iq-offer-fail-then-catch.dmg' });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        await stageIqTimer(build.uuid, { dingCount: 10, totalDings: 100 });
+        const first = await connectAsPlayerRetrying(build.uuid);
+        first.conn.send({ iqFailed: {} });
+        const failDecision = await first.conn.waitFor((m) => m.payload === 'iqOfferDecision');
+        expect(failDecision.iqOfferDecision.granted).toBe(true);
+        expect(failDecision.iqOfferDecision.isLastChance).toBe(false);
+        await first.conn.close();
+
+        await stageIqTimer(build.uuid, { dingCount: 10, totalDings: 100, lastDing: 'TrapFake' });
+        const second = await connectAsPlayerRetrying(build.uuid);
+        second.conn.send({ iqCaught: {} });
+        const catchDecision = await second.conn.waitFor((m) => m.payload === 'iqOfferDecision');
+        expect(catchDecision.iqOfferDecision.granted).toBe(true);
+        expect(catchDecision.iqOfferDecision.isLastChance).toBe(true);
+        await second.conn.close();
+
+        // registry.json is rewritten asynchronously by the server, so a synchronous
+        // read right after close() can race a still-in-flight write -- poll instead.
+        const entry = await waitUntil(() => {
+            const found = readRegistry().find((e) => e.uuid === build.uuid);
+            return found && found.iqOfferUsedCatch ? found : null;
+        });
+        expect(entry.iqOfferUsedFail).toBe(true);
+        expect(entry.iqOfferUsedCatch).toBe(true);
+    }, 15000);
+
+    test('catch-then-fail: mirrors fail-then-catch, order-independent', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, { platform: 'mac', filename: 'iq-offer-catch-then-fail.dmg' });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        await stageIqTimer(build.uuid, { dingCount: 10, totalDings: 100, lastDing: 'TrapFake' });
+        const first = await connectAsPlayerRetrying(build.uuid);
+        first.conn.send({ iqCaught: {} });
+        const catchDecision = await first.conn.waitFor((m) => m.payload === 'iqOfferDecision');
+        expect(catchDecision.iqOfferDecision.granted).toBe(true);
+        expect(catchDecision.iqOfferDecision.isLastChance).toBe(false);
+        await first.conn.close();
+
+        await stageIqTimer(build.uuid, { dingCount: 10, totalDings: 100 });
+        const second = await connectAsPlayerRetrying(build.uuid);
+        second.conn.send({ iqFailed: {} });
+        const failDecision = await second.conn.waitFor((m) => m.payload === 'iqOfferDecision');
+        expect(failDecision.iqOfferDecision.granted).toBe(true);
+        expect(failDecision.iqOfferDecision.isLastChance).toBe(true);
+        await second.conn.close();
+
+        // registry.json is rewritten asynchronously by the server, so a synchronous
+        // read right after close() can race a still-in-flight write -- poll instead.
+        const entry = await waitUntil(() => {
+            const found = readRegistry().find((e) => e.uuid === build.uuid);
+            return found && found.iqOfferUsedFail ? found : null;
+        });
+        expect(entry.iqOfferUsedFail).toBe(true);
+        expect(entry.iqOfferUsedCatch).toBe(true);
+    }, 15000);
+
+    test('a legacy single-flag row (pre-split iqOfferUsed) migrates on restart to both new flags true, denying further offers', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, { platform: 'mac', filename: 'iq-offer-legacy.dmg' });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        // Hand-write the legacy pre-split shape directly to disk (a player who already
+        // resolved their one lifetime offer under the old single-flag system), then
+        // restart so the server actually re-decodes it from scratch -- a live server
+        // never re-reads builds.json for an already-loaded uuid otherwise.
+        await server.stop({ keepData: true });
+        const entries = readRegistry();
+        const idx = entries.findIndex((e) => e.uuid === build.uuid);
+        delete entries[idx].iqOfferUsedFail;
+        delete entries[idx].iqOfferUsedCatch;
+        delete entries[idx].iqOfferGrant;
+        entries[idx].iqOfferUsed = true;
+        registryHelper.writeRegistry(server.tempDir, entries);
+        server = await startTestServer({ port: TEST_PORT, existingTempDir: server.tempDir });
+
+        await stageIqTimer(build.uuid, { dingCount: 10, totalDings: 100 });
+        const { conn } = await connectAsPlayerRetrying(build.uuid);
+
+        conn.send({ iqFailed: {} });
+        const decision = await conn.waitFor((m) => m.payload === 'iqOfferDecision');
+        expect(decision.iqOfferDecision.granted).toBe(false);
+        await conn.close();
+
+        const entry = await waitUntil(() => {
+            const found = readRegistry().find((e) => e.uuid === build.uuid);
+            return found && found.iqOfferUsedFail !== undefined ? found : null;
+        });
+        expect(entry.iqOfferUsedFail).toBe(true);
+        expect(entry.iqOfferUsedCatch).toBe(true);
+    }, 20000);
+
+    test('an outstanding, unconsumed grant survives a server restart -- accept still works rather than the offer being silently lost', async () => {
+        const build = await distClient.deployBuild(TEST_PORT, admin, { platform: 'mac', filename: 'iq-offer-grant-restart.dmg' });
+        await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+
+        await stageIqTimer(build.uuid, { dingCount: 10, totalDings: 100 });
+        const { conn } = await connectAsPlayerRetrying(build.uuid);
+        conn.send({ iqFailed: {} });
+        const decision = await conn.waitFor((m) => m.payload === 'iqOfferDecision');
+        expect(decision.iqOfferDecision.granted).toBe(true);
+        await conn.close();
+
+        // Restart with the grant still outstanding/unconsumed.
+        await server.stop({ keepData: true });
+        server = await startTestServer({ port: TEST_PORT, existingTempDir: server.tempDir });
+
+        // Accepting (quizAdvanced matching the grant's questionIdx 0, stageIqTimer's
+        // default) should still bypass the live IQ-timer block after the restart --
+        // the grant wasn't stranded (see RegistryEntry.iqOfferGrant rehydration).
+        // Generous timeouts here, matching iq-server-restart.test.js's convention: a
+        // real process restart (spawn + boot) can take longer under a busy full-suite
+        // run than the default 2s budget.
+        const { conn: reconnected } = await connectAsPlayerRetrying(build.uuid, { timeoutMs: 5000 });
+        reconnected.send({ quizAdvanced: { idx: 0 } });
+        await waitUntil(
+            () => {
+                const found = readRegistry().find((e) => e.uuid === build.uuid);
+                return found && found.quizProgress === 1 ? found : null;
+            },
+            { timeoutMs: 5000 }
+        );
+        await reconnected.close();
+    }, 20000);
 
     test('a stray iqStartCountdown sent right after a grant is silently ignored, and iqOfferDeclined releases it', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, { platform: 'mac', filename: 'iq-offer-guard.dmg' });

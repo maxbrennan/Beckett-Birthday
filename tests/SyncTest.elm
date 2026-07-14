@@ -1,7 +1,7 @@
 module SyncTest exposing (..)
 
 import Expect
-import Game.IQTest exposing (FakeFlashPhase(..), IQSkipPhase(..))
+import Game.IQTest exposing (FakeFlashPhase(..), IQSkipPhase(..), OfferGrantTrigger(..))
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Sync
@@ -71,14 +71,19 @@ screenRoundTripTests =
         , test "IQTestScreen carries its state" <|
             \_ ->
                 Expect.equal
-                    (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Nothing })
-                    (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Nothing }))
+                    (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = False })
+                    (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = False }))
         , test "IQTestScreen carries a pending skip offer too" <|
             \_ ->
                 Expect.equal
-                    (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Just 200 })
-                    (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Just 200 }))
-        , test "IQTestScreen's pendingSkipOffer defaults to Nothing for an older persisted row missing the field" <|
+                    (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Just 200, offerIsLastChance = False })
+                    (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Just 200, offerIsLastChance = False }))
+        , test "IQTestScreen carries offerIsLastChance too" <|
+            \_ ->
+                Expect.equal
+                    (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Just 200, offerIsLastChance = True })
+                    (roundTripScreen (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Just 200, offerIsLastChance = True }))
+        , test "IQTestScreen's pendingSkipOffer/offerIsLastChance default to Nothing/False for an older persisted row missing the fields" <|
             \_ ->
                 let
                     oldShapeJson =
@@ -93,7 +98,7 @@ screenRoundTripTests =
                             ]
                 in
                 Decode.decodeValue decodeScreen oldShapeJson
-                    |> Expect.equal (Ok (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Nothing }))
+                    |> Expect.equal (Ok (IQTestScreen { questionIdx = 1, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = False }))
         , test "IQTestCountdownScreen carries its state" <|
             \_ ->
                 Expect.equal
@@ -110,17 +115,24 @@ screenRoundTripTests =
             \_ ->
                 let
                     state =
-                        { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Nothing }
+                        { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Nothing, offerIsLastChance = False }
                 in
                 Expect.equal (FakeFlashCaughtScreen state) (roundTripScreen (FakeFlashCaughtScreen state))
         , test "FakeFlashCaughtScreen carries a granted skipOffer too" <|
             \_ ->
                 let
                     state =
-                        { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Just 200 }
+                        { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Just 200, offerIsLastChance = False }
                 in
                 Expect.equal (FakeFlashCaughtScreen state) (roundTripScreen (FakeFlashCaughtScreen state))
-        , test "FakeFlashCaughtScreen's skipOffer defaults to Nothing for an older persisted row missing the field" <|
+        , test "FakeFlashCaughtScreen carries offerIsLastChance too" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Just 200, offerIsLastChance = True }
+                in
+                Expect.equal (FakeFlashCaughtScreen state) (roundTripScreen (FakeFlashCaughtScreen state))
+        , test "FakeFlashCaughtScreen's skipOffer/offerIsLastChance default to Nothing/False for an older persisted row missing the fields" <|
             \_ ->
                 let
                     oldShapeJson =
@@ -141,14 +153,14 @@ screenRoundTripTests =
                     |> Expect.equal
                         (Ok
                             (FakeFlashCaughtScreen
-                                { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Nothing }
+                                { questionIdx = 1, originalTotal = 100, displayNumerator = 3, displayDenominator = 100, phase = FfText1Hold, skipOffer = Nothing, offerIsLastChance = False }
                             )
                         )
         , test "IQTestSkipOfferScreen carries its state" <|
             \_ ->
                 Expect.equal
-                    (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing })
-                    (roundTripScreen (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing }))
+                    (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = False })
+                    (roundTripScreen (IQTestSkipOfferScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = False }))
         , test "IQTestSkipAnimScreen carries its state" <|
             \_ ->
                 let
@@ -412,12 +424,12 @@ serverEnvelopeTests =
                     |> Expect.equal (Ok (ServerQuizAnswerResult { idx = 0, correct = False, revealAnswer = "" }))
         , test "iqOfferDecision with all fields present" <|
             \_ ->
-                Decode.decodeString decodeServerEnvelope """{"payload":"iqOfferDecision","iqOfferDecision":{"granted":true,"totalDings":150}}"""
-                    |> Expect.equal (Ok (ServerIqOfferDecision { granted = True, totalDings = 150 }))
-        , test "iqOfferDecision defaults granted/totalDings to false/0 when protobufjs omits them" <|
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqOfferDecision","iqOfferDecision":{"granted":true,"totalDings":150,"isLastChance":true}}"""
+                    |> Expect.equal (Ok (ServerIqOfferDecision { granted = True, totalDings = 150, isLastChance = True }))
+        , test "iqOfferDecision defaults granted/totalDings/isLastChance to false/0/false when protobufjs omits them" <|
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"iqOfferDecision","iqOfferDecision":{}}"""
-                    |> Expect.equal (Ok (ServerIqOfferDecision { granted = False, totalDings = 0 }))
+                    |> Expect.equal (Ok (ServerIqOfferDecision { granted = False, totalDings = 0, isLastChance = False }))
         ]
 
 
@@ -451,4 +463,38 @@ envelopeBuilderTests =
                 clientStateEnvelope model
                     |> Decode.decodeValue (Decode.field "payload" Decode.string)
                     |> Expect.equal (Ok "stateUpdate")
+        ]
+
+
+-- The local offer-grant cache's on-disk codec (see Main.elm's writeOfferGrantCache/
+-- offerGrantCachePath and Game.IQTest.CachedOfferGrant's doc comment) -- never goes
+-- over the wire, only to/from local disk, but round-trips through the same
+-- Encode/Decode machinery as everything else in this module.
+cachedOfferGrantTests : Test
+cachedOfferGrantTests =
+    describe "encodeCachedOfferGrant / decodeCachedOfferGrant round-trip"
+        [ test "round-trips a fail-triggered grant" <|
+            \_ ->
+                let
+                    grant =
+                        { questionIdx = 2, totalDings = 42, trigger = FailTrigger, offerIsLastChance = False }
+                in
+                Sync.encodeCachedOfferGrant grant
+                    |> Decode.decodeValue Sync.decodeCachedOfferGrant
+                    |> Expect.equal (Ok grant)
+        , test "round-trips a catch-triggered, last-chance grant" <|
+            \_ ->
+                let
+                    grant =
+                        { questionIdx = 0, totalDings = 51, trigger = CatchTrigger, offerIsLastChance = True }
+                in
+                Sync.encodeCachedOfferGrant grant
+                    |> Decode.decodeValue Sync.decodeCachedOfferGrant
+                    |> Expect.equal (Ok grant)
+        , test "decodeCachedOfferGrant rejects an unknown trigger string" <|
+            \_ ->
+                Decode.decodeString Sync.decodeCachedOfferGrant
+                    """{"questionIdx":0,"totalDings":0,"trigger":"bogus","offerIsLastChance":false}"""
+                    |> Result.toMaybe
+                    |> Expect.equal Nothing
         ]

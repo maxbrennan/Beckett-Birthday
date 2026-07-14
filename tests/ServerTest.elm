@@ -93,7 +93,7 @@ registrySuite =
     describe "RegistryEntry winText codec"
         [ test "round-trips winText through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "claim your reward", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -142,7 +142,7 @@ quizQuestionsRegistrySuite =
 
 iqOfferRegistrySuite : Test
 iqOfferRegistrySuite =
-    describe "RegistryEntry.iqOfferDisabled/iqOfferUsed codec"
+    describe "RegistryEntry.iqOfferDisabled/iqOfferUsedFail/iqOfferUsedCatch/iqOfferGrant codec"
         [ test "round-trips iqOfferDisabled = True through encode/decode" <|
             \_ ->
                 let
@@ -155,30 +155,60 @@ iqOfferRegistrySuite =
                     |> Decode.decodeString decodeRegistryEntry
                     |> Result.map .iqOfferDisabled
                     |> Expect.equal (Ok True)
-        , test "round-trips iqOfferUsed = True through encode/decode" <|
+        , test "round-trips iqOfferUsedFail/iqOfferUsedCatch independently through encode/decode" <|
             \_ ->
                 let
                     base =
                         entry "u1"
                 in
-                { base | iqOfferUsed = True, quizSongEndedIdx = Nothing }
+                { base | iqOfferUsedFail = True, iqOfferUsedCatch = False }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
-                    |> Result.map .iqOfferUsed
-                    |> Expect.equal (Ok True)
+                    |> Result.map (\e -> ( e.iqOfferUsedFail, e.iqOfferUsedCatch ))
+                    |> Expect.equal (Ok ( True, False ))
+        , test "round-trips iqOfferGrant through encode/decode" <|
+            \_ ->
+                let
+                    base =
+                        entry "u1"
+                in
+                { base | iqOfferGrant = Just 7 }
+                    |> encodeRegistryEntry
+                    |> Encode.encode 0
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map .iqOfferGrant
+                    |> Expect.equal (Ok (Just 7))
         , test "defaults iqOfferDisabled to False for older rows missing the field" <|
             \_ ->
                 """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false}"""
                     |> Decode.decodeString decodeRegistryEntry
                     |> Result.map .iqOfferDisabled
                     |> Expect.equal (Ok False)
-        , test "defaults iqOfferUsed to False for older rows missing the field" <|
+        , test "defaults iqOfferUsedFail/iqOfferUsedCatch/iqOfferGrant to False/False/Nothing for rows missing all offer fields entirely" <|
             \_ ->
                 """{"uuid":"u","filename":"f","platform":"mac","state":null,"pendingStateEdit":false}"""
                     |> Decode.decodeString decodeRegistryEntry
-                    |> Result.map .iqOfferUsed
-                    |> Expect.equal (Ok False)
+                    |> Result.map (\e -> ( e.iqOfferUsedFail, e.iqOfferUsedCatch, e.iqOfferGrant ))
+                    |> Expect.equal (Ok ( False, False, Nothing ))
+        , test "migrates a legacy single iqOfferUsed = true row to both new flags true (already-resolved player, no second bite)" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","pendingStateEdit":false,"serverState":{"iqOfferUsed":true}}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map (\e -> ( e.iqOfferUsedFail, e.iqOfferUsedCatch ))
+                    |> Expect.equal (Ok ( True, True ))
+        , test "migrates a legacy iqOfferUsed = false row to both new flags false" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","pendingStateEdit":false,"serverState":{"iqOfferUsed":false}}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map (\e -> ( e.iqOfferUsedFail, e.iqOfferUsedCatch ))
+                    |> Expect.equal (Ok ( False, False ))
+        , test "an already-migrated row with both new keys present is trusted directly, even alongside a stale legacy key" <|
+            \_ ->
+                """{"uuid":"u","filename":"f","platform":"mac","pendingStateEdit":false,"serverState":{"iqOfferUsed":true,"iqOfferUsedFail":false,"iqOfferUsedCatch":true}}"""
+                    |> Decode.decodeString decodeRegistryEntry
+                    |> Result.map (\e -> ( e.iqOfferUsedFail, e.iqOfferUsedCatch ))
+                    |> Expect.equal (Ok ( False, True ))
         ]
 
 
@@ -266,7 +296,7 @@ encodeRegistryTests =
                     |> Expect.equal (Ok [])
         , test "encodeRegistry output is newline-terminated" <|
             \_ ->
-                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing } ]
+                encodeRegistry [ { uuid = "u1", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing } ]
                     |> String.endsWith "\n"
                     |> Expect.equal True
         ]
@@ -292,8 +322,8 @@ decodeRegistryTests =
             \_ ->
                 let
                     entries =
-                        [ { uuid = "u1", filename = "f1", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
-                        , { uuid = "u2", filename = "f2", platform = "win", pendingStateEdit = True, winText = "you win", iqTimer = Nothing, quizProgress = 3, timerEndsAt = Just 42, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                        [ { uuid = "u1", filename = "f1", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
+                        , { uuid = "u2", filename = "f2", platform = "win", pendingStateEdit = True, winText = "you win", iqTimer = Nothing, quizProgress = 3, timerEndsAt = Just 42, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
                         ]
                 in
                 entries
@@ -322,7 +352,7 @@ timerSuite =
     describe "RegistryEntry.timerEndsAt"
         [ test "round-trips a set deadline through encode/decode" <|
             \_ ->
-                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                { uuid = "u1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 12345, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
                     |> encodeRegistryEntry
                     |> Encode.encode 0
                     |> Decode.decodeString decodeRegistryEntry
@@ -347,12 +377,12 @@ timerSuite =
                     |> Expect.equal False
         , test "isExpired is False before the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 2000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
                     |> isExpired 1000
                     |> Expect.equal False
         , test "isExpired is True once now reaches the deadline" <|
             \_ ->
-                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                { uuid = "u", filename = "f", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 1000, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
                     |> isExpired 1000
                     |> Expect.equal True
         , test "timerSyncEnvelope carries the deadline under timerSync.timerEndsAt" <|
@@ -544,7 +574,9 @@ entry uuid =
     , timerEndsAt = Nothing
     , quizQuestions = Just (encodeTestQuestions baseQuizQuestions)
     , iqOfferDisabled = False
-    , iqOfferUsed = False
+    , iqOfferUsedFail = False
+    , iqOfferUsedCatch = False
+    , iqOfferGrant = Nothing
     , quizSongEndedIdx = Nothing
     }
 
@@ -1278,7 +1310,9 @@ iqEditSuite =
                             , quizProgress = 0
                             , timerEndsAt = Nothing
                             , quizQuestions = Nothing
-                            , iqOfferUsed = False
+                            , iqOfferUsedFail = False
+                            , iqOfferUsedCatch = False
+                            , iqOfferGrant = Nothing
                             , quizSongEndedIdx = Nothing
                             }
 
@@ -1304,7 +1338,7 @@ iqEditSuite =
 
                     editedState =
                         encodeServerStateFields
-                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
 
                     ( m, _ ) =
                         update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
@@ -1383,19 +1417,24 @@ iqTimerCodecSuite =
         ]
 
 
+noGrant : { hasSkipOfferGrant : Bool, offerIsLastChance : Bool }
+noGrant =
+    { hasSkipOfferGrant = False, offerIsLastChance = False }
+
+
 deriveIqScreenSuite : Test
 deriveIqScreenSuite =
     describe "deriveIqScreen"
         [ test "IqCounting derives an IQTestCountdownScreen decodable by Sync's real decoder" <|
             \_ ->
                 { iqState | phase = IqCounting, countdownRemaining = 42, totalDings = 100, questionIdx = 3 }
-                    |> deriveIqScreen False
+                    |> deriveIqScreen noGrant
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestCountdownState) >> Result.toMaybe)
                     |> Expect.equal (Just { questionIdx = 3, totalDings = 100, countdown = 42 })
         , test "IqAwaitingReady derives an inactive IQTestActiveScreen" <|
             \_ ->
                 { iqState | phase = IqAwaitingReady, dingCount = 3, totalDings = 100, questionIdx = 2 }
-                    |> deriveIqScreen False
+                    |> deriveIqScreen noGrant
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1412,14 +1451,14 @@ deriveIqScreenSuite =
         , test "IqDingScheduled also derives an inactive IQTestActiveScreen" <|
             \_ ->
                 { iqState | phase = IqDingScheduled, dingCount = 3, totalDings = 100 }
-                    |> deriveIqScreen False
+                    |> deriveIqScreen noGrant
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Maybe.map .isFlashing
                     |> Expect.equal (Just False)
         , test "IqDingShown with a real ding derives an active flash; loudPlaying kicks in at dingCount 4" <|
             \_ ->
                 { iqState | phase = IqDingShown, lastDing = RealDing, dingCount = 4, totalDings = 100 }
-                    |> deriveIqScreen False
+                    |> deriveIqScreen noGrant
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1436,33 +1475,39 @@ deriveIqScreenSuite =
         , test "IqDingShown with a trap fake derives a fake flash with fakeIsTrap" <|
             \_ ->
                 { iqState | phase = IqDingShown, lastDing = TrapFake, dingCount = 1 }
-                    |> deriveIqScreen False
+                    |> deriveIqScreen noGrant
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Maybe.map (\s -> ( s.dingActive, s.fakeFlashActive, s.fakeIsTrap ))
                     |> Expect.equal (Just ( False, True, True ))
         , test "IqDingShown with a phase fake derives a fake flash without fakeIsTrap" <|
             \_ ->
                 { iqState | phase = IqDingShown, lastDing = PhaseFake, dingCount = 1 }
-                    |> deriveIqScreen False
+                    |> deriveIqScreen noGrant
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestState) >> Result.toMaybe)
                     |> Maybe.map (\s -> ( s.fakeFlashActive, s.fakeIsTrap ))
                     |> Expect.equal (Just ( True, False ))
         , test "IqIdleNotStarted derives an IQTestScreen, with no pending skip offer when there's no grant" <|
             \_ ->
                 { iqState | phase = IqIdleNotStarted, questionIdx = 2, totalDings = 100 }
-                    |> deriveIqScreen False
+                    |> deriveIqScreen noGrant
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestScreenState) >> Result.toMaybe)
-                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing })
+                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = False })
         , test "IqIdleNotStarted derives a pending skip offer when a grant is live (issue #93 reconnect fix)" <|
             \_ ->
                 { iqState | phase = IqIdleNotStarted, questionIdx = 2, totalDings = 100 }
-                    |> deriveIqScreen True
+                    |> deriveIqScreen { hasSkipOfferGrant = True, offerIsLastChance = False }
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestScreenState) >> Result.toMaybe)
-                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100, pendingSkipOffer = Just 100 })
+                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100, pendingSkipOffer = Just 100, offerIsLastChance = False })
+        , test "IqIdleNotStarted also derives offerIsLastChance = True when both registry flags are used (reconnect reproduces the 2nd-ever ordinal)" <|
+            \_ ->
+                { iqState | phase = IqIdleNotStarted, questionIdx = 2, totalDings = 100 }
+                    |> deriveIqScreen { hasSkipOfferGrant = True, offerIsLastChance = True }
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeIQTestScreenState) >> Result.toMaybe)
+                    |> Expect.equal (Just { questionIdx = 2, totalDings = 100, pendingSkipOffer = Just 100, offerIsLastChance = True })
         , test "IqIdleCaught derives a FakeFlashCaughtScreen restarted at FfDelay, with no skip offer when there's no grant" <|
             \_ ->
                 { iqState | phase = IqIdleCaught, questionIdx = 2, totalDings = 200 }
-                    |> deriveIqScreen False
+                    |> deriveIqScreen noGrant
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeFakeFlashCaughtState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1472,12 +1517,13 @@ deriveIqScreenSuite =
                             , displayDenominator = 100
                             , phase = IQTest.FfDelay
                             , skipOffer = Nothing
+                            , offerIsLastChance = False
                             }
                         )
         , test "IqIdleCaught derives a skip offer when a grant is live (twin reconnect fix)" <|
             \_ ->
                 { iqState | phase = IqIdleCaught, questionIdx = 2, totalDings = 200 }
-                    |> deriveIqScreen True
+                    |> deriveIqScreen { hasSkipOfferGrant = True, offerIsLastChance = False }
                     |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeFakeFlashCaughtState) >> Result.toMaybe)
                     |> Expect.equal
                         (Just
@@ -1487,6 +1533,23 @@ deriveIqScreenSuite =
                             , displayDenominator = 100
                             , phase = IQTest.FfDelay
                             , skipOffer = Just 200
+                            , offerIsLastChance = False
+                            }
+                        )
+        , test "IqIdleCaught also derives offerIsLastChance = True when both registry flags are used" <|
+            \_ ->
+                { iqState | phase = IqIdleCaught, questionIdx = 2, totalDings = 200 }
+                    |> deriveIqScreen { hasSkipOfferGrant = True, offerIsLastChance = True }
+                    |> Maybe.andThen (Decode.decodeValue (Decode.field "state" decodeFakeFlashCaughtState) >> Result.toMaybe)
+                    |> Expect.equal
+                        (Just
+                            { questionIdx = 2
+                            , originalTotal = 100
+                            , displayNumerator = 0
+                            , displayDenominator = 100
+                            , phase = IQTest.FfDelay
+                            , skipOffer = Just 200
+                            , offerIsLastChance = True
                             }
                         )
         ]
@@ -1509,7 +1572,9 @@ persistIqTimerInRegistrySuite =
                           , timerEndsAt = Nothing
                           , quizQuestions = Nothing
                           , iqOfferDisabled = False
-                          , iqOfferUsed = False
+                          , iqOfferUsedFail = False
+                          , iqOfferUsedCatch = False
+                          , iqOfferGrant = Nothing
                           , quizSongEndedIdx = Nothing
                           }
                         ]
@@ -1538,7 +1603,9 @@ persistIqTimerInRegistrySuite =
                           , timerEndsAt = Nothing
                           , quizQuestions = Nothing
                           , iqOfferDisabled = False
-                          , iqOfferUsed = False
+                          , iqOfferUsedFail = False
+                          , iqOfferUsedCatch = False
+                          , iqOfferGrant = Nothing
                           , quizSongEndedIdx = Nothing
                           }
                         ]
@@ -1730,7 +1797,7 @@ stateRequestSuite =
             \_ ->
                 let
                     fresh =
-                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
 
                     staged =
                         { baseModel | registry = [ fresh ] }
@@ -1747,7 +1814,7 @@ stateRequestSuite =
             \_ ->
                 let
                     fresh =
-                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 999999, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                        { uuid = "uuid1", filename = "f.dmg", platform = "mac", pendingStateEdit = False, winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Just 999999, quizQuestions = Nothing, iqOfferDisabled = False, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
 
                     staged =
                         { baseModel | registry = [ fresh ] }
@@ -1907,7 +1974,7 @@ stateRequestSuite =
                         update (stateRequestMsg "c1" "uuid1") staged
 
                     expectedInner =
-                        deriveIqScreen False { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                        deriveIqScreen noGrant { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
                             |> Maybe.withDefault (Encode.object [])
 
                     expectedWrapped =
@@ -1940,7 +2007,7 @@ stateRequestSuite =
                         update (stateRequestMsg "c1" "uuid1") staged
 
                     expectedInner =
-                        deriveIqScreen True { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                        deriveIqScreen { hasSkipOfferGrant = True, offerIsLastChance = False } { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
                             |> Maybe.withDefault (Encode.object [])
 
                     expectedWrapped =
@@ -1973,7 +2040,40 @@ stateRequestSuite =
                         update (stateRequestMsg "c1" "uuid1") staged
 
                     expectedInner =
-                        deriveIqScreen True { iqState | phase = IqIdleCaught, questionIdx = 1, totalDings = 100 }
+                        deriveIqScreen { hasSkipOfferGrant = True, offerIsLastChance = False } { iqState | phase = IqIdleCaught, questionIdx = 1, totalDings = 100 }
+                            |> Maybe.withDefault (Encode.object [])
+
+                    expectedWrapped =
+                        Encode.object [ ( "tag", Encode.string "BeginScreen" ), ( "nextScreen", expectedInner ) ]
+                in
+                cmd
+                    |> Expect.equal
+                        (Cmd.batch
+                            [ writeRegistry m.registry
+                            , sendToClient { clientId = "c1", payload = stateEnvelope expectedWrapped }
+                            , sendToClient { clientId = "c1", payload = timerSyncEnvelope 999999 }
+                            ]
+                        )
+        , test "a reconnect with both trigger flags already used re-derives offerIsLastChance = True (reconnect reproduces the 2nd-ever ordinal end-to-end)" <|
+            \_ ->
+                let
+                    base =
+                        entry "uuid1"
+
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.empty
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
+                            , iqOfferGrants = Dict.singleton "uuid1" 1
+                            , quizProgress = Dict.singleton "uuid1" 1
+                            , registry = [ { base | timerEndsAt = Just 999999, iqOfferUsedFail = True, iqOfferUsedCatch = True } ]
+                        }
+
+                    ( m, cmd ) =
+                        update (stateRequestMsg "c1" "uuid1") staged
+
+                    expectedInner =
+                        deriveIqScreen { hasSkipOfferGrant = True, offerIsLastChance = True } { iqState | phase = IqIdleNotStarted, questionIdx = 1, totalDings = 100 }
                             |> Maybe.withDefault (Encode.object [])
 
                     expectedWrapped =
@@ -2226,7 +2326,7 @@ distCompleteSuite =
                     , \_ -> Dict.get "c1" m.distClients |> Expect.equal Nothing
                     ]
                     ()
-        , test "a fresh entry starts with iqOfferDisabled/iqOfferUsed both False by default" <|
+        , test "a fresh entry starts with iqOfferDisabled/iqOfferUsedFail/iqOfferUsedCatch False and iqOfferGrant Nothing by default" <|
             \_ ->
                 let
                     staged =
@@ -2240,7 +2340,9 @@ distCompleteSuite =
                 in
                 Expect.all
                     [ \_ -> newEntry |> Maybe.map .iqOfferDisabled |> Expect.equal (Just False)
-                    , \_ -> newEntry |> Maybe.map .iqOfferUsed |> Expect.equal (Just False)
+                    , \_ -> newEntry |> Maybe.map .iqOfferUsedFail |> Expect.equal (Just False)
+                    , \_ -> newEntry |> Maybe.map .iqOfferUsedCatch |> Expect.equal (Just False)
+                    , \_ -> newEntry |> Maybe.map .iqOfferGrant |> Expect.equal (Just Nothing)
                     ]
                     ()
         , test "iqSkipOfferDisabled = true on the payload lands as iqOfferDisabled = True on the entry" <|
@@ -2415,12 +2517,12 @@ distReplaceCompleteSuite =
                         m.registry |> List.filter (\e -> e.uuid == "new1") |> List.head
                 in
                 newEntry |> Maybe.map .iqOfferDisabled |> Expect.equal (Just False)
-        , test "a matching replacement still carries iqOfferUsed forward from the old entry (unlike iqOfferDisabled)" <|
+        , test "a matching replacement still carries iqOfferUsedFail/iqOfferUsedCatch/iqOfferGrant forward from the old entry (unlike iqOfferDisabled)" <|
             \_ ->
                 let
                     withOfferUsed =
                         baseModel.registry
-                            |> List.map (\e -> if e.uuid == "uuid1" then { e | iqOfferUsed = True } else e)
+                            |> List.map (\e -> if e.uuid == "uuid1" then { e | iqOfferUsedFail = True, iqOfferUsedCatch = True, iqOfferGrant = Just 4 } else e)
 
                     staged =
                         { baseModel
@@ -2434,7 +2536,12 @@ distReplaceCompleteSuite =
                     newEntry =
                         m.registry |> List.filter (\e -> e.uuid == "new1") |> List.head
                 in
-                newEntry |> Maybe.map .iqOfferUsed |> Expect.equal (Just True)
+                Expect.all
+                    [ \_ -> newEntry |> Maybe.map .iqOfferUsedFail |> Expect.equal (Just True)
+                    , \_ -> newEntry |> Maybe.map .iqOfferUsedCatch |> Expect.equal (Just True)
+                    , \_ -> newEntry |> Maybe.map .iqOfferGrant |> Expect.equal (Just (Just 4))
+                    ]
+                    ()
         ]
 
 
@@ -2486,6 +2593,40 @@ fileReadSuite =
                     [ \mm -> mm.registry |> List.map .uuid |> Expect.equal [ "u1" ]
                     , \mm -> Set.member "u1" mm.pendingStateEdits |> Expect.equal True
                     , \mm -> Dict.get "u1" mm.iqTimers |> Maybe.map .countdownRemaining |> Expect.equal (Just 9)
+                    ]
+                    m
+        , test "a successful registry read also rehydrates iqOfferGrants, so a restart doesn't strand an outstanding grant (only for rows that have one)" <|
+            \_ ->
+                let
+                    row =
+                        Encode.encode 0
+                            (Encode.object
+                                [ ( "builds"
+                                  , Encode.list identity
+                                        [ Encode.object
+                                            [ ( "uuid", Encode.string "u1" )
+                                            , ( "filename", Encode.string "f1.dmg" )
+                                            , ( "platform", Encode.string "mac" )
+                                            , ( "pendingStateEdit", Encode.bool False )
+                                            , ( "serverState", Encode.object [ ( "iqOfferGrant", Encode.int 3 ) ] )
+                                            ]
+                                        , Encode.object
+                                            [ ( "uuid", Encode.string "u2" )
+                                            , ( "filename", Encode.string "f2.dmg" )
+                                            , ( "platform", Encode.string "mac" )
+                                            , ( "pendingStateEdit", Encode.bool False )
+                                            ]
+                                        ]
+                                  )
+                                ]
+                            )
+
+                    ( m, _ ) =
+                        update (FileRead registryFilePath (Ok row)) baseModel
+                in
+                Expect.all
+                    [ \mm -> Dict.get "u1" mm.iqOfferGrants |> Expect.equal (Just 3)
+                    , \mm -> Dict.get "u2" mm.iqOfferGrants |> Expect.equal Nothing
                     ]
                     m
         ]
@@ -2677,35 +2818,49 @@ iqReadyForDingSuite =
 decideIqOfferSuite : Test
 decideIqOfferSuite =
     describe "decideIqOffer"
-        [ test "grants when enabled, not yet used, and dingCount meets the threshold" <|
+        [ test "grants when enabled, not yet used by this trigger, and dingCount meets the threshold" <|
             \_ ->
-                decideIqOffer { dingCountAtFail = 5, totalDingsAtFail = 100, offerDisabled = False, offerUsed = False }
-                    |> Expect.equal { granted = True, totalDings = 100 }
+                decideIqOffer { dingCountAtFail = 5, totalDingsAtFail = 100, offerDisabled = False, thisTriggerUsed = False, otherTriggerUsed = False }
+                    |> Expect.equal { granted = True, totalDings = 100, isLastChance = False }
         , test "grants above the threshold too" <|
             \_ ->
-                decideIqOffer { dingCountAtFail = 40, totalDingsAtFail = 100, offerDisabled = False, offerUsed = False }
+                decideIqOffer { dingCountAtFail = 40, totalDingsAtFail = 100, offerDisabled = False, thisTriggerUsed = False, otherTriggerUsed = False }
                     |> .granted
                     |> Expect.equal True
         , test "denies below the threshold" <|
             \_ ->
-                decideIqOffer { dingCountAtFail = 4, totalDingsAtFail = 100, offerDisabled = False, offerUsed = False }
+                decideIqOffer { dingCountAtFail = 4, totalDingsAtFail = 100, offerDisabled = False, thisTriggerUsed = False, otherTriggerUsed = False }
                     |> .granted
                     |> Expect.equal False
         , test "denies when config-disabled, even past the threshold" <|
             \_ ->
-                decideIqOffer { dingCountAtFail = 50, totalDingsAtFail = 100, offerDisabled = True, offerUsed = False }
+                decideIqOffer { dingCountAtFail = 50, totalDingsAtFail = 100, offerDisabled = True, thisTriggerUsed = False, otherTriggerUsed = False }
                     |> .granted
                     |> Expect.equal False
-        , test "denies when already used, even past the threshold" <|
+        , test "denies when this trigger already used, even past the threshold" <|
             \_ ->
-                decideIqOffer { dingCountAtFail = 50, totalDingsAtFail = 100, offerDisabled = False, offerUsed = True }
+                decideIqOffer { dingCountAtFail = 50, totalDingsAtFail = 100, offerDisabled = False, thisTriggerUsed = True, otherTriggerUsed = False }
                     |> .granted
                     |> Expect.equal False
         , test "totalDings always echoes the totalDingsAtFail argument, granted or not" <|
             \_ ->
-                decideIqOffer { dingCountAtFail = 0, totalDingsAtFail = 200, offerDisabled = True, offerUsed = True }
+                decideIqOffer { dingCountAtFail = 0, totalDingsAtFail = 200, offerDisabled = True, thisTriggerUsed = True, otherTriggerUsed = True }
                     |> .totalDings
                     |> Expect.equal 200
+        , test "isLastChance is True when granted and the other trigger was already used (this is the 2nd-ever grant)" <|
+            \_ ->
+                decideIqOffer { dingCountAtFail = 50, totalDingsAtFail = 100, offerDisabled = False, thisTriggerUsed = False, otherTriggerUsed = True }
+                    |> Expect.equal { granted = True, totalDings = 100, isLastChance = True }
+        , test "isLastChance is False when granted and the other trigger was not yet used (this is the 1st-ever grant)" <|
+            \_ ->
+                decideIqOffer { dingCountAtFail = 50, totalDingsAtFail = 100, offerDisabled = False, thisTriggerUsed = False, otherTriggerUsed = False }
+                    |> .isLastChance
+                    |> Expect.equal False
+        , test "isLastChance is False when denied, regardless of the other trigger's flag (denied always wins)" <|
+            \_ ->
+                decideIqOffer { dingCountAtFail = 50, totalDingsAtFail = 100, offerDisabled = True, thisTriggerUsed = False, otherTriggerUsed = True }
+                    |> .isLastChance
+                    |> Expect.equal False
         ]
 
 
@@ -2734,7 +2889,7 @@ iqFailedSuite =
                         update (iqFailedMsg "c1") staged
                 in
                 m |> Expect.equal staged
-        , test "a qualifying fail (enough dings, offer available) grants: resets phase, marks iqOfferUsed, records the grant" <|
+        , test "a qualifying fail (enough dings, offer available) grants: resets phase, marks iqOfferUsedFail only (not iqOfferUsedCatch), persists and records the grant" <|
             \_ ->
                 let
                     staged =
@@ -2751,7 +2906,9 @@ iqFailedSuite =
                 in
                 Expect.all
                     [ \_ -> Dict.get "uuid1" m.iqTimers |> Maybe.map .phase |> Expect.equal (Just IqIdleNotStarted)
-                    , \_ -> entryOf |> Maybe.map .iqOfferUsed |> Expect.equal (Just True)
+                    , \_ -> entryOf |> Maybe.map .iqOfferUsedFail |> Expect.equal (Just True)
+                    , \_ -> entryOf |> Maybe.map .iqOfferUsedCatch |> Expect.equal (Just False)
+                    , \_ -> entryOf |> Maybe.map .iqOfferGrant |> Expect.equal (Just (Just 3))
                     , \_ -> Dict.get "uuid1" m.iqOfferGrants |> Expect.equal (Just 3)
                     ]
                     ()
@@ -2772,7 +2929,7 @@ iqFailedSuite =
                 in
                 Expect.all
                     [ \_ -> Dict.get "uuid1" m.iqTimers |> Maybe.map .phase |> Expect.equal (Just IqIdleNotStarted)
-                    , \_ -> entryOf |> Maybe.map .iqOfferUsed |> Expect.equal (Just False)
+                    , \_ -> entryOf |> Maybe.map .iqOfferUsedFail |> Expect.equal (Just False)
                     , \_ -> Dict.get "uuid1" m.iqOfferGrants |> Expect.equal Nothing
                     ]
                     ()
@@ -2790,13 +2947,13 @@ iqFailedSuite =
                         update (iqFailedMsg "c1") staged
                 in
                 Dict.get "uuid1" m.iqOfferGrants |> Expect.equal Nothing
-        , test "a fail when the offer was already used resets phase but does not re-grant" <|
+        , test "a fail when the fail trigger was already used resets phase but does not re-grant" <|
             \_ ->
                 let
                     staged =
                         { baseModel
                             | connectedPlayers = Dict.singleton "uuid1" "c1"
-                            , registry = baseModel.registry |> List.map (\e -> if e.uuid == "uuid1" then { e | iqOfferUsed = True } else e)
+                            , registry = baseModel.registry |> List.map (\e -> if e.uuid == "uuid1" then { e | iqOfferUsedFail = True } else e)
                             , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingShown, dingCount = 10 }
                         }
 
@@ -2804,6 +2961,31 @@ iqFailedSuite =
                         update (iqFailedMsg "c1") staged
                 in
                 Dict.get "uuid1" m.iqOfferGrants |> Expect.equal Nothing
+        , test "a fail still grants when only the catch trigger was already used -- the two triggers are independent" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , registry = baseModel.registry |> List.map (\e -> if e.uuid == "uuid1" then { e | iqOfferUsedCatch = True } else e)
+                            , iqTimers = Dict.singleton "uuid1" { iqState | phase = IqDingShown, dingCount = 10, totalDings = 77, questionIdx = 3 }
+                        }
+
+                    ( m, cmd ) =
+                        update (iqFailedMsg "c1") staged
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.iqOfferGrants |> Expect.equal (Just 3)
+                    , \_ ->
+                        cmd
+                            |> Expect.equal
+                                (Cmd.batch
+                                    [ writeRegistry m.registry
+                                    , sendToClient { clientId = "c1", payload = iqOfferDecisionEnvelope { granted = True, totalDings = 77, isLastChance = True } }
+                                    ]
+                                )
+                    ]
+                    ()
         , test "a stale report from an idle/counting phase is ignored entirely" <|
             \_ ->
                 let
@@ -2821,7 +3003,7 @@ iqFailedSuite =
                     , \_ -> cmd |> Expect.equal Cmd.none
                     ]
                     ()
-        , test "a granted fail sends iqOfferDecisionEnvelope with granted = True and the current totalDings, writing the registry exactly once" <|
+        , test "a granted fail sends iqOfferDecisionEnvelope with granted = True, isLastChance = False, and the current totalDings, writing the registry exactly once" <|
             \_ ->
                 let
                     staged =
@@ -2837,7 +3019,7 @@ iqFailedSuite =
                     |> Expect.equal
                         (Cmd.batch
                             [ writeRegistry m.registry
-                            , sendToClient { clientId = "c1", payload = iqOfferDecisionEnvelope { granted = True, totalDings = 77 } }
+                            , sendToClient { clientId = "c1", payload = iqOfferDecisionEnvelope { granted = True, totalDings = 77, isLastChance = False } }
                             ]
                         )
         ]
@@ -2846,7 +3028,7 @@ iqFailedSuite =
 iqCaughtOfferSuite : Test
 iqCaughtOfferSuite =
     describe "ClientIqCaught grants the skip offer alongside the existing catch handling"
-        [ test "a qualifying catch (enough pre-catch dings) grants with the doubled totalDings" <|
+        [ test "a qualifying catch (enough pre-catch dings) grants with the doubled totalDings: marks iqOfferUsedCatch only (not iqOfferUsedFail), persists the grant" <|
             \_ ->
                 let
                     staged =
@@ -2862,7 +3044,9 @@ iqCaughtOfferSuite =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
                 in
                 Expect.all
-                    [ \_ -> entryOf |> Maybe.map .iqOfferUsed |> Expect.equal (Just True)
+                    [ \_ -> entryOf |> Maybe.map .iqOfferUsedCatch |> Expect.equal (Just True)
+                    , \_ -> entryOf |> Maybe.map .iqOfferUsedFail |> Expect.equal (Just False)
+                    , \_ -> entryOf |> Maybe.map .iqOfferGrant |> Expect.equal (Just (Just 5))
                     , \_ -> Dict.get "uuid1" m.iqOfferGrants |> Expect.equal (Just 5)
                     ]
                     ()
@@ -2879,13 +3063,13 @@ iqCaughtOfferSuite =
                         update (iqTimerMsg "c1" "iqCaught") staged
                 in
                 Dict.get "uuid1" m.iqOfferGrants |> Expect.equal Nothing
-        , test "a catch when the offer was already used does not re-grant" <|
+        , test "a catch when the catch trigger was already used does not re-grant" <|
             \_ ->
                 let
                     staged =
                         { baseModel
                             | connectedPlayers = Dict.singleton "uuid1" "c1"
-                            , registry = baseModel.registry |> List.map (\e -> if e.uuid == "uuid1" then { e | iqOfferUsed = True } else e)
+                            , registry = baseModel.registry |> List.map (\e -> if e.uuid == "uuid1" then { e | iqOfferUsedCatch = True } else e)
                             , iqTimers = Dict.singleton "uuid1" { iqState | totalDings = 100, dingCount = 10, phase = IqDingShown, lastDing = TrapFake }
                         }
 
@@ -2893,7 +3077,36 @@ iqCaughtOfferSuite =
                         update (iqTimerMsg "c1" "iqCaught") staged
                 in
                 Dict.get "uuid1" m.iqOfferGrants |> Expect.equal Nothing
-        , test "a granted catch sends iqOfferDecisionEnvelope with the doubled totalDings, writing the registry exactly once" <|
+        , test "a catch still grants when only the fail trigger was already used, and reports isLastChance = True -- the two triggers are independent (fail-then-catch)" <|
+            \_ ->
+                let
+                    staged =
+                        { baseModel
+                            | connectedPlayers = Dict.singleton "uuid1" "c1"
+                            , registry = baseModel.registry |> List.map (\e -> if e.uuid == "uuid1" then { e | iqOfferUsedFail = True } else e)
+                            , iqTimers = Dict.singleton "uuid1" { iqState | totalDings = 100, dingCount = 10, phase = IqDingShown, lastDing = TrapFake, questionIdx = 5 }
+                        }
+
+                    ( m, cmd ) =
+                        update (iqTimerMsg "c1" "iqCaught") staged
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+                in
+                Expect.all
+                    [ \_ -> Dict.get "uuid1" m.iqOfferGrants |> Expect.equal (Just 5)
+                    , \_ -> entryOf |> Maybe.map (\e -> ( e.iqOfferUsedFail, e.iqOfferUsedCatch )) |> Expect.equal (Just ( True, True ))
+                    , \_ ->
+                        cmd
+                            |> Expect.equal
+                                (Cmd.batch
+                                    [ writeRegistry m.registry
+                                    , sendToClient { clientId = "c1", payload = iqOfferDecisionEnvelope { granted = True, totalDings = 200, isLastChance = True } }
+                                    ]
+                                )
+                    ]
+                    ()
+        , test "a granted catch sends iqOfferDecisionEnvelope with the doubled totalDings and isLastChance = False, writing the registry exactly once" <|
             \_ ->
                 let
                     staged =
@@ -2909,7 +3122,7 @@ iqCaughtOfferSuite =
                     |> Expect.equal
                         (Cmd.batch
                             [ writeRegistry m.registry
-                            , sendToClient { clientId = "c1", payload = iqOfferDecisionEnvelope { granted = True, totalDings = 200 } }
+                            , sendToClient { clientId = "c1", payload = iqOfferDecisionEnvelope { granted = True, totalDings = 200, isLastChance = False } }
                             ]
                         )
         ]
@@ -3195,7 +3408,9 @@ editedIqBeginSuite =
                             , quizProgress = 0
                             , timerEndsAt = Nothing
                             , quizQuestions = Nothing
-                            , iqOfferUsed = False
+                            , iqOfferUsedFail = False
+                            , iqOfferUsedCatch = False
+                            , iqOfferGrant = Nothing
                             , quizSongEndedIdx = Nothing
                             }
 
@@ -4058,7 +4273,9 @@ quizEditSuite =
                             , quizProgress = 2
                             , timerEndsAt = Nothing
                             , quizQuestions = Nothing
-                            , iqOfferUsed = False
+                            , iqOfferUsedFail = False
+                            , iqOfferUsedCatch = False
+                            , iqOfferGrant = Nothing
                             , quizSongEndedIdx = Nothing
                             }
 
@@ -4081,13 +4298,13 @@ quizEditSuite =
 
                     editedState =
                         encodeServerStateFields
-                            { winText = "", iqTimer = Nothing, quizProgress = 9, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = False, quizSongEndedIdx = Nothing }
+                            { winText = "", iqTimer = Nothing, quizProgress = 9, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsedFail = False, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
 
                     ( m, _ ) =
                         update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
                 in
                 Dict.get "uuid1" m.quizProgress |> Expect.equal (Just 9)
-        , test "saving iqOfferUsed = True lands in the registry, letting an admin re-grant a used-up offer" <|
+        , test "saving iqOfferUsedFail/iqOfferUsedCatch = True lands in the registry independently, letting an admin re-grant a used-up offer per trigger" <|
             \_ ->
                 let
                     editing =
@@ -4095,7 +4312,7 @@ quizEditSuite =
 
                     editedState =
                         encodeServerStateFields
-                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsed = True, quizSongEndedIdx = Nothing }
+                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsedFail = True, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
 
                     ( m, _ ) =
                         update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
@@ -4103,5 +4320,47 @@ quizEditSuite =
                     entryOf =
                         m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
                 in
-                entryOf |> Maybe.map .iqOfferUsed |> Expect.equal (Just True)
+                Expect.all
+                    [ \_ -> entryOf |> Maybe.map .iqOfferUsedFail |> Expect.equal (Just True)
+                    , \_ -> entryOf |> Maybe.map .iqOfferUsedCatch |> Expect.equal (Just False)
+                    ]
+                    ()
+        , test "saving iqOfferGrant lands in both the registry and the live model.iqOfferGrants (the authority while a player is connected)" <|
+            \_ ->
+                let
+                    editing =
+                        { baseModel | distClients = Dict.singleton "c1" (EditingState "uuid1") }
+
+                    editedState =
+                        encodeServerStateFields
+                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsedFail = True, iqOfferUsedCatch = False, iqOfferGrant = Just 4, quizSongEndedIdx = Nothing }
+
+                    ( m, _ ) =
+                        update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
+
+                    entryOf =
+                        m.registry |> List.filter (\e -> e.uuid == "uuid1") |> List.head
+                in
+                Expect.all
+                    [ \_ -> entryOf |> Maybe.map .iqOfferGrant |> Expect.equal (Just (Just 4))
+                    , \_ -> Dict.get "uuid1" m.iqOfferGrants |> Expect.equal (Just 4)
+                    ]
+                    ()
+        , test "clearing iqOfferGrant (Nothing) removes it from the live model.iqOfferGrants too" <|
+            \_ ->
+                let
+                    editing =
+                        { baseModel
+                            | distClients = Dict.singleton "c1" (EditingState "uuid1")
+                            , iqOfferGrants = Dict.singleton "uuid1" 4
+                        }
+
+                    editedState =
+                        encodeServerStateFields
+                            { winText = "", iqTimer = Nothing, quizProgress = 0, timerEndsAt = Nothing, quizQuestions = Nothing, iqOfferUsedFail = True, iqOfferUsedCatch = False, iqOfferGrant = Nothing, quizSongEndedIdx = Nothing }
+
+                    ( m, _ ) =
+                        update (saveMsg "c1" "uuid1" (Encode.encode 0 editedState)) editing
+                in
+                Dict.get "uuid1" m.iqOfferGrants |> Expect.equal Nothing
         ]

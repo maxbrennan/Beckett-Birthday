@@ -147,6 +147,13 @@ type alias IQTestScreenState =
     -- Always Nothing on IQTestSkipOfferScreen itself (this type is shared, but
     -- the field is meaningless once already on the offer screen).
     , pendingSkipOffer : Maybe Int
+
+    -- The server's isLastChance verdict (see Server.elm's decideIqOffer), carried
+    -- alongside pendingSkipOffer/skipOffer even while still on IQTestScreen/
+    -- FakeFlashCaughtScreen (where nothing reads it yet) purely so it survives the
+    -- hand-off into IQTestSkipOfferScreen, the only place View.elm actually branches
+    -- on it. Meaningless (always False) whenever there's no pending offer at all.
+    , offerIsLastChance : Bool
     }
 
 
@@ -198,6 +205,34 @@ type alias FakeFlashCaughtState =
     -- lands well before FfCounterOut, the only phase that reads it). Just totalDings
     -- once granted; stays Nothing forever if denied.
     , skipOffer : Maybe Int
+
+    -- Mirrors IQTestScreenState.offerIsLastChance -- see its doc comment.
+    , offerIsLastChance : Bool
+    }
+
+
+-- Which of the two triggers (see Server.elm's decideIqOffer) a cached grant came
+-- from -- see CachedOfferGrant below.
+type OfferGrantTrigger
+    = FailTrigger
+    | CatchTrigger
+
+
+{-| The client's own local-disk mirror of a live, outstanding skip-offer grant
+(see Server.elm's Model.iqOfferGrants/RegistryEntry.iqOfferGrant) -- written to
+disk whenever the client's own Model reflects one, read back at app launch so
+the very first rendered screen can already show the offer-eligible variant
+instead of a generic loading screen while the WebSocket round trip is still in
+flight. Purely an optimistic accelerator: the eventual ServerStateUpdate is
+always authoritative and overwrites whatever this seeded, so a stale/wrong
+cache is a cosmetic risk at worst (see Main.elm's WsClientReady/
+ServerStateUpdate handling).
+-}
+type alias CachedOfferGrant =
+    { questionIdx : Int
+    , totalDings : Int
+    , trigger : OfferGrantTrigger
+    , offerIsLastChance : Bool
     }
 
 
@@ -309,6 +344,7 @@ decideSpaceBar state =
                 , displayDenominator = state.totalDings
                 , phase = FfDelay
                 , skipOffer = Nothing
+                , offerIsLastChance = False
                 }
 
         else
@@ -365,4 +401,5 @@ exitFakeFlash state =
     { questionIdx = state.questionIdx
     , totalDings = Basics.min (state.originalTotal * 2) maxTotalDings
     , pendingSkipOffer = Nothing
+    , offerIsLastChance = False
     }
