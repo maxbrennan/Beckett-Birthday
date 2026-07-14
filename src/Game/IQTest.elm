@@ -100,6 +100,19 @@ iqDingVolume =
     0.8
 
 
+-- Ding count at/above which the loud "gag" video should start playing.
+iqLoudDingThreshold : Int
+iqLoudDingThreshold =
+    4
+
+
+-- Delay (ms) before the loud video actually starts once the loud threshold is
+-- reached, so the gag doesn't feel instantaneous.
+iqLoudDelay : Float
+iqLoudDelay =
+    3000
+
+
 -- Number of preloaded ding-audio slots cycled round-robin so rapid
 -- back-to-back triggers (e.g. the fake-flash countdown at 80 ms cadence)
 -- can play without cutting each other off.

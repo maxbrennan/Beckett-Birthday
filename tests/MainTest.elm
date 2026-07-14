@@ -1,7 +1,7 @@
 module MainTest exposing (..)
 
 import Expect
-import Game.IQTest exposing (FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, iqQuestionCount)
+import Game.IQTest exposing (FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, iqLoudDelay, iqQuestionCount)
 import Json.Encode as Encode
 import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
 import Sync
@@ -59,6 +59,14 @@ pendingReconnectFireAt : Model -> Maybe Float
 pendingReconnectFireAt model =
     model.pending
         |> List.filter (\e -> e.msg == WsReconnect)
+        |> List.map .fireAt
+        |> List.head
+
+
+pendingStartLoudMusicFireAt : Model -> Maybe Float
+pendingStartLoudMusicFireAt model =
+    model.pending
+        |> List.filter (\e -> e.msg == StartLoudMusic)
         |> List.map .fireAt
         |> List.head
 
@@ -1446,16 +1454,55 @@ wsDataReceivedSuite =
                         update (WsDataReceived """{"payload":"iqCountdownTick","iqCountdownTick":{"remaining":3}}""") { baseModel | screen = BlankScreen 0 }
                 in
                 result.screen |> Expect.equal (BlankScreen 0)
-        , test "iqCountdownComplete enters the active test" <|
+        , test "iqCountdownComplete enters the active test, preserving a nonzero dingCount" <|
             \_ ->
                 let
                     state =
                         { questionIdx = 1, totalDings = iqQuestionCount, countdown = 0 }
 
                     ( result, _ ) =
-                        update (WsDataReceived """{"payload":"iqCountdownComplete"}""") { baseModel | screen = IQTestCountdownScreen state }
+                        update (WsDataReceived """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":5}}""") { baseModel | screen = IQTestCountdownScreen state }
                 in
-                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | questionIdx = 1 })
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | questionIdx = 1, dingCount = 5 })
+        , test "iqCountdownComplete below the loud threshold does not schedule the loud video" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, totalDings = iqQuestionCount, countdown = 0 }
+
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":3}}""") { baseModel | screen = IQTestCountdownScreen state }
+                in
+                pendingStartLoudMusicFireAt result |> Expect.equal Nothing
+        , test "iqCountdownComplete at/above the loud threshold schedules (but doesn't yet start) the loud video" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, totalDings = iqQuestionCount, countdown = 0 }
+
+                    ( result, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":5}}""")
+                            { baseModel | screen = IQTestCountdownScreen state }
+                in
+                Expect.all
+                    [ \_ -> result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | questionIdx = 1, dingCount = 5 })
+                    , \_ -> pendingStartLoudMusicFireAt result |> Expect.equal (Just (result.now + iqLoudDelay))
+                    ]
+                    ()
+        , test "iqCountdownComplete's scheduled loud video actually starts once fired" <|
+            \_ ->
+                let
+                    state =
+                        { questionIdx = 1, totalDings = iqQuestionCount, countdown = 0 }
+
+                    ( afterCountdown, _ ) =
+                        update (WsDataReceived """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":5}}""")
+                            { baseModel | screen = IQTestCountdownScreen state }
+
+                    ( result, _ ) =
+                        update StartLoudMusic afterCountdown
+                in
+                result.screen |> Expect.equal (IQTestActiveScreen { iqActiveState | questionIdx = 1, dingCount = 5, loudPlaying = True })
         , test "iqCountdownComplete elsewhere is ignored" <|
             \_ ->
                 let

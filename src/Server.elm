@@ -225,7 +225,7 @@ advanceOnClear s =
 
         else
             Advanced
-                { startLoud = newDingCount == 4
+                { startLoud = newDingCount == IQTest.iqLoudDingThreshold
                 , state = { s | dingCount = newDingCount }
                 }
 
@@ -538,7 +538,7 @@ deriveIqActiveScreen state flags =
                 , ( "dingActive", Encode.bool flags.dingActive )
                 , ( "fakeFlashActive", Encode.bool flags.fakeFlashActive )
                 , ( "fakeIsTrap", Encode.bool flags.fakeIsTrap )
-                , ( "loudPlaying", Encode.bool (state.dingCount >= 4) )
+                , ( "loudPlaying", Encode.bool (state.dingCount >= IQTest.iqLoudDingThreshold) )
                 ]
           )
         ]
@@ -2134,7 +2134,7 @@ update msg model =
                                     setIqTimer uuid { state | countdownRemaining = 0, phase = IqAwaitingReady } model
                             in
                             ( withTimer
-                            , Cmd.batch [ persistCmd, sendToPlayer uuid model iqCountdownCompleteEnvelope ]
+                            , Cmd.batch [ persistCmd, sendToPlayer uuid model (iqCountdownCompleteEnvelope state.dingCount) ]
                             )
 
                     else

@@ -322,11 +322,11 @@ iqCountdownTickEnvelope remaining =
         ]
 
 
-iqCountdownCompleteEnvelope : Encode.Value
-iqCountdownCompleteEnvelope =
+iqCountdownCompleteEnvelope : Int -> Encode.Value
+iqCountdownCompleteEnvelope dingCount =
     Encode.object
         [ ( "payload", Encode.string "iqCountdownComplete" )
-        , ( "iqCountdownComplete", Encode.object [] )
+        , ( "iqCountdownComplete", Encode.object [ ( "dingCount", Encode.int dingCount ) ] )
         ]
 
 

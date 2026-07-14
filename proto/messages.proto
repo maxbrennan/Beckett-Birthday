@@ -103,7 +103,10 @@ message IqCaught           {}  // "player pressed during a fake flash" — serve
 message IqResume           {}
 
 message IqCountdownTick     { uint32 remaining = 1; }
-message IqCountdownComplete {}
+// ding_count: the server's authoritative count, sent so a client resuming a
+// countdown whose dingCount was set via edit:state (or otherwise nonzero)
+// can render the real value instead of assuming a fresh test's 0.
+message IqCountdownComplete { uint32 ding_count = 1; }
 // fake: the flash has no real ding behind it. trap: the one-time catchable trap
 // (pressing → penalty cutscene); a fake that is not a trap is a 50%-phase fake
 // (pressing → fail). ding_count/total_dings are the server's authoritative counts,
