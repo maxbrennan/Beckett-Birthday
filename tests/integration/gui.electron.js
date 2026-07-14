@@ -131,6 +131,21 @@ async function readVideoState(window) {
     });
 }
 
+// FakeFlashCaughtScreen (View.elm) renders both cutscene captions unconditionally --
+// only their inline opacity toggles per FakeFlashPhase -- so plain bodyText can't tell
+// "on the screen at all" (true from FfDelay onward) apart from "actually mid-animation"
+// (true only once a phase actually sets opacity to 1). Reading the real inline style is
+// the only way to observe the local FakeFlashNextPhase schedule actually progressing,
+// which is exactly what issue #104's fix re-arms on resume.
+async function fakeFlashCaptionVisible(window, captionText) {
+    return window.evaluate((txt) => {
+        const p = Array.from(document.querySelectorAll('p')).find((el) => el.textContent === txt);
+        return !!p && p.style.opacity === '1';
+    }, captionText);
+}
+
+const FAKE_FLASH_CAPTION_1 = 'You pressed the space bar because you saw a green flash.';
+
 // Loading + decoding the local mp3 file takes a little while (a few seconds observed
 // locally), so autoplay doesn't kick in the instant the element is inserted — poll for
 // playback to actually start rather than asserting immediately, then confirm currentTime
@@ -501,6 +516,104 @@ async function main() {
         await iqWindow.getByRole('button', { name: 'Begin' }).click();
         await waitForBodyTextIncluding(iqWindow, 'You may start the IQ test in', GUI_WAIT_OPTS);
         console.log('  ✓ pressing Begin again after reopening actually starts a fresh countdown instead of freezing');
+
+        // --- issue #104: closing and reopening the client while caught by the fake-flash
+        // trap used to leave the cutscene frozen forever on its first, blank sub-phase
+        // (FfDelay) -- deriveIqScreen (Server.elm) always rebuilds a resumed IqIdleCaught
+        // at FfDelay, but nothing locally scheduled the next FakeFlashNextPhase step to
+        // actually advance off it (unlike the live catch, which does via SpaceBarPressed's
+        // CaughtTrap case). Two variants, differing only in when the quit happens -- mid
+        // cutscene vs. essentially the instant the trap is caught -- since deriveIqScreen's
+        // "always restart from FfDelay" behavior is the same either way; both must resume
+        // the animation and run it through to completion, not just one.
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        const caughtMidBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'iq-caught-mid-cutscene-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === caughtMidBuild.uuid));
+        // dingCount below iqOfferMinDings (5) so no skip offer complicates the cutscene's
+        // exit screen -- it must land on plain IQTestScreen. lastDing: 'TrapFake' stages a
+        // real trap flash actively showing, so the catch below is a genuine SpaceBarPressed
+        // through Game.IQTest.decideSpaceBar, not a simulated one.
+        await stageIqTimer(server, admin, TEST_PORT, caughtMidBuild.uuid, {
+            phase: 'IqDingShown',
+            lastDing: 'TrapFake',
+            dingCount: 2,
+            totalDings: 4,
+        });
+
+        ({ electronApp, window: iqWindow } = await launchClientFor(caughtMidBuild.uuid));
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, '2 / 4', GUI_WAIT_OPTS);
+
+        await iqWindow.keyboard.press('Space');
+        await waitForBodyTextIncluding(iqWindow, FAKE_FLASH_CAPTION_1, GUI_WAIT_OPTS);
+        console.log('  ✓ a real SpaceBarPressed on the staged trap flash is a genuine catch (FakeFlashCaughtScreen)');
+
+        // Let the live cutscene actually get partway through its animation (the first
+        // caption fully visible) before quitting -- a genuine "mid-cutscene" close.
+        await waitUntil(async () => (await fakeFlashCaptionVisible(iqWindow, FAKE_FLASH_CAPTION_1)) ? true : null, GUI_WAIT_OPTS);
+        console.log('  ✓ the live cutscene is genuinely mid-animation (first caption visible) before quitting');
+
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+        ({ electronApp, window: iqWindow } = await launchClientFor(caughtMidBuild.uuid));
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitUntil(async () => (await fakeFlashCaptionVisible(iqWindow, FAKE_FLASH_CAPTION_1)) ? true : null, { timeoutMs: 5000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ closing and reopening mid-cutscene resumes the animation instead of freezing on FfDelay (#104)');
+
+        // Fixed cutscene delays alone total ~9.5s before the count-up even starts -- give
+        // real headroom for the full run to genuinely finish, not just resume.
+        await waitForBodyTextIncluding(iqWindow, 'IQ Test 2.0', { timeoutMs: 18000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ the resumed cutscene runs all the way through and lands on the plain IQTestScreen, not stuck (#104)');
+
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        const caughtImmediateBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'iq-caught-immediate-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === caughtImmediateBuild.uuid));
+        await stageIqTimer(server, admin, TEST_PORT, caughtImmediateBuild.uuid, {
+            phase: 'IqDingShown',
+            lastDing: 'TrapFake',
+            dingCount: 2,
+            totalDings: 4,
+        });
+
+        ({ electronApp, window: iqWindow } = await launchClientFor(caughtImmediateBuild.uuid));
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, '2 / 4', GUI_WAIT_OPTS);
+
+        // Quit the instant the catch itself registers (FakeFlashCaughtScreen is on the
+        // DOM at all, still at its blank FfDelay sub-phase) rather than waiting for any
+        // animation progress -- the earliest possible quit point, as opposed to the
+        // mid-cutscene quit above.
+        await iqWindow.keyboard.press('Space');
+        await waitForBodyTextIncluding(iqWindow, FAKE_FLASH_CAPTION_1, GUI_WAIT_OPTS);
+        console.log('  ✓ a real SpaceBarPressed on the staged trap flash is a genuine catch (FakeFlashCaughtScreen)');
+
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+        ({ electronApp, window: iqWindow } = await launchClientFor(caughtImmediateBuild.uuid));
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitUntil(async () => (await fakeFlashCaptionVisible(iqWindow, FAKE_FLASH_CAPTION_1)) ? true : null, { timeoutMs: 5000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ closing and reopening right as the trap is caught still resumes the animation, not frozen on FfDelay (#104)');
+
+        await waitForBodyTextIncluding(iqWindow, 'IQ Test 2.0', { timeoutMs: 18000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ the resumed cutscene runs all the way through and lands on the plain IQTestScreen, not stuck (#104)');
 
         // --- issue #90: a song already finished must not replay after closing and
         // reopening the client. A freshly deployed build's very first stateRequest
