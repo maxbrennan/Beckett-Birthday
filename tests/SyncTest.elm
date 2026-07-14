@@ -378,10 +378,14 @@ serverEnvelopeTests =
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"iqCountdownTick","iqCountdownTick":{"remaining":3}}"""
                     |> Expect.equal (Ok (ServerIqCountdownTick 3))
-        , test "iqCountdownComplete" <|
+        , test "iqCountdownComplete carries the ding count" <|
+            \_ ->
+                Decode.decodeString decodeServerEnvelope """{"payload":"iqCountdownComplete","iqCountdownComplete":{"dingCount":5}}"""
+                    |> Expect.equal (Ok (ServerIqCountdownComplete 5))
+        , test "iqCountdownComplete defaults dingCount to 0 when protobufjs omits it" <|
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"iqCountdownComplete"}"""
-                    |> Expect.equal (Ok ServerIqCountdownComplete)
+                    |> Expect.equal (Ok (ServerIqCountdownComplete 0))
         , test "iqDing with all fields present" <|
             \_ ->
                 Decode.decodeString decodeServerEnvelope """{"payload":"iqDing","iqDing":{"fake":true,"trap":true,"dingCount":5,"totalDings":100}}"""

@@ -671,17 +671,24 @@ update msg model =
                 IQTestSkipAnimScreen s ->
                     case s.phase of
                         SkipTick ->
-                            let
-                                targetId =
-                                    "ding-audio-" ++ String.fromInt (modBy dingSlotCount model.dingKey)
-                            in
-                            ( { model
-                                | screen = IQTestSkipAnimScreen { s | displayCount = s.total }
-                                , dingKey = model.dingKey + 1
-                              }
-                                |> schedule 500 IQSkipAnimNextPhase
-                            , setDomProperty { elementId = targetId, property = "volume", value = Encode.float 0.3 }
-                            )
+                            if s.displayCount < s.total then
+                                let
+                                    targetId =
+                                        "ding-audio-" ++ String.fromInt (modBy dingSlotCount model.dingKey)
+                                in
+                                ( { model
+                                    | screen = IQTestSkipAnimScreen { s | displayCount = s.displayCount + 1 }
+                                    , dingKey = model.dingKey + 1
+                                  }
+                                    |> schedule counterTickMs IQSkipCounterTick
+                                , setDomProperty { elementId = targetId, property = "volume", value = Encode.float 0.3 }
+                                )
+
+                            else
+                                ( model
+                                    |> schedule 500 IQSkipAnimNextPhase
+                                , Cmd.none
+                                )
 
                         _ ->
                             ( model, Cmd.none )
@@ -774,24 +781,38 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
-                Ok ServerIqCountdownComplete ->
+                Ok (ServerIqCountdownComplete dingCount) ->
                     -- Countdown done: enter the active test and request the first ding.
+                    -- dingCount is the server's authoritative count (nonzero if edit:state
+                    -- set it while the countdown was running); render it directly instead
+                    -- of assuming a fresh test's 0, and if it's already at/above the loud
+                    -- threshold, arm the loud gag now rather than waiting on a
+                    -- ServerIqStartLoud that (having already passed that threshold) will
+                    -- never arrive.
                     case model.screen of
                         IQTestCountdownScreen state ->
-                            ( clearPending
-                                { model
-                                    | screen =
-                                        IQTestActiveScreen
-                                            { questionIdx = state.questionIdx
-                                            , dingCount = 0
-                                            , totalDings = state.totalDings
-                                            , isFlashing = False
-                                            , dingActive = False
-                                            , fakeFlashActive = False
-                                            , fakeIsTrap = False
-                                            , loudPlaying = False
-                                            }
-                                }
+                            let
+                                withActiveScreen =
+                                    clearPending
+                                        { model
+                                            | screen =
+                                                IQTestActiveScreen
+                                                    { questionIdx = state.questionIdx
+                                                    , dingCount = dingCount
+                                                    , totalDings = state.totalDings
+                                                    , isFlashing = False
+                                                    , dingActive = False
+                                                    , fakeFlashActive = False
+                                                    , fakeIsTrap = False
+                                                    , loudPlaying = False
+                                                    }
+                                        }
+                            in
+                            ( if dingCount >= iqLoudDingThreshold then
+                                withActiveScreen |> schedule iqLoudDelay StartLoudMusic
+
+                              else
+                                withActiveScreen
                             , sendWs model iqReadyForDingEnvelope
                             )
 
@@ -833,7 +854,7 @@ update msg model =
                     -- (kept client-side to match the original timing).
                     case model.screen of
                         IQTestActiveScreen _ ->
-                            ( model |> schedule 3000 StartLoudMusic, Cmd.none )
+                            ( model |> schedule iqLoudDelay StartLoudMusic, Cmd.none )
 
                         _ ->
                             ( model, Cmd.none )

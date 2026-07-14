@@ -48,6 +48,7 @@ import Server.Protocol
         ( ClientEnvelope(..)
         , decodeClientEnvelope
         , distListResultEnvelope
+        , iqCountdownCompleteEnvelope
         , iqDingEnvelope
         , distRegisterAckEnvelope
         , iqOfferDecisionEnvelope
@@ -955,6 +956,14 @@ iqUpdateSuite =
                     , \_ -> Expect.equal (Ok 200) (intAt "totalDings")
                     ]
                     ()
+        , test "iqCountdownCompleteEnvelope round-trips dingCount" <|
+            \_ ->
+                let
+                    env =
+                        iqCountdownCompleteEnvelope 5
+                in
+                Decode.decodeValue (Decode.at [ "iqCountdownComplete", "dingCount" ] Decode.int) env
+                    |> Expect.equal (Ok 5)
         , test "iqStartCountdown initializes the server's own count at iqQuestionCount" <|
             \_ ->
                 let

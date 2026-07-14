@@ -46,11 +46,13 @@ async function reconnectAsPlayer(port, uuid, { timeoutMs = 2000 } = {}) {
 // (Server.elm's init issues a readFile port request); a stateRequest that lands before
 // that read completes is rejected as "unknown uuid" and the socket closed. Retry until
 // the server answers with a real state response, mirroring reconnectAsPlayer above.
-// 10s (not reconnectAsPlayer's 2s) because startTestServer already spends up to 15s
-// getting the new process listening before this even starts polling -- on a loaded CI
-// runner that alone can eat several seconds, on top of the rehydration this is retrying
-// for (observed timing out at the old 5s budget under CI load, not reproducible locally).
-async function requestStateAfterRestart(port, uuid, { timeoutMs = 10000 } = {}) {
+// 15s (not reconnectAsPlayer's 2s) because startTestServer already spends up to 15s
+// getting the new process listening before this even starts polling -- under load
+// (CI, or many server processes cycling back to back) that alone can eat several
+// seconds, on top of the rehydration this is retrying for (observed timing out at
+// 5s under CI load, and intermittently even at 10s under heavy local back-to-back
+// process churn).
+async function requestStateAfterRestart(port, uuid, { timeoutMs = 15000 } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
         const conn = await connect(port);
@@ -149,7 +151,7 @@ describe('server-side 7-day session timer (issue #50)', () => {
         expect(syncMsg.payload).toBe('timedOut');
 
         await conn.close();
-    }, 20000);
+    }, 30000);
 
     test('an expired session keeps delivering timedOut on a later reconnect too, re-derived fresh from timerEndsAt each time', async () => {
         const build = await distClient.deployBuild(TEST_PORT, admin, {
@@ -175,7 +177,7 @@ describe('server-side 7-day session timer (issue #50)', () => {
         const { conn: secondConn, result: secondConnectMsg } = await requestStateAfterRestart(TEST_PORT, build.uuid);
         expect(secondConnectMsg.payload).toBe('timedOut');
         await secondConn.close();
-    }, 25000);
+    }, 30000);
 
     test("a replacement build inherits the original build's deadline rather than starting a fresh one", async () => {
         const original = await distClient.deployBuild(TEST_PORT, admin, {

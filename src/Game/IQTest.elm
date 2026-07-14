@@ -100,6 +100,19 @@ iqDingVolume =
     0.8
 
 
+-- Ding count at/above which the loud "gag" video should start playing.
+iqLoudDingThreshold : Int
+iqLoudDingThreshold =
+    4
+
+
+-- Delay (ms) before the loud video actually starts once the loud threshold is
+-- reached, so the gag doesn't feel instantaneous.
+iqLoudDelay : Float
+iqLoudDelay =
+    3000
+
+
 -- Number of preloaded ding-audio slots cycled round-robin so rapid
 -- back-to-back triggers (e.g. the fake-flash countdown at 80 ms cadence)
 -- can play without cutting each other off.
@@ -188,9 +201,10 @@ type alias FakeFlashCaughtState =
     }
 
 
--- Phases of the one-step count-up animation shown when the player accepts the skip
--- offer: the counter holds at 0/total, ticks once straight to total/total (with a
--- ding), then holds before advancing to the next song. See Main.elm's
+-- Phases of the count-up animation shown when the player accepts the skip
+-- offer: the counter holds at 0/total, ticks up by one (with a ding) every
+-- counterTickMs until it reaches total/total, then holds before advancing to
+-- the next song. See Main.elm's
 -- IQSkipOfferAccepted/IQSkipAnimNextPhase/IQSkipCounterTick.
 type IQSkipPhase
     = SkipCounterIn

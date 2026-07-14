@@ -139,9 +139,11 @@ describe('IQ-test one-time skip offer', () => {
         const decision = await conn.waitFor((m) => m.payload === 'iqOfferDecision');
         expect(decision.iqOfferDecision.granted).toBe(false);
 
-        // The ack and the registry write aren't sequenced relative to each other (see
-        // waitUntil's doc comment) -- poll rather than assume the write already landed.
-        const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid));
+        // registry.json is rewritten asynchronously by the server, so a synchronous
+        // read right after the WS reply can race a still-in-flight write and see a
+        // torn/empty file; poll like the sibling "granted" test above instead of
+        // reading once.
+        const entry = await waitUntil(() => readRegistry().find((e) => e.uuid === build.uuid) || null);
         expect(entry.iqOfferUsed).toBe(false);
 
         await conn.close();

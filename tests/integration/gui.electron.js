@@ -28,6 +28,7 @@ const USERNAME = 'testadmin';
 const PASSWORD = 'correct-horse-battery-staple';
 const APP_UUID_PATH = path.join(PROJECT_ROOT, 'app-uuid.json');
 const AUDIO_ASSET_PATH = path.join(PROJECT_ROOT, 'assets', 'jeopardy-theme.mp3');
+const LOUD_VIDEO_ASSET_PATH = path.join(PROJECT_ROOT, 'assets', 'loud.mp4');
 const GUI_WAIT_OPTS = { timeoutMs: 8000, intervalMs: 150 };
 
 async function readAudioState(window) {
@@ -45,16 +46,51 @@ async function waitForBodyTextIncluding(window, substring, opts = GUI_WAIT_OPTS)
     await waitUntil(async () => (await bodyText(window)).includes(substring) ? true : null, opts);
 }
 
-// Fast-forwards a build straight to a live, real-dings-already-cleared IQ timer via
-// the admin edit:state path -- the same technique tests/integration/iq-offer.test.js
-// uses at the protocol level, needed here too since actually waiting through
-// iqQuestionCount real dings (each gated by a 2-15s random production delay) would
-// make this scenario impractically slow. `IqAwaitingReady`/`IqDingScheduled` both
-// derive to IQTestActiveScreen with every flash/ding flag false (see
+// Fast-forwards a build straight to a live IQ timer via the admin edit:state path --
+// the same technique tests/integration/iq-offer.test.js uses at the protocol level,
+// needed here too since actually waiting through iqQuestionCount real dings (each
+// gated by a 2-15s random production delay) would make these scenarios impractically
+// slow. `overrides` is merged onto the default (qualifying, IqAwaitingReady) iqTimer
+// shape -- e.g. a lower dingCount to stay below IQTest.iqOfferMinDings, or
+// `phase: 'IqDingShown'` to stage a real ding actively showing. `IqAwaitingReady`
+// derives to IQTestActiveScreen with every flash/ding flag false (see
 // Server.elm's deriveIqScreen), so the real client renders an idle "waiting for the
-// next ding" screen -- pressing Space there is a genuine SpaceBarFailed via the
-// real Game.IQTest.decideSpaceBar, not a simulated one.
-async function stageQualifyingIqOffer(server, admin, port, uuid) {
+// next ding" screen -- pressing Space there is a genuine SpaceBarFailed via the real
+// Game.IQTest.decideSpaceBar, not a simulated one.
+async function stageIqTimer(server, admin, port, uuid, overrides = {}) {
+    const { authResult, conn, json } = await distClient.requestStateEdit(port, admin, uuid);
+    if (!authResult.success) throw new Error('admin auth failed while staging iqTimer');
+    const fetched = JSON.parse(json);
+    const iqTimer = {
+        epoch: 1,
+        phase: 'IqAwaitingReady',
+        questionIdx: 0,
+        countdownRemaining: 0,
+        dingCount: 10,
+        totalDings: 100,
+        fakeFlashPoint: 9999,
+        fakeFlashUsed: false,
+        in50PercentPhase: false,
+        lastDing: 'RealDing',
+        dingDelay: null,
+        ...overrides,
+    };
+    const edited = { ...fetched, iqTimer };
+    const resultMsg = await distClient.saveStateEdit(conn, uuid, JSON.stringify(edited));
+    if (resultMsg.payload !== 'distStateEditSaveAck') throw new Error(`stageIqTimer save failed: ${resultMsg.payload}`);
+    await conn.close();
+    await waitUntil(() => {
+        const found = registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === uuid);
+        return found && found.iqTimer && found.iqTimer.phase === iqTimer.phase ? found : null;
+    });
+}
+
+// Regression coverage for issue #92: stages a countdown (as edit:state would) already
+// at/above the loud-video threshold, so the countdown-complete -> IQTestActiveScreen
+// transition is the one under test, not the IqAwaitingReady/IqDingShown derive path
+// stageIqTimer above exercises. countdownRemaining is 1 (ticks are a real 1000ms each
+// -- see Server.elm's scheduleCountdownStep) purely to keep the test fast.
+async function stageCountdownAtLoudThreshold(server, admin, port, uuid, dingCount) {
     const { authResult, conn, json } = await distClient.requestStateEdit(port, admin, uuid);
     if (!authResult.success) throw new Error('admin auth failed while staging iqTimer');
     const fetched = JSON.parse(json);
@@ -62,10 +98,10 @@ async function stageQualifyingIqOffer(server, admin, port, uuid) {
         ...fetched,
         iqTimer: {
             epoch: 1,
-            phase: 'IqAwaitingReady',
+            phase: 'IqCounting',
             questionIdx: 0,
-            countdownRemaining: 0,
-            dingCount: 10,
+            countdownRemaining: 1,
+            dingCount,
             totalDings: 100,
             fakeFlashPoint: 9999,
             fakeFlashUsed: false,
@@ -75,11 +111,18 @@ async function stageQualifyingIqOffer(server, admin, port, uuid) {
         },
     };
     const resultMsg = await distClient.saveStateEdit(conn, uuid, JSON.stringify(edited));
-    if (resultMsg.payload !== 'distStateEditSaveAck') throw new Error(`stageQualifyingIqOffer save failed: ${resultMsg.payload}`);
+    if (resultMsg.payload !== 'distStateEditSaveAck') throw new Error(`stageCountdownAtLoudThreshold save failed: ${resultMsg.payload}`);
     await conn.close();
     await waitUntil(() => {
         const found = registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === uuid);
-        return found && found.iqTimer && found.iqTimer.phase === 'IqAwaitingReady' ? found : null;
+        return found && found.iqTimer && found.iqTimer.phase === 'IqCounting' ? found : null;
+    });
+}
+
+async function readVideoState(window) {
+    return window.evaluate(() => {
+        const el = document.getElementById('playing-video');
+        return el ? { exists: true, paused: el.paused } : { exists: false, paused: null };
     });
 }
 
@@ -99,6 +142,20 @@ async function assertAudioPlaying(window) {
         later.currentTime > playing.currentTime,
         `expected #jeopardy-audio currentTime to advance (was ${playing.currentTime}, now ${later.currentTime})`
     );
+}
+
+// Points app-uuid.json at uuid and launches a fresh Electron process reading it --
+// the client only reads this file at startup, so this is the "close and reopen the
+// client" step the reconnect scenarios below need, not just a websocket reconnect
+// within the same window.
+async function launchClientFor(uuid) {
+    fs.writeFileSync(APP_UUID_PATH, JSON.stringify({ uuid }));
+    const electronApp = await electron.launch({
+        args: ['.'],
+        cwd: PROJECT_ROOT,
+        env: { ...process.env, DEV: 'false', PROD_SERVER_HOST: 'localhost', PROD_SERVER_PORT: String(TEST_PORT) },
+    });
+    return { electronApp, window: await electronApp.firstWindow() };
 }
 
 async function main() {
@@ -121,6 +178,18 @@ async function main() {
         fs.mkdirSync(path.dirname(AUDIO_ASSET_PATH), { recursive: true });
         execSync(
             `ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=mono -t 5 -q:a 9 "${AUDIO_ASSET_PATH}"`,
+            { stdio: 'pipe' }
+        );
+    }
+
+    // Same placeholder rationale as the audio asset above -- assets/loud.mp4 is
+    // gitignored, so a fresh checkout/CI runner needs a stand-in to actually assert
+    // playback against (see stageCountdownAtLoudThreshold's regression test).
+    const hadExistingVideoAsset = fs.existsSync(LOUD_VIDEO_ASSET_PATH);
+    if (!hadExistingVideoAsset) {
+        fs.mkdirSync(path.dirname(LOUD_VIDEO_ASSET_PATH), { recursive: true });
+        execSync(
+            `ffmpeg -y -f lavfi -i color=c=black:s=64x64:d=5 -f lavfi -i anullsrc=r=44100:cl=mono -shortest -pix_fmt yuv420p "${LOUD_VIDEO_ASSET_PATH}"`,
             { stdio: 'pipe' }
         );
     }
@@ -192,8 +261,8 @@ async function main() {
         console.log('  ✓ client reconnects and re-renders BeginScreen with audio playing, without relaunching Electron');
 
         // --- IQ-test skip offer: real View.elm rendering of both new screens, driven by
-        // an actual SpaceBarFailed through the real Elm runtime (see stageQualifyingIqOffer
-        // above for why the dings themselves are fast-forwarded rather than awaited live).
+        // an actual SpaceBarFailed through the real Elm runtime (see stageIqTimer above
+        // for why the dings themselves are fast-forwarded rather than awaited live).
         // Each path needs its own uuid (the offer is granted at most once per build) and
         // its own Electron launch (the client only reads app-uuid.json at startup).
         await electronApp.close().catch(() => {});
@@ -204,7 +273,7 @@ async function main() {
             filename: 'iq-offer-accept-gui.dmg',
         });
         await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === acceptBuild.uuid));
-        await stageQualifyingIqOffer(server, admin, TEST_PORT, acceptBuild.uuid);
+        await stageIqTimer(server, admin, TEST_PORT, acceptBuild.uuid);
 
         fs.writeFileSync(APP_UUID_PATH, JSON.stringify({ uuid: acceptBuild.uuid }));
         electronApp = await electron.launch({
@@ -230,7 +299,11 @@ async function main() {
         console.log('  ✓ pressing Begin again reveals the pending skip offer (IQTestSkipOfferScreen)');
 
         await iqWindow.getByRole('button', { name: 'Accept' }).click();
-        await waitForBodyTextIncluding(iqWindow, 'Listen carefully...', { timeoutMs: 8000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        // The count-up animation now genuinely ticks displayCount from 0 to totalDings
+        // (100 here) at counterTickMs (80ms) per step -- ~8s of ticking alone, plus the
+        // surrounding phase delays -- so this needs real headroom, not the old ~8s
+        // budget that only worked because of the jump-straight-to-total bug (#94).
+        await waitForBodyTextIncluding(iqWindow, 'Listen carefully...', { timeoutMs: 16000, intervalMs: GUI_WAIT_OPTS.intervalMs });
         console.log('  ✓ Accept runs the real skip animation through to the quiz (IQTestSkipAnimScreen -> BlankScreen)');
 
         await electronApp.close().catch(() => {});
@@ -241,7 +314,7 @@ async function main() {
             filename: 'iq-offer-decline-gui.dmg',
         });
         await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === declineBuild.uuid));
-        await stageQualifyingIqOffer(server, admin, TEST_PORT, declineBuild.uuid);
+        await stageIqTimer(server, admin, TEST_PORT, declineBuild.uuid);
 
         fs.writeFileSync(APP_UUID_PATH, JSON.stringify({ uuid: declineBuild.uuid }));
         electronApp = await electron.launch({
@@ -267,6 +340,136 @@ async function main() {
         await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 8000 });
         console.log('  ✓ Decline returns to the real IQTestScreen (offer releases, no skip)');
 
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        // --- issue #92 regression: a countdown staged (via edit:state) already at/above
+        // the loud-video threshold must render the real dingCount immediately on
+        // countdown-complete, and must still start the loud video a few seconds later,
+        // rather than never triggering it (the old code only ever fired on the exact
+        // dingCount 3->4 transition, which a pre-staged count skips past entirely).
+        const loudBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'iq-loud-threshold-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === loudBuild.uuid));
+        await stageCountdownAtLoudThreshold(server, admin, TEST_PORT, loudBuild.uuid, 5);
+
+        fs.writeFileSync(APP_UUID_PATH, JSON.stringify({ uuid: loudBuild.uuid }));
+        electronApp = await electron.launch({
+            args: ['.'],
+            cwd: PROJECT_ROOT,
+            env: { ...process.env, DEV: 'false', PROD_SERVER_HOST: 'localhost', PROD_SERVER_PORT: String(TEST_PORT) },
+        });
+        const loudWindow = await electronApp.firstWindow();
+
+        // Every derived screen arrives wrapped in BeginScreen (see Server.elm's
+        // ClientConnected handler) -- pressing Begin unwraps it locally with no round
+        // trip (Main.elm's BeginPressed), which is what actually puts the client on
+        // IQTestCountdownScreen and makes it fire iqResumeEnvelope (re-arming the
+        // dormant countdown -- see Server.elm's resumeIqTimer).
+        await loudWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await loudWindow.getByRole('button', { name: 'Begin' }).click();
+
+        await waitForBodyTextIncluding(loudWindow, '5 / 100', { timeoutMs: 8000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ countdown-complete renders the staged dingCount immediately (no 0/100 glitch)');
+
+        const soonAfter = await readVideoState(loudWindow);
+        assert.ok(!soonAfter.exists || soonAfter.paused, 'expected the loud video not to be playing yet, right after the countdown completed');
+        console.log('  ✓ loud video is not playing immediately after countdown-complete');
+
+        await waitUntil(async () => {
+            const state = await readVideoState(loudWindow);
+            return state.exists && state.paused === false ? state : null;
+        }, { timeoutMs: 8000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ loud video starts playing a few seconds later');
+
+        // --- issue #88 regression: a fail below the skip-offer threshold must leave the
+        // player able to close and reopen the client and land back on the IQ instructions
+        // screen, not the frozen live/dinging screen (the freeze the issue described was
+        // pre-#91's iqFail sending no server message at all, so the server's iqTimer never
+        // left its live phase). dingCount: 2 is below IQTest.iqOfferMinDings (5), so the
+        // fail is deliberately non-qualifying and must land on plain IQTestScreen, not
+        // IQTestSkipOfferScreen (unlike the accept/decline scenarios above).
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        const spaceFailBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'iq-fail-space-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === spaceFailBuild.uuid));
+        await stageIqTimer(server, admin, TEST_PORT, spaceFailBuild.uuid, { dingCount: 2 });
+
+        ({ electronApp, window: iqWindow } = await launchClientFor(spaceFailBuild.uuid));
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, '2 / 100', GUI_WAIT_OPTS);
+
+        await iqWindow.keyboard.press('Space');
+        await waitForBodyTextIncluding(iqWindow, 'IQ Test 2.0', GUI_WAIT_OPTS);
+        console.log('  ✓ a real SpaceBarFailed below the skip-offer threshold lands on the plain IQTestScreen');
+
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+        ({ electronApp, window: iqWindow } = await launchClientFor(spaceFailBuild.uuid));
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, 'IQ Test 2.0', GUI_WAIT_OPTS);
+        console.log('  ✓ closing and reopening the client after the fail still lands on IQTestScreen, not IQTestActiveScreen (issue #88)');
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, 'You may start the IQ test in', GUI_WAIT_OPTS);
+        console.log('  ✓ pressing Begin again after reopening actually starts a fresh countdown instead of freezing');
+
+        // --- issue #88 regression, missed-ding path: the same close/reopen check, but the
+        // fail is triggered by a real elapsed DingWindowExpired timeout rather than a
+        // space-bar press, since the two are indistinguishable at the wire level (both send
+        // the same iqFailedEnvelope -- see Sync.elm's iqFailedEnvelope) and the issue asks
+        // for both as separate scenarios.
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        const missedDingBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'iq-fail-missed-ding-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === missedDingBuild.uuid));
+        await stageIqTimer(server, admin, TEST_PORT, missedDingBuild.uuid, {
+            phase: 'IqDingShown',
+            lastDing: 'RealDing',
+            dingCount: 2,
+        });
+
+        ({ electronApp, window: iqWindow } = await launchClientFor(missedDingBuild.uuid));
+
+        // Pressing Begin here resumes onto the already-shown ding (resumeCmd sends
+        // iqResumeEnvelope, the server's resumeIqTimer resends the real ServerIqDing, and
+        // the client schedules a genuine DingWindowExpired after IQTest.iqWindowDuration --
+        // the same client-side timer a real missed ding uses).
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, '2 / 100', GUI_WAIT_OPTS);
+
+        // Deliberately do not press Space -- let the real ~2s window elapse.
+        await waitForBodyTextIncluding(iqWindow, 'IQ Test 2.0', { timeoutMs: 8000, intervalMs: GUI_WAIT_OPTS.intervalMs });
+        console.log('  ✓ a real missed ding (DingWindowExpired) below the skip-offer threshold lands on the plain IQTestScreen');
+
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+        ({ electronApp, window: iqWindow } = await launchClientFor(missedDingBuild.uuid));
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, 'IQ Test 2.0', GUI_WAIT_OPTS);
+        console.log('  ✓ closing and reopening the client after a missed ding still lands on IQTestScreen, not IQTestActiveScreen (issue #88)');
+
+        await iqWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(iqWindow, 'You may start the IQ test in', GUI_WAIT_OPTS);
+        console.log('  ✓ pressing Begin again after reopening actually starts a fresh countdown instead of freezing');
+
         console.log('\nGUI suite passed.');
     } finally {
         if (electronApp) await electronApp.close().catch(() => {});
@@ -274,6 +477,7 @@ async function main() {
         if (hadExistingUuidFile) fs.writeFileSync(APP_UUID_PATH, backedUpUuid);
         else fs.rmSync(APP_UUID_PATH, { force: true });
         if (!hadExistingAudioAsset) fs.rmSync(AUDIO_ASSET_PATH, { force: true });
+        if (!hadExistingVideoAsset) fs.rmSync(LOUD_VIDEO_ASSET_PATH, { force: true });
         await globalTeardown();
     }
 }
