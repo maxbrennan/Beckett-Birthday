@@ -102,7 +102,13 @@ describe('deploy-replacement', () => {
         expect(newResult.payload).toBe('stateUpdate');
         expect(JSON.parse(newResult.stateUpdate.json)).toEqual({ tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 1 } });
 
-        const okDownload = await distClient.download(TEST_PORT, replacement.uuid);
+        // The download handler reads builds.json independently, straight off disk (see
+        // server/index.js) -- it isn't sequenced against the registry write the unlock
+        // above just confirmed landed, so poll rather than assume it's already visible.
+        const okDownload = await waitUntil(async () => {
+            const res = await distClient.download(TEST_PORT, replacement.uuid);
+            return res.statusCode === 200 ? res : null;
+        });
         expect(okDownload.statusCode).toBe(200);
 
         const { result: oldResult } = await connectAsPlayer(TEST_PORT, oldBuild.uuid);
@@ -148,7 +154,12 @@ describe('deploy-replacement', () => {
         expect(result.payload).toBe('stateUpdate');
         expect(JSON.parse(result.stateUpdate.json)).toEqual({ tag: 'BeginScreen', nextScreen: { tag: 'BlankScreen', idx: 0 } });
 
-        const okDownload = await distClient.download(TEST_PORT, replacement.uuid);
+        // See the identical comment in the previous test: the download handler reads
+        // builds.json independently and isn't sequenced against the unlock write above.
+        const okDownload = await waitUntil(async () => {
+            const res = await distClient.download(TEST_PORT, replacement.uuid);
+            return res.statusCode === 200 ? res : null;
+        });
         expect(okDownload.statusCode).toBe(200);
     });
 
