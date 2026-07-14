@@ -29,13 +29,18 @@ const PASSWORD = 'correct-horse-battery-staple';
 const APP_UUID_PATH = path.join(PROJECT_ROOT, 'app-uuid.json');
 const AUDIO_ASSET_PATH = path.join(PROJECT_ROOT, 'assets', 'jeopardy-theme.mp3');
 const LOUD_VIDEO_ASSET_PATH = path.join(PROJECT_ROOT, 'assets', 'loud.mp4');
+// Quiz slide 0's song -- assets/songs/ files are named numerically (see
+// Game.Quiz.songOrder), so "0.mp3" is the song for question index 0. A short
+// (3s) placeholder keeps the #90 scenarios below fast without waiting through
+// a real song's full length.
+const QUIZ_SONG_ASSET_PATH = path.join(PROJECT_ROOT, 'assets', 'songs', '0.mp3');
 const GUI_WAIT_OPTS = { timeoutMs: 8000, intervalMs: 150 };
 
-async function readAudioState(window) {
-    return window.evaluate(() => {
-        const el = document.getElementById('jeopardy-audio');
+async function readAudioState(window, elementId = 'jeopardy-audio') {
+    return window.evaluate((id) => {
+        const el = document.getElementById(id);
         return el ? { exists: true, paused: el.paused, currentTime: el.currentTime } : { exists: false };
-    });
+    }, elementId);
 }
 
 async function bodyText(window) {
@@ -130,17 +135,17 @@ async function readVideoState(window) {
 // locally), so autoplay doesn't kick in the instant the element is inserted — poll for
 // playback to actually start rather than asserting immediately, then confirm currentTime
 // is really advancing (not just stuck reporting non-zero).
-async function assertAudioPlaying(window) {
+async function assertAudioPlaying(window, elementId = 'jeopardy-audio') {
     const playing = await waitUntil(async () => {
-        const state = await readAudioState(window);
+        const state = await readAudioState(window, elementId);
         return state.exists && state.paused === false ? state : null;
     }, { timeoutMs: 10000, intervalMs: GUI_WAIT_OPTS.intervalMs });
 
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const later = await readAudioState(window);
+    const later = await readAudioState(window, elementId);
     assert.ok(
         later.currentTime > playing.currentTime,
-        `expected #jeopardy-audio currentTime to advance (was ${playing.currentTime}, now ${later.currentTime})`
+        `expected #${elementId} currentTime to advance (was ${playing.currentTime}, now ${later.currentTime})`
     );
 }
 
@@ -190,6 +195,17 @@ async function main() {
         fs.mkdirSync(path.dirname(LOUD_VIDEO_ASSET_PATH), { recursive: true });
         execSync(
             `ffmpeg -y -f lavfi -i color=c=black:s=64x64:d=5 -f lavfi -i anullsrc=r=44100:cl=mono -shortest -pix_fmt yuv420p "${LOUD_VIDEO_ASSET_PATH}"`,
+            { stdio: 'pipe' }
+        );
+    }
+
+    // Same placeholder-generation trick, for quiz slide 0's song (see the #90
+    // scenarios below) -- 3s keeps a real, genuine TrackEnded fast to wait for.
+    const hadExistingQuizSongAsset = fs.existsSync(QUIZ_SONG_ASSET_PATH);
+    if (!hadExistingQuizSongAsset) {
+        fs.mkdirSync(path.dirname(QUIZ_SONG_ASSET_PATH), { recursive: true });
+        execSync(
+            `ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=mono -t 3 -q:a 9 "${QUIZ_SONG_ASSET_PATH}"`,
             { stdio: 'pipe' }
         );
     }
@@ -470,6 +486,80 @@ async function main() {
         await waitForBodyTextIncluding(iqWindow, 'You may start the IQ test in', GUI_WAIT_OPTS);
         console.log('  ✓ pressing Begin again after reopening actually starts a fresh countdown instead of freezing');
 
+        // --- issue #90: a song already finished must not replay after closing and
+        // reopening the client. A freshly deployed build's very first stateRequest
+        // resolves straight to the quiz's BlankScreen 0 (no IQ test gates it), so no
+        // admin edit:state staging is needed to reach the quiz slide itself here.
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        const songResumeBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'quiz-song-resume-question-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === songResumeBuild.uuid));
+
+        let songWindow;
+        ({ electronApp, window: songWindow } = await launchClientFor(songResumeBuild.uuid));
+
+        await songWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await songWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(songWindow, 'Listen carefully...', GUI_WAIT_OPTS);
+        console.log('  ✓ pressing Begin starts the first quiz slide (BlankScreen), listening to the song');
+
+        // Let the placeholder song actually finish for real, exercising the genuine
+        // TrackEnded -> quizSongEnded -> quizSongEndedAck round trip (see Main.elm's
+        // TrackEnded/ServerQuizSongEndedAck handlers), not a staged shortcut -- this
+        // proves the real reported flow reaches QuestionScreen normally.
+        await songWindow.locator('#answer-input').waitFor({ state: 'visible', timeout: 12000 });
+        console.log('  ✓ the song finishes for real and the client reveals QuestionScreen');
+
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+        ({ electronApp, window: songWindow } = await launchClientFor(songResumeBuild.uuid));
+
+        await songWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await songWindow.getByRole('button', { name: 'Begin' }).click();
+        await songWindow.locator('#answer-input').waitFor({ state: 'visible', timeout: 5000 });
+        const replayedAudio = await readAudioState(songWindow, 'quiz-audio');
+        assert.strictEqual(
+            replayedAudio.exists, false,
+            'expected #quiz-audio to be absent -- the song must not replay after reconnecting onto an already-heard slide (#90)'
+        );
+        console.log('  ✓ closing and reopening the client resumes directly onto QuestionScreen, without replaying the song (#90)');
+
+        // --- issue #90 negative case: a song NOT yet finished must still replay in
+        // full (not skip ahead) after closing and reopening, and the audio must be
+        // genuinely playing, not just a rendered-but-inert element.
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+
+        const songReplayBuild = await distClient.deployBuild(TEST_PORT, admin, {
+            platform: 'mac',
+            filename: 'quiz-song-replay-blank-gui.dmg',
+        });
+        await waitUntil(() => registryHelper.readRegistry(server.tempDir).find((e) => e.uuid === songReplayBuild.uuid));
+
+        let replayWindow;
+        ({ electronApp, window: replayWindow } = await launchClientFor(songReplayBuild.uuid));
+
+        await replayWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await replayWindow.getByRole('button', { name: 'Begin' }).click();
+        await assertAudioPlaying(replayWindow, 'quiz-audio');
+        console.log('  ✓ #quiz-audio is actually playing while listening to the first slide\'s song');
+
+        // Close before the (3s) placeholder song ever finishes, so no quizSongEnded
+        // report is ever sent for this uuid.
+        await electronApp.close().catch(() => {});
+        electronApp = null;
+        ({ electronApp, window: replayWindow } = await launchClientFor(songReplayBuild.uuid));
+
+        await replayWindow.getByRole('button', { name: 'Begin' }).waitFor({ state: 'visible', timeout: 10000 });
+        await replayWindow.getByRole('button', { name: 'Begin' }).click();
+        await waitForBodyTextIncluding(replayWindow, 'Listen carefully...', GUI_WAIT_OPTS);
+        await assertAudioPlaying(replayWindow, 'quiz-audio');
+        console.log('  ✓ closing and reopening before the song ends still replays it in full, with real audio playing (#90)');
+
         console.log('\nGUI suite passed.');
     } finally {
         if (electronApp) await electronApp.close().catch(() => {});
@@ -478,6 +568,7 @@ async function main() {
         else fs.rmSync(APP_UUID_PATH, { force: true });
         if (!hadExistingAudioAsset) fs.rmSync(AUDIO_ASSET_PATH, { force: true });
         if (!hadExistingVideoAsset) fs.rmSync(LOUD_VIDEO_ASSET_PATH, { force: true });
+        if (!hadExistingQuizSongAsset) fs.rmSync(QUIZ_SONG_ASSET_PATH, { force: true });
         await globalTeardown();
     }
 }
