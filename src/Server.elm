@@ -455,9 +455,19 @@ animation had actually reached -- a reconnect mid-cutscene replays the cutscene
 from the top instead of resuming it precisely, the same category of accepted
 coarse-resume trade as the quiz-slide family's `WrongAnswerScreen` collapse
 (see `deriveQuizScreen`).
+
+`hasSkipOfferGrant` (true iff `Model.iqOfferGrants` holds a live, matching
+grant for this player -- see the caller) threads the one-time skip offer's
+pending state into the two idle branches (`IqIdleNotStarted`'s
+`pendingSkipOffer`, `IqIdleCaught`'s `skipOffer`) so a disconnect between a
+granted fail/catch and the player actually reaching the offer screen doesn't
+strand the grant: without this, `IQTestBeginPressed`/`IQSkipOfferAccepted`
+never message the server, so the grant would otherwise survive server-side
+while every re-derived screen forgot about it, permanently blocking the
+`ClientIqStartCountdown` guard.
 -}
-deriveIqScreen : IqTimerState -> Maybe Encode.Value
-deriveIqScreen state =
+deriveIqScreen : Bool -> IqTimerState -> Maybe Encode.Value
+deriveIqScreen hasSkipOfferGrant state =
     case state.phase of
         IqCounting ->
             Just <|
@@ -495,6 +505,13 @@ deriveIqScreen state =
                       , Encode.object
                             [ ( "questionIdx", Encode.int state.questionIdx )
                             , ( "totalDings", Encode.int state.totalDings )
+                            , ( "pendingSkipOffer"
+                              , if hasSkipOfferGrant then
+                                    Encode.int state.totalDings
+
+                                else
+                                    Encode.null
+                              )
                             ]
                       )
                     ]
@@ -520,6 +537,13 @@ deriveIqScreen state =
                             , ( "displayNumerator", Encode.int 0 )
                             , ( "displayDenominator", Encode.int originalTotal )
                             , ( "phase", Encode.string "FfDelay" )
+                            , ( "skipOffer"
+                              , if hasSkipOfferGrant then
+                                    Encode.int state.totalDings
+
+                                else
+                                    Encode.null
+                              )
                             ]
                       )
                     ]
@@ -1152,7 +1176,9 @@ update msg model =
                                         derived =
                                             case Dict.get uuid model.iqTimers of
                                                 Just iqState ->
-                                                    deriveIqScreen iqState
+                                                    deriveIqScreen
+                                                        (Dict.get uuid model.iqOfferGrants == Just iqState.questionIdx)
+                                                        iqState
 
                                                 Nothing ->
                                                     if total > 0 && progress >= total then

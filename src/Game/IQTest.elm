@@ -137,6 +137,16 @@ counterTickMs =
 type alias IQTestScreenState =
     { questionIdx : Int
     , totalDings : Int
+
+    -- A server-granted, not-yet-shown one-time skip offer (see Server.elm's
+    -- decideIqOffer/Model.iqOfferGrants), carrying the totalDings to display
+    -- once the offer screen is actually entered. Set by Main.elm's
+    -- ServerIqOfferDecision handler (or re-derived fresh on reconnect by
+    -- Server.elm's deriveIqScreen), and consumed locally by IQTestBeginPressed,
+    -- which routes to IQTestSkipOfferScreen instead of starting the countdown.
+    -- Always Nothing on IQTestSkipOfferScreen itself (this type is shared, but
+    -- the field is meaningless once already on the offer screen).
+    , pendingSkipOffer : Maybe Int
     }
 
 
@@ -354,4 +364,5 @@ exitFakeFlash : FakeFlashCaughtState -> IQTestScreenState
 exitFakeFlash state =
     { questionIdx = state.questionIdx
     , totalDings = Basics.min (state.originalTotal * 2) maxTotalDings
+    , pendingSkipOffer = Nothing
     }

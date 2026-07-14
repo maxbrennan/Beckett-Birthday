@@ -22,10 +22,16 @@ type Screen
     | IQTestActiveScreen IQTestState
     | FakeFlashCaughtScreen FakeFlashCaughtState
       -- The one-time offer to skip the IQ test (see Server.elm's decideIqOffer),
-      -- shown after a qualifying fail/catch. Never server-derived (unlike the
-      -- screens above) -- a disconnect mid-offer re-derives to plain IQTestScreen
-      -- on reconnect, the same coarse-resume trade already accepted for
-      -- FakeFlashCaughtScreen.
+      -- reached from IQTestScreen/FakeFlashCaughtScreen once IQTestBeginPressed/
+      -- IQSkipOfferAccepted consumes a pending grant. Never server-derived itself
+      -- (unlike the screens above) -- a disconnect while already on this screen
+      -- re-derives to plain IQTestScreen/FakeFlashCaughtScreen on reconnect, the
+      -- same coarse-resume trade already accepted for IQTestSkipAnimScreen below.
+      -- Unlike before, this doesn't strand the grant: the server never learned
+      -- Begin/Accept was pressed, so IQTestScreen.pendingSkipOffer /
+      -- FakeFlashCaughtScreen.skipOffer are re-derived fresh from
+      -- Model.iqOfferGrants (see Server.elm's deriveIqScreen), and the player just
+      -- presses Begin/replays the cutscene to reach the offer screen again.
     | IQTestSkipOfferScreen IQTestScreenState
       -- The one-step count-up animation shown after accepting the offer. Also
       -- never server-derived, for the same reason as IQTestSkipOfferScreen above.
