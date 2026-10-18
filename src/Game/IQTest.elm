@@ -97,7 +97,7 @@ iqWindowDuration =
 -- Volume (0–1) for the ding sound effect.
 iqDingVolume : Float
 iqDingVolume =
-    0.8
+    1.0
 
 
 -- Ding count at/above which the loud "gag" video should start playing.

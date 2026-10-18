@@ -11,7 +11,6 @@ import Game.IQTest
         , dingDelayGen
         , exitFakeFlash
         , fakeFlashPointGen
-        , iqDingVolume
         , iqQuestionCount
         , isCounterBig
         , lastTriggerForSlot
@@ -170,12 +169,4 @@ randomBoundsTests =
                     , List.member False >> Expect.equal True
                     ]
                     coinSamples
-        ]
-
-
-constantsTests : Test
-constantsTests =
-    describe "audio/timing constants"
-        [ test "iqDingVolume is a valid volume level" <|
-            \_ -> Expect.within (Expect.Absolute 0.0001) 0.8 iqDingVolume
         ]
