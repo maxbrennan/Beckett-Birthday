@@ -130,8 +130,10 @@ message IqOfferDeclined {}
 // The server's authoritative answer to "was the skip offer granted" for a fail (or a
 // fake-flash catch). Sent once, synchronously, in reply to IqFailed and IqCaught alike
 // -- see Server.elm's decideIqOffer. total_dings always carries the server's current
-// totalDings (unchanged on a plain fail, already-doubled on a catch).
-message IqOfferDecision { bool granted = 1; uint32 total_dings = 2; }
+// totalDings (unchanged on a plain fail, already-doubled on a catch). is_last_chance is
+// true iff this is the second (and, since each of the two triggers grants at most once
+// ever, final) offer this player will ever see.
+message IqOfferDecision { bool granted = 1; uint32 total_dings = 2; bool is_last_chance = 3; }
 
 // One quiz slide's accepted answers. Carried only on DistComplete/DistReplaceComplete (the
 // deploy-time, client->server ingress) -- never on any server->client message, since answers

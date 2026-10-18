@@ -22,7 +22,7 @@ type ServerEnvelope
     | ServerIqTestComplete
     | ServerQuizAnswerResult { idx : Int, correct : Bool, revealAnswer : String }
     | ServerQuizSongEndedAck Int
-    | ServerIqOfferDecision { granted : Bool, totalDings : Int }
+    | ServerIqOfferDecision { granted : Bool, totalDings : Int, isLastChance : Bool }
     | ServerTimerSync Float
     | ServerTimedOut
     | ServerUnknown
@@ -95,12 +95,15 @@ decodeServerEnvelope =
                             |> Decode.map ServerQuizSongEndedAck
 
                     "iqOfferDecision" ->
-                        Decode.map2
-                            (\granted totalDings -> ServerIqOfferDecision { granted = granted, totalDings = totalDings })
+                        Decode.map3
+                            (\granted totalDings isLastChance -> ServerIqOfferDecision { granted = granted, totalDings = totalDings, isLastChance = isLastChance })
                             -- protobufjs omits default (false) scalar fields, so granted
                             -- may be absent; treat a missing flag as false (denied).
                             (Decode.oneOf [ Decode.at [ "iqOfferDecision", "granted" ] Decode.bool, Decode.succeed False ])
                             (Decode.oneOf [ Decode.at [ "iqOfferDecision", "totalDings" ] Decode.int, Decode.succeed 0 ])
+                            -- protobufjs omits default (false) scalar fields, so
+                            -- isLastChance may be absent; treat a missing flag as false.
+                            (Decode.oneOf [ Decode.at [ "iqOfferDecision", "isLastChance" ] Decode.bool, Decode.succeed False ])
 
                     "timerSync" ->
                         -- protobufjs omits a scalar field left at its zero value, but
@@ -273,6 +276,7 @@ encodeIQTestScreenState s =
         [ ( "questionIdx", Encode.int s.questionIdx )
         , ( "totalDings", Encode.int s.totalDings )
         , ( "pendingSkipOffer", s.pendingSkipOffer |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
+        , ( "offerIsLastChance", Encode.bool s.offerIsLastChance )
         ]
 
 
@@ -308,6 +312,7 @@ encodeFakeFlashCaughtState s =
         , ( "displayDenominator", Encode.int s.displayDenominator )
         , ( "phase", encodeFakeFlashPhase s.phase )
         , ( "skipOffer", s.skipOffer |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
+        , ( "offerIsLastChance", Encode.bool s.offerIsLastChance )
         ]
 
 
@@ -501,15 +506,17 @@ decodeIQTestScreenState : Decoder IQTestScreenState
 decodeIQTestScreenState =
     Decode.map2
         (\qi td ->
-            \pendingSkipOffer -> { questionIdx = qi, totalDings = td, pendingSkipOffer = pendingSkipOffer }
+            \pendingSkipOffer offerIsLastChance -> { questionIdx = qi, totalDings = td, pendingSkipOffer = pendingSkipOffer, offerIsLastChance = offerIsLastChance }
         )
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "totalDings" Decode.int)
         |> Decode.andThen
             (\partial ->
-                -- older persisted rows predate this field; treat missing as Nothing.
-                Decode.map partial
+                Decode.map2 partial
+                    -- older persisted rows predate this field; treat missing as Nothing.
                     (Decode.oneOf [ Decode.field "pendingSkipOffer" (Decode.nullable Decode.int), Decode.succeed Nothing ])
+                    -- older persisted rows predate this field; treat missing as False.
+                    (Decode.oneOf [ Decode.field "offerIsLastChance" Decode.bool, Decode.succeed False ])
             )
 
 
@@ -544,8 +551,8 @@ decodeFakeFlashCaughtState : Decoder FakeFlashCaughtState
 decodeFakeFlashCaughtState =
     Decode.map5
         (\qi ot dn dd ph ->
-            \skipOffer ->
-                { questionIdx = qi, originalTotal = ot, displayNumerator = dn, displayDenominator = dd, phase = ph, skipOffer = skipOffer }
+            \skipOffer offerIsLastChance ->
+                { questionIdx = qi, originalTotal = ot, displayNumerator = dn, displayDenominator = dd, phase = ph, skipOffer = skipOffer, offerIsLastChance = offerIsLastChance }
         )
         (Decode.field "questionIdx" Decode.int)
         (Decode.field "originalTotal" Decode.int)
@@ -554,10 +561,12 @@ decodeFakeFlashCaughtState =
         (Decode.field "phase" decodeFakeFlashPhase)
         |> Decode.andThen
             (\partial ->
-                -- older persisted rows predate this field; treat missing as Nothing (no
-                -- decision yet/denied).
-                Decode.map partial
+                Decode.map2 partial
+                    -- older persisted rows predate this field; treat missing as Nothing (no
+                    -- decision yet/denied).
                     (Decode.oneOf [ Decode.field "skipOffer" (Decode.nullable Decode.int), Decode.succeed Nothing ])
+                    -- older persisted rows predate this field; treat missing as False.
+                    (Decode.oneOf [ Decode.field "offerIsLastChance" Decode.bool, Decode.succeed False ])
             )
 
 

@@ -59,11 +59,24 @@ type alias RegistryEntry =
     -- inherited) on replacement, same as quizQuestions above.
     , iqOfferDisabled : Bool
 
-    -- Durable one-time-ever flag: has this player already been *granted* the IQ-test
-    -- skip offer (granted, not necessarily accepted -- see Server.elm's decideIqOffer).
-    -- Game-state, so it lives in the editable serverState document alongside
-    -- winText/iqTimer/quizProgress; inherited on replacement like those.
-    , iqOfferUsed : Bool
+    -- Durable one-time-ever-per-trigger flags: has this player already been *granted*
+    -- the IQ-test skip offer via a normal fail (iqOfferUsedFail) / via falling for a
+    -- fake-flash trap (iqOfferUsedCatch) -- granted, not necessarily accepted -- see
+    -- Server.elm's decideIqOffer. Each trigger has its own independent one-time grant
+    -- (see decideIqOffer's isLastChance: true once *both* are true). Game-state, so
+    -- they live in the editable serverState document alongside winText/iqTimer/
+    -- quizProgress; inherited on replacement like those.
+    , iqOfferUsedFail : Bool
+    , iqOfferUsedCatch : Bool
+
+    -- The questionIdx of a live, granted-but-not-yet-consumed skip offer, mirroring
+    -- Server.elm's in-memory Model.iqOfferGrants Dict entry for this uuid -- durable so
+    -- a server restart doesn't strand an outstanding grant (see Server.elm's init/
+    -- FileRead rehydration). Nothing once accepted (ClientQuizAdvanced's offerAccept
+    -- branch) or declined (ClientIqOfferDeclined). Distinct from iqOfferUsedFail/
+    -- iqOfferUsedCatch above: those are permanent "has this trigger ever fired" facts,
+    -- this is the transient "is there something to resume right now" fact.
+    , iqOfferGrant : Maybe Int
 
     -- The question idx (if any) the server has independently confirmed the
     -- song/video for via a real ClientQuizSongEnded report -- durable so a
@@ -102,7 +115,9 @@ encodeServerStateFields fields =
         , ( "quizProgress", Encode.int fields.quizProgress )
         , ( "timerEndsAt", fields.timerEndsAt |> Maybe.map Encode.float |> Maybe.withDefault Encode.null )
         , ( "quizQuestions", Maybe.withDefault Encode.null fields.quizQuestions )
-        , ( "iqOfferUsed", Encode.bool fields.iqOfferUsed )
+        , ( "iqOfferUsedFail", Encode.bool fields.iqOfferUsedFail )
+        , ( "iqOfferUsedCatch", Encode.bool fields.iqOfferUsedCatch )
+        , ( "iqOfferGrant", fields.iqOfferGrant |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
         , ( "quizSongEndedIdx", fields.quizSongEndedIdx |> Maybe.map Encode.int |> Maybe.withDefault Encode.null )
         ]
 
@@ -127,7 +142,9 @@ encodeRegistryEntry entry =
                 , quizProgress = entry.quizProgress
                 , timerEndsAt = entry.timerEndsAt
                 , quizQuestions = entry.quizQuestions
-                , iqOfferUsed = entry.iqOfferUsed
+                , iqOfferUsedFail = entry.iqOfferUsedFail
+                , iqOfferUsedCatch = entry.iqOfferUsedCatch
+                , iqOfferGrant = entry.iqOfferGrant
                 , quizSongEndedIdx = entry.quizSongEndedIdx
                 }
           )
@@ -169,9 +186,43 @@ type alias ServerStateFields =
     , quizProgress : Int
     , timerEndsAt : Maybe Float
     , quizQuestions : Maybe Encode.Value
-    , iqOfferUsed : Bool
+    , iqOfferUsedFail : Bool
+    , iqOfferUsedCatch : Bool
+    , iqOfferGrant : Maybe Int
     , quizSongEndedIdx : Maybe Int
     }
+
+
+{-| Migrates the pre-split single `iqOfferUsed : Bool` flag: if both
+`iqOfferUsedFail`/`iqOfferUsedCatch` are present, this is an already-migrated
+(or brand-new) row -- trust them directly. Otherwise fall back to the legacy
+`iqOfferUsed` key and apply it to *both* new flags -- a player who already
+resolved their one lifetime offer under the old single-flag system must not
+get a second bite under the new per-trigger system, so legacy `true` becomes
+both-used, not neither-used. A row that predates even the old flag entirely
+defaults both to `False`, same as the old tolerant "missing -> False"
+convention. The very next `writeRegistry` for any row permanently drops the
+stale `iqOfferUsed` key (see `encodeServerStateFields`, which no longer emits
+it), so this fallback only ever matters for not-yet-rewritten rows.
+-}
+decodeIqOfferUsedFlags : Decode.Decoder { iqOfferUsedFail : Bool, iqOfferUsedCatch : Bool }
+decodeIqOfferUsedFlags =
+    Decode.map3
+        (\maybeFail maybeCatch maybeLegacy ->
+            case ( maybeFail, maybeCatch ) of
+                ( Just f, Just c ) ->
+                    { iqOfferUsedFail = f, iqOfferUsedCatch = c }
+
+                _ ->
+                    let
+                        legacyUsed =
+                            Maybe.withDefault False maybeLegacy
+                    in
+                    { iqOfferUsedFail = legacyUsed, iqOfferUsedCatch = legacyUsed }
+        )
+        (Decode.maybe (Decode.field "iqOfferUsedFail" Decode.bool))
+        (Decode.maybe (Decode.field "iqOfferUsedCatch" Decode.bool))
+        (Decode.maybe (Decode.field "iqOfferUsed" Decode.bool))
 
 
 decodeServerStateFields : Decode.Decoder ServerStateFields
@@ -180,8 +231,16 @@ decodeServerStateFields =
         fields =
             Decode.map3
                 (\winText iqTimer quizProgress ->
-                    \timerEndsAt quizQuestions iqOfferUsed quizSongEndedIdx ->
-                        ServerStateFields winText iqTimer quizProgress timerEndsAt quizQuestions iqOfferUsed quizSongEndedIdx
+                    \timerEndsAt quizQuestions offerUsedFlags iqOfferGrant quizSongEndedIdx ->
+                        ServerStateFields winText
+                            iqTimer
+                            quizProgress
+                            timerEndsAt
+                            quizQuestions
+                            offerUsedFlags.iqOfferUsedFail
+                            offerUsedFlags.iqOfferUsedCatch
+                            iqOfferGrant
+                            quizSongEndedIdx
                 )
                 -- older rows predate the win text; treat missing as empty.
                 (Decode.maybe (Decode.field "winText" Decode.string)
@@ -205,11 +264,15 @@ decodeServerStateFields =
                 |> Decode.andThen
                     (\partial ->
                         Decode.map2 partial
-                            -- older rows predate this field; treat missing as False (offer
-                            -- not yet granted to this player).
-                            (Decode.maybe (Decode.field "iqOfferUsed" Decode.bool)
-                                |> Decode.map (Maybe.withDefault False)
-                            )
+                            -- see decodeIqOfferUsedFlags's doc comment for the migration rule.
+                            decodeIqOfferUsedFlags
+                            -- older rows predate this field, or the offer was never granted
+                            -- (or was already consumed/declined); treat missing as Nothing.
+                            (Decode.maybe (Decode.field "iqOfferGrant" Decode.int))
+                    )
+                |> Decode.andThen
+                    (\partial ->
+                        Decode.map partial
                             -- older rows predate this field; treat missing as Nothing (no
                             -- confirmed song-ended report on file for this player).
                             (Decode.maybe (Decode.field "quizSongEndedIdx" Decode.int))
@@ -233,7 +296,9 @@ decodeRegistryEntry =
                     serverState.timerEndsAt
                     serverState.quizQuestions
                     iqOfferDisabled
-                    serverState.iqOfferUsed
+                    serverState.iqOfferUsedFail
+                    serverState.iqOfferUsedCatch
+                    serverState.iqOfferGrant
                     serverState.quizSongEndedIdx
         )
         (Decode.field "uuid" Decode.string)
@@ -294,13 +359,39 @@ updateEntryIqTimer uuid newIqTimer =
         )
 
 
--- Mirrors updateEntryQuizProgress but for the durable one-time skip-offer-granted flag.
-updateEntryIqOfferUsed : String -> List RegistryEntry -> List RegistryEntry
-updateEntryIqOfferUsed uuid =
+-- Mirrors updateEntryQuizProgress but for the durable fail-trigger skip-offer-granted flag.
+updateEntryIqOfferUsedFail : String -> List RegistryEntry -> List RegistryEntry
+updateEntryIqOfferUsedFail uuid =
     List.map
         (\e ->
             if e.uuid == uuid then
-                { e | iqOfferUsed = True }
+                { e | iqOfferUsedFail = True }
+
+            else
+                e
+        )
+
+
+-- Mirrors updateEntryIqOfferUsedFail but for the catch-trigger flag.
+updateEntryIqOfferUsedCatch : String -> List RegistryEntry -> List RegistryEntry
+updateEntryIqOfferUsedCatch uuid =
+    List.map
+        (\e ->
+            if e.uuid == uuid then
+                { e | iqOfferUsedCatch = True }
+
+            else
+                e
+        )
+
+
+-- Mirrors updateEntryIqTimer but for the transient, questionIdx-keyed live-grant snapshot.
+updateEntryIqOfferGrant : String -> Maybe Int -> List RegistryEntry -> List RegistryEntry
+updateEntryIqOfferGrant uuid newIqOfferGrant =
+    List.map
+        (\e ->
+            if e.uuid == uuid then
+                { e | iqOfferGrant = newIqOfferGrant }
 
             else
                 e
