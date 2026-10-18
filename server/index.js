@@ -45,6 +45,33 @@ function buildSendToClientPayload(payload, mintToken) {
     return { serverPayload: payload, token: null };
 }
 
+// Writes via a sibling temp file + rename so a process killed mid-write (crash, restart,
+// SIGKILL) leaves either the old contents or the new ones, never a truncated/empty file.
+// A plain fs.writeFile truncates first, so dying in that window used to wipe builds.json
+// entirely -- every uuid then read as unknown on the next boot.
+// On Windows the rename can transiently fail with EPERM/EACCES/EBUSY while something
+// (antivirus, a concurrent reader) briefly holds the target open -- retried with a short
+// backoff, the same workaround graceful-fs uses. `fsImpl` is injectable for tests.
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_MAX_ATTEMPTS = 10;
+
+function writeFileAtomic(fullPath, contents, encoding, callback, fsImpl = require('fs')) {
+    const tmpPath = `${fullPath}.tmp`;
+    fsImpl.writeFile(tmpPath, contents, encoding, (writeErr) => {
+        if (writeErr) return callback(writeErr);
+        const attemptRename = (attempt) => {
+            fsImpl.rename(tmpPath, fullPath, (renameErr) => {
+                if (renameErr && RENAME_RETRY_CODES.has(renameErr.code) && attempt < RENAME_MAX_ATTEMPTS) {
+                    setTimeout(() => attemptRename(attempt + 1), 10 * attempt);
+                    return;
+                }
+                callback(renameErr || null);
+            });
+        };
+        attemptRename(1);
+    });
+}
+
 module.exports = {
     resolveCertPaths,
     parseUploadRequest,
@@ -52,6 +79,7 @@ module.exports = {
     findRegistryEntry,
     resolveDownloadDecision,
     buildSendToClientPayload,
+    writeFileAtomic,
 };
 
 // Only run the live server (and pull in ../elm-server.js, a build artifact) when this
@@ -207,7 +235,7 @@ if (require.main === module) {
         const prev = writeQueues.get(fullPath) || Promise.resolve();
         const next = prev.then(() => new Promise((resolve) => {
             fs.mkdir(path.dirname(fullPath), { recursive: true }, () => {
-                const writer = append ? fs.appendFile : fs.writeFile;
+                const writer = append ? fs.appendFile : writeFileAtomic;
                 writer(fullPath, contents, encoding, (err) => {
                     app.ports.writeFileResult.send({
                         path: filePath,

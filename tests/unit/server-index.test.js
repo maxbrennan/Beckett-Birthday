@@ -12,6 +12,7 @@ const {
     findRegistryEntry,
     resolveDownloadDecision,
     buildSendToClientPayload,
+    writeFileAtomic,
 } = require('../../server/index.js');
 
 describe('resolveCertPaths', () => {
@@ -112,5 +113,78 @@ describe('buildSendToClientPayload', () => {
         const result = buildSendToClientPayload(payload, mintToken);
         expect(result).toEqual({ serverPayload: payload, token: null });
         expect(mintToken).not.toHaveBeenCalled();
+    });
+});
+
+describe('writeFileAtomic', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    let dir;
+
+    beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'write-atomic-')); });
+    afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+    test('replaces the target file and leaves no temp file behind', (done) => {
+        const target = path.join(dir, 'builds.json');
+        fs.writeFileSync(target, 'old');
+        writeFileAtomic(target, 'new', 'utf8', (err) => {
+            expect(err).toBeFalsy();
+            expect(fs.readFileSync(target, 'utf8')).toBe('new');
+            expect(fs.readdirSync(dir)).toEqual(['builds.json']);
+            done();
+        });
+    });
+
+    test('leaves the original untouched when the temp write fails', (done) => {
+        const target = path.join(dir, 'builds.json');
+        fs.writeFileSync(target, 'old');
+        // A directory squatting on the temp path makes the temp write fail.
+        fs.mkdirSync(`${target}.tmp`);
+        writeFileAtomic(target, 'new', 'utf8', (err) => {
+            expect(err).toBeTruthy();
+            expect(fs.readFileSync(target, 'utf8')).toBe('old');
+            done();
+        });
+    });
+
+    function fakeFs(renameErrors) {
+        const errs = [...renameErrors];
+        return {
+            renameCalls: 0,
+            writeFile: (_p, _c, _e, cb) => cb(null),
+            rename(_from, _to, cb) {
+                this.renameCalls += 1;
+                const code = errs.shift();
+                cb(code ? Object.assign(new Error(code), { code }) : null);
+            },
+        };
+    }
+
+    test('retries a transient Windows EPERM on rename until it succeeds', (done) => {
+        const f = fakeFs(['EPERM', 'EBUSY']);
+        writeFileAtomic('x/builds.json', 'new', 'utf8', (err) => {
+            expect(err).toBeNull();
+            expect(f.renameCalls).toBe(3);
+            done();
+        }, f);
+    });
+
+    test('does not retry a non-transient rename error', (done) => {
+        const f = fakeFs(['ENOENT']);
+        writeFileAtomic('x/builds.json', 'new', 'utf8', (err) => {
+            expect(err.code).toBe('ENOENT');
+            expect(f.renameCalls).toBe(1);
+            done();
+        }, f);
+    });
+
+    test('gives up after the retry budget and reports the error', (done) => {
+        const f = fakeFs(Array(20).fill('EPERM'));
+        writeFileAtomic('x/builds.json', 'new', 'utf8', (err) => {
+            expect(err.code).toBe('EPERM');
+            expect(f.renameCalls).toBe(10);
+            done();
+        }, f);
     });
 });
