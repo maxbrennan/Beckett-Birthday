@@ -244,6 +244,22 @@ resumePlaySongTarget questions pending screen =
             Nothing
 
 
+-- Whether resuming onto this screen needs the caught-trap cutscene kicked back to
+-- life. deriveIqScreen (Server.elm) always resets a resumed IqIdleCaught to FfDelay --
+-- unlike a live catch (SpaceBarPressed's CaughtTrap case), there's no local schedule
+-- already queued for it on rejoin, and the server treats IqIdleCaught's resume as a
+-- no-op (Server.elm's resumeIqTimer) since the remaining progression is entirely
+-- client-local. Without this kick the cutscene sits frozen on FfDelay forever.
+needsFakeFlashKick : Screen -> Bool
+needsFakeFlashKick screen =
+    case screen of
+        FakeFlashCaughtScreen _ ->
+            True
+
+        _ ->
+            False
+
+
 -- Promotes a CheckingAnswerScreen to ConfirmingAnswerScreen once the client
 -- actually has a connection to send that state over.
 promoteChecking : Screen -> Screen
@@ -320,7 +336,11 @@ update msg model =
                                     schedule 1000 (PlaySong idx) cleared
 
                                 Nothing ->
-                                    cleared
+                                    if needsFakeFlashKick cleared.screen then
+                                        schedule 1000 FakeFlashNextPhase cleared
+
+                                    else
+                                        cleared
                     in
                     ( kicked
                     , Cmd.batch [ pauseMusic "jeopardy-audio", resumeCmd model inner ]
