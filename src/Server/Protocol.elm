@@ -395,10 +395,17 @@ quizSongEndedAckEnvelope idx =
 -- The server's authoritative answer to "was the one-time IQ-test skip offer granted"
 -- for a fail (ClientIqFailed) or a fake-flash catch (ClientIqCaught) -- see
 -- Server.elm's decideIqOffer. totalDings always carries the server's current count
--- (unchanged on a plain fail, already-doubled on a catch).
-iqOfferDecisionEnvelope : { granted : Bool, totalDings : Int } -> Encode.Value
-iqOfferDecisionEnvelope { granted, totalDings } =
+-- (unchanged on a plain fail, already-doubled on a catch). isLastChance is true iff
+-- this is the second (and final) offer this player will ever see.
+iqOfferDecisionEnvelope : { granted : Bool, totalDings : Int, isLastChance : Bool } -> Encode.Value
+iqOfferDecisionEnvelope { granted, totalDings, isLastChance } =
     Encode.object
         [ ( "payload", Encode.string "iqOfferDecision" )
-        , ( "iqOfferDecision", Encode.object [ ( "granted", Encode.bool granted ), ( "totalDings", Encode.int totalDings ) ] )
+        , ( "iqOfferDecision"
+          , Encode.object
+                [ ( "granted", Encode.bool granted )
+                , ( "totalDings", Encode.int totalDings )
+                , ( "isLastChance", Encode.bool isLastChance )
+                ]
+          )
         ]
