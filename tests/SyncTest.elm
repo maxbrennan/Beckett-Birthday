@@ -1,7 +1,7 @@
 module SyncTest exposing (..)
 
 import Expect
-import Game.IQTest exposing (FakeFlashPhase(..), IQSkipPhase(..), OfferGrantTrigger(..))
+import Game.IQTest exposing (FakeFlashPhase(..), IQSkipPhase(..))
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Sync
@@ -463,38 +463,4 @@ envelopeBuilderTests =
                 clientStateEnvelope model
                     |> Decode.decodeValue (Decode.field "payload" Decode.string)
                     |> Expect.equal (Ok "stateUpdate")
-        ]
-
-
--- The local offer-grant cache's on-disk codec (see Main.elm's writeOfferGrantCache/
--- offerGrantCachePath and Game.IQTest.CachedOfferGrant's doc comment) -- never goes
--- over the wire, only to/from local disk, but round-trips through the same
--- Encode/Decode machinery as everything else in this module.
-cachedOfferGrantTests : Test
-cachedOfferGrantTests =
-    describe "encodeCachedOfferGrant / decodeCachedOfferGrant round-trip"
-        [ test "round-trips a fail-triggered grant" <|
-            \_ ->
-                let
-                    grant =
-                        { questionIdx = 2, totalDings = 42, trigger = FailTrigger, offerIsLastChance = False }
-                in
-                Sync.encodeCachedOfferGrant grant
-                    |> Decode.decodeValue Sync.decodeCachedOfferGrant
-                    |> Expect.equal (Ok grant)
-        , test "round-trips a catch-triggered, last-chance grant" <|
-            \_ ->
-                let
-                    grant =
-                        { questionIdx = 0, totalDings = 51, trigger = CatchTrigger, offerIsLastChance = True }
-                in
-                Sync.encodeCachedOfferGrant grant
-                    |> Decode.decodeValue Sync.decodeCachedOfferGrant
-                    |> Expect.equal (Ok grant)
-        , test "decodeCachedOfferGrant rejects an unknown trigger string" <|
-            \_ ->
-                Decode.decodeString Sync.decodeCachedOfferGrant
-                    """{"questionIdx":0,"totalDings":0,"trigger":"bogus","offerIsLastChance":false}"""
-                    |> Result.toMaybe
-                    |> Expect.equal Nothing
         ]

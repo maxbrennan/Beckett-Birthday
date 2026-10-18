@@ -1,9 +1,9 @@
 module MainTest exposing (..)
 
 import Expect
-import Game.IQTest exposing (CachedOfferGrant, FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, OfferGrantTrigger(..), iqLoudDelay, iqQuestionCount)
+import Game.IQTest exposing (FakeFlashPhase(..), IQSkipAnimState, IQSkipPhase(..), IQTestState, iqLoudDelay, iqQuestionCount)
 import Json.Encode as Encode
-import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, offerGrantCachePath, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
+import Main exposing (decodeReadDirResult, decodeReadFileResult, everySecond, init, pauseMusic, resumeCmd, resumePlaySongTarget, sendWs, subscriptions, tickFromPosix, update)
 import Sync
 import Test exposing (Test, describe, test)
 import Time
@@ -776,23 +776,11 @@ serverIqOfferDecisionSuite =
         [ test "granted, on the active IQ screen, transitions to the instructions screen with the offer stashed as pending (issue #93)" <|
             \_ ->
                 let
-                    ( result, cmd ) =
+                    ( result, _ ) =
                         update (WsDataReceived (decisionEnvelope True 42 False))
                             { baseModel | screen = IQTestActiveScreen { iqActiveState | questionIdx = 2 } }
                 in
-                Expect.all
-                    [ \_ -> result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = False })
-                    , \_ ->
-                        -- Also mirrors the grant into the local cache (see
-                        -- Main.offerGrantCacheSyncCmd) so a later app relaunch can seed
-                        -- straight back to this same screen without a server round trip.
-                        cmd
-                            |> Expect.equal
-                                (Main.writeOfferGrantCache
-                                    { questionIdx = 2, totalDings = 42, trigger = FailTrigger, offerIsLastChance = False }
-                                )
-                    ]
-                    ()
+                result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = False })
         , test "granted with isLastChance, on the active IQ screen, carries offerIsLastChance through" <|
             \_ ->
                 let
@@ -892,7 +880,7 @@ iqSkipOfferDeclinedSuite =
                 in
                 Expect.all
                     [ \_ -> result.screen |> Expect.equal (IQTestScreen { questionIdx = 2, totalDings = 100, pendingSkipOffer = Nothing, offerIsLastChance = False })
-                    , \_ -> cmd |> Expect.equal (Cmd.batch [ sendWs baseModel Sync.iqOfferDeclinedEnvelope, Main.clearOfferGrantCache ])
+                    , \_ -> cmd |> Expect.equal (sendWs baseModel Sync.iqOfferDeclinedEnvelope)
                     ]
                     ()
         , test "ignored off the skip-offer screen" <|
@@ -1915,119 +1903,4 @@ issue93Suite =
                     , \_ -> afterDecline.screen |> Expect.equal (IQTestScreen { questionIdx = 0, totalDings = 50, pendingSkipOffer = Nothing , offerIsLastChance = False })
                     ]
                     ()
-        ]
-
-
--- Covers the local offer-grant cache (see Game.IQTest.CachedOfferGrant's doc
--- comment): decodeReadFileResult's path-switching, OfferGrantCacheLoaded's
--- optimistic BeginScreen seeding (mirroring Server.elm's deriveIqScreen formula
--- exactly), and the WsClientReady/ServerStateUpdate guard relaxation that lets a
--- seeded guess survive the connection handshake and still get reconciled.
-offerGrantCacheSuite : Test
-offerGrantCacheSuite =
-    describe "Offer-grant cache (decodeReadFileResult / OfferGrantCacheLoaded / reconcile guards)"
-        [ test "decodeReadFileResult routes offerGrantCachePath to OfferGrantCacheLoaded, decoding a valid cache" <|
-            \_ ->
-                decodeReadFileResult
-                    { path = offerGrantCachePath
-                    , contents = Just """{"questionIdx":2,"totalDings":42,"trigger":"fail","offerIsLastChance":true}"""
-                    , error = Nothing
-                    }
-                    |> Expect.equal
-                        (OfferGrantCacheLoaded
-                            (Just { questionIdx = 2, totalDings = 42, trigger = FailTrigger, offerIsLastChance = True })
-                        )
-        , test "decodeReadFileResult treats a missing offerGrantCachePath file as no cache" <|
-            \_ ->
-                decodeReadFileResult { path = offerGrantCachePath, contents = Nothing, error = Just "ENOENT" }
-                    |> Expect.equal (OfferGrantCacheLoaded Nothing)
-        , test "decodeReadFileResult treats a cleared (\"null\") cache file as no cache" <|
-            \_ ->
-                decodeReadFileResult { path = offerGrantCachePath, contents = Just "null", error = Nothing }
-                    |> Expect.equal (OfferGrantCacheLoaded Nothing)
-        , test "decodeReadFileResult still routes app-uuid.json to UuidLoaded, unaffected by the new path" <|
-            \_ ->
-                decodeReadFileResult { path = "app-uuid.json", contents = Just """{"uuid":"abc"}""", error = Nothing }
-                    |> Expect.equal (UuidLoaded (Just "abc"))
-        , test "OfferGrantCacheLoaded Nothing is a no-op" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update (OfferGrantCacheLoaded Nothing) baseModel
-                in
-                result.screen |> Expect.equal baseModel.screen
-        , test "OfferGrantCacheLoaded (fail trigger) seeds a BeginScreen-gated IQTestScreen with the offer pending" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update
-                            (OfferGrantCacheLoaded (Just { questionIdx = 2, totalDings = 42, trigger = FailTrigger, offerIsLastChance = True }))
-                            baseModel
-                in
-                result.screen
-                    |> Expect.equal
-                        (BeginScreen
-                            (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = True })
-                        )
-        , test "OfferGrantCacheLoaded (catch trigger) seeds a BeginScreen-gated FakeFlashCaughtScreen, matching Server.elm's deriveIqScreen coarse-resume formula" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update
-                            (OfferGrantCacheLoaded (Just { questionIdx = 1, totalDings = 51, trigger = CatchTrigger, offerIsLastChance = False }))
-                            baseModel
-                in
-                result.screen
-                    |> Expect.equal
-                        (BeginScreen
-                            (FakeFlashCaughtScreen
-                                { questionIdx = 1
-                                , originalTotal = 25
-                                , displayNumerator = 0
-                                , displayDenominator = 25
-                                , phase = FfDelay
-                                , skipOffer = Just 51
-                                , offerIsLastChance = False
-                                }
-                            )
-                        )
-        , test "WsClientReady preserves an optimistically-seeded BeginScreen instead of resetting to WsLoadingScreen" <|
-            \_ ->
-                let
-                    seeded =
-                        { baseModel | screen = BeginScreen (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = False }) }
-
-                    ( result, _ ) =
-                        update (WsClientReady "ws1") seeded
-                in
-                result.screen |> Expect.equal seeded.screen
-        , test "WsClientReady still resets a plain WsConnectingScreen (no cache) to WsLoadingScreen" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update (WsClientReady "ws1") { baseModel | screen = WsConnectingScreen }
-                in
-                result.screen |> Expect.equal WsLoadingScreen
-        , test "ServerStateUpdate reconciles a still-showing optimistic BeginScreen guess in place, not just WsLoadingScreen" <|
-            \_ ->
-                let
-                    seeded =
-                        { baseModel | screen = BeginScreen (IQTestScreen { questionIdx = 2, totalDings = 42, pendingSkipOffer = Just 42, offerIsLastChance = False }) }
-
-                    ( result, _ ) =
-                        update (WsDataReceived (stateUpdateEnvelope validModelJson)) seeded
-                in
-                -- decodeModel's tolerant "{}"-shape fallback (see decodeReadFileResult's
-                -- sibling comment) means this authoritative (but minimal) reply resolves to
-                -- BeginScreen (BlankScreen 0) -- the point here is only that it was applied
-                -- at all (the cached guess didn't get stuck because the screen wasn't
-                -- WsLoadingScreen), not the specific resulting screen.
-                result.screen |> Expect.notEqual seeded.screen
-        , test "ServerStateUpdate is still ignored off an unrelated live screen (not WsLoadingScreen or BeginScreen)" <|
-            \_ ->
-                let
-                    ( result, _ ) =
-                        update (WsDataReceived (stateUpdateEnvelope validModelJson)) { baseModel | screen = BlankScreen 0 }
-                in
-                result.screen |> Expect.equal (BlankScreen 0)
         ]

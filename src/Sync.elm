@@ -316,57 +316,6 @@ encodeFakeFlashCaughtState s =
         ]
 
 
-encodeOfferGrantTrigger : OfferGrantTrigger -> Encode.Value
-encodeOfferGrantTrigger trigger =
-    Encode.string <|
-        case trigger of
-            FailTrigger ->
-                "fail"
-
-            CatchTrigger ->
-                "catch"
-
-
--- The local offer-grant cache file's whole contents (see CachedOfferGrant's doc
--- comment) -- unlike every other codec in this module, this never goes over the
--- wire, only to/from local disk via Main.elm's writeFile/readFile ports.
-encodeCachedOfferGrant : CachedOfferGrant -> Encode.Value
-encodeCachedOfferGrant grant =
-    Encode.object
-        [ ( "questionIdx", Encode.int grant.questionIdx )
-        , ( "totalDings", Encode.int grant.totalDings )
-        , ( "trigger", encodeOfferGrantTrigger grant.trigger )
-        , ( "offerIsLastChance", Encode.bool grant.offerIsLastChance )
-        ]
-
-
-decodeOfferGrantTrigger : Decoder OfferGrantTrigger
-decodeOfferGrantTrigger =
-    Decode.string
-        |> Decode.andThen
-            (\s ->
-                case s of
-                    "fail" ->
-                        Decode.succeed FailTrigger
-
-                    "catch" ->
-                        Decode.succeed CatchTrigger
-
-                    _ ->
-                        Decode.fail ("unknown OfferGrantTrigger: " ++ s)
-            )
-
-
-decodeCachedOfferGrant : Decoder CachedOfferGrant
-decodeCachedOfferGrant =
-    Decode.map4
-        (\qi td trigger lastChance -> { questionIdx = qi, totalDings = td, trigger = trigger, offerIsLastChance = lastChance })
-        (Decode.field "questionIdx" Decode.int)
-        (Decode.field "totalDings" Decode.int)
-        (Decode.field "trigger" decodeOfferGrantTrigger)
-        (Decode.field "offerIsLastChance" Decode.bool)
-
-
 encodeScreen : Screen -> Encode.Value
 encodeScreen scr =
     case scr of

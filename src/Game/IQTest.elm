@@ -211,31 +211,6 @@ type alias FakeFlashCaughtState =
     }
 
 
--- Which of the two triggers (see Server.elm's decideIqOffer) a cached grant came
--- from -- see CachedOfferGrant below.
-type OfferGrantTrigger
-    = FailTrigger
-    | CatchTrigger
-
-
-{-| The client's own local-disk mirror of a live, outstanding skip-offer grant
-(see Server.elm's Model.iqOfferGrants/RegistryEntry.iqOfferGrant) -- written to
-disk whenever the client's own Model reflects one, read back at app launch so
-the very first rendered screen can already show the offer-eligible variant
-instead of a generic loading screen while the WebSocket round trip is still in
-flight. Purely an optimistic accelerator: the eventual ServerStateUpdate is
-always authoritative and overwrites whatever this seeded, so a stale/wrong
-cache is a cosmetic risk at worst (see Main.elm's WsClientReady/
-ServerStateUpdate handling).
--}
-type alias CachedOfferGrant =
-    { questionIdx : Int
-    , totalDings : Int
-    , trigger : OfferGrantTrigger
-    , offerIsLastChance : Bool
-    }
-
-
 -- Phases of the count-up animation shown when the player accepts the skip
 -- offer: the counter holds at 0/total, ticks up by one (with a ding) every
 -- counterTickMs until it reaches total/total, then holds before advancing to
