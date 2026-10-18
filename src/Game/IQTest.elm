@@ -147,6 +147,13 @@ type alias IQTestScreenState =
     -- Always Nothing on IQTestSkipOfferScreen itself (this type is shared, but
     -- the field is meaningless once already on the offer screen).
     , pendingSkipOffer : Maybe Int
+
+    -- The server's isLastChance verdict (see Server.elm's decideIqOffer), carried
+    -- alongside pendingSkipOffer/skipOffer even while still on IQTestScreen/
+    -- FakeFlashCaughtScreen (where nothing reads it yet) purely so it survives the
+    -- hand-off into IQTestSkipOfferScreen, the only place View.elm actually branches
+    -- on it. Meaningless (always False) whenever there's no pending offer at all.
+    , offerIsLastChance : Bool
     }
 
 
@@ -198,6 +205,9 @@ type alias FakeFlashCaughtState =
     -- lands well before FfCounterOut, the only phase that reads it). Just totalDings
     -- once granted; stays Nothing forever if denied.
     , skipOffer : Maybe Int
+
+    -- Mirrors IQTestScreenState.offerIsLastChance -- see its doc comment.
+    , offerIsLastChance : Bool
     }
 
 
@@ -309,6 +319,7 @@ decideSpaceBar state =
                 , displayDenominator = state.totalDings
                 , phase = FfDelay
                 , skipOffer = Nothing
+                , offerIsLastChance = False
                 }
 
         else
@@ -365,4 +376,5 @@ exitFakeFlash state =
     { questionIdx = state.questionIdx
     , totalDings = Basics.min (state.originalTotal * 2) maxTotalDings
     , pendingSkipOffer = Nothing
+    , offerIsLastChance = False
     }

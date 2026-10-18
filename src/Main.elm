@@ -439,6 +439,7 @@ update msg model =
                                     { questionIdx = idx
                                     , totalDings = iqQuestionCount
                                     , pendingSkipOffer = Nothing
+                                    , offerIsLastChance = False
                                     }
                         }
                     , Cmd.none
@@ -464,6 +465,7 @@ update msg model =
                                             { questionIdx = iqScreen.questionIdx
                                             , totalDings = totalDings
                                             , pendingSkipOffer = Nothing
+                                            , offerIsLastChance = iqScreen.offerIsLastChance
                                             }
                                 }
                             , Cmd.none
@@ -595,6 +597,7 @@ update msg model =
                                                             { questionIdx = state.questionIdx
                                                             , totalDings = totalDings
                                                             , pendingSkipOffer = Nothing
+                                                            , offerIsLastChance = state.offerIsLastChance
                                                             }
                                                 }
                                             , Cmd.none
@@ -645,6 +648,7 @@ update msg model =
                                     { questionIdx = s.questionIdx
                                     , totalDings = s.totalDings
                                     , pendingSkipOffer = Nothing
+                                    , offerIsLastChance = False
                                     }
                         }
                     , sendWs model iqOfferDeclinedEnvelope
@@ -992,8 +996,8 @@ update msg model =
                     -- reconnect) -- ignore.
                     case model.screen of
                         IQTestActiveScreen state ->
-                            ( { model
-                                | screen =
+                            let
+                                newScreen =
                                     IQTestScreen
                                         { questionIdx = state.questionIdx
                                         , totalDings = d.totalDings
@@ -1003,15 +1007,21 @@ update msg model =
 
                                             else
                                                 Nothing
+                                        , offerIsLastChance = d.granted && d.isLastChance
                                         }
-                              }
-                            , Cmd.none
-                            )
+                            in
+                            ( { model | screen = newScreen }, Cmd.none )
 
                         FakeFlashCaughtScreen state ->
-                            ( { model | screen = FakeFlashCaughtScreen { state | skipOffer = if d.granted then Just d.totalDings else Nothing } }
-                            , Cmd.none
-                            )
+                            let
+                                newScreen =
+                                    FakeFlashCaughtScreen
+                                        { state
+                                            | skipOffer = if d.granted then Just d.totalDings else Nothing
+                                            , offerIsLastChance = d.granted && d.isLastChance
+                                        }
+                            in
+                            ( { model | screen = newScreen }, Cmd.none )
 
                         _ ->
                             ( model, Cmd.none )
