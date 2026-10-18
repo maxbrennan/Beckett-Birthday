@@ -1820,7 +1820,7 @@ needsFakeFlashKickSuite =
         [ test "a FakeFlashCaughtScreen needs the cutscene kick" <|
             \_ ->
                 needsFakeFlashKick
-                    (FakeFlashCaughtScreen { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing })
+                    (FakeFlashCaughtScreen { questionIdx = 0, originalTotal = 10, displayNumerator = 0, displayDenominator = 10, phase = FfDelay, skipOffer = Nothing, offerIsLastChance = False })
                     |> Expect.equal True
         , test "a bare BlankScreen doesn't need it" <|
             \_ ->

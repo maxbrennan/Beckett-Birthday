@@ -291,6 +291,15 @@ describe('IQ-test one-time skip offer', () => {
         expect(decision.iqOfferDecision.granted).toBe(true);
         await conn.close();
 
+        // The decision reply goes out before the registry write that persists the grant
+        // lands (it's queued behind other builds' live-timer writes), so wait for it to
+        // actually be on disk -- otherwise the restart below can race it and the test
+        // checks nothing about rehydration.
+        await waitUntil(() => {
+            const found = readRegistry().find((e) => e.uuid === build.uuid);
+            return found && found.iqOfferGrant === 0 ? found : null;
+        });
+
         // Restart with the grant still outstanding/unconsumed.
         await server.stop({ keepData: true });
         server = await startTestServer({ port: TEST_PORT, existingTempDir: server.tempDir });
