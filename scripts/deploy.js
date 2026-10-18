@@ -167,6 +167,8 @@ if (require.main === module) {
             const child = spawn('npx', ['electron-builder', ...args], {
                 cwd: path.join(__dirname, '..'),
                 stdio: 'inherit',
+                // On Windows `npx` is `npx.cmd`; spawn without a shell can't resolve it (ENOENT).
+                shell: process.platform === 'win32',
             });
             child.on('exit', (code) => {
                 if (code === 0) resolve();
