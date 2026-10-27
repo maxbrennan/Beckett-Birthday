@@ -1,4 +1,4 @@
-# Ryan Birthday
+# Beckett Birthday
 
 An interactive birthday‑present game delivered as an Electron desktop app, backed by
 a shared‑state WebSocket + HTTPS server so a player's progress is saved and resumable.
